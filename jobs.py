@@ -111,26 +111,30 @@ def _screenshot_page(url: str, settle_secs: float) -> str | None:
 
 
 def _vision_ask(b64: str, prompt: str) -> str:
-    """Send a screenshot (base64) + text prompt to Groq Llama-4-Scout. Returns response text."""
-    client = _get_client()
-    response = client.chat.completions.create(
-        model=_VISION_MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                    },
-                ],
-            }
-        ],
-        temperature=0.1,
-        max_tokens=600,
-    )
-    return response.choices[0].message.content.strip()
+    """Send a screenshot (base64) + text prompt to Groq Llama-4-Scout. Returns response text, or "" on error."""
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=_VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                        },
+                    ],
+                }
+            ],
+            temperature=0.1,
+            max_tokens=600,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as exc:
+        logger.error("_vision_ask failed: %s", exc)
+        return ""
 
 
 def _get_search_url(platform: str, role: str, location: str) -> str | None:
