@@ -1,0 +1,31 @@
+{
+  "name": "Bhanu Teja Veeramachaneni",
+  "email": "bteja0519@gmail.com",
+  "phone": "+1-716-750-3590",
+  "location": "Buffalo, NY",
+  "linkedin": "https://www.linkedin.com/in/bhanuteja-veeramachaneni",
+  "github": "https://github.com/bhanuteja-veeramachaneni",
+  "resume_path": "~/Documents/Bhanu_Teja_Resume.pdf",
+  "summary": "Backend systems and GenAI pipelines. M.S. CS, University at Buffalo.",
+  "skills": [
+    "Python", "TypeScript", "JavaScript", "SQL", "Java",
+    "LangChain", "LangGraph", "RAG", "FAISS", "Pinecone", "Groq",
+    "FastAPI", "Node.js", "REST APIs", "Async Programming",
+    "PostgreSQL", "MongoDB", "Spark", "Kafka",
+    "AWS", "Docker", "CI/CD", "GitHub Actions", "Playwright"
+  ],
+  "experience": [
+    {
+      "company": "Appetit",
+      "role": "Software Engineer Intern",
+      "duration": "Jan 2025 - May 2025"
+    },
+    {
+      "company": "AppsTek Corp",
+      "role": "Software Engineer Intern",
+      "duration": "Sep 2023 - May 2024"
+    }
+  ],
+  "education": "M.S. Computer Science, University at Buffalo (Dec 2025)",
+  "target_roles": []
+}
