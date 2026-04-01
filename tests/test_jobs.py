@@ -119,3 +119,13 @@ def test_search_jobs_returns_empty_when_all_sources_fail():
         results = jobs.search_jobs("find me SWE jobs")
 
     assert results == []
+
+
+# ── _vision_ask error handling ───────────────────────────────────────────────
+
+def test_vision_ask_returns_empty_string_on_groq_failure():
+    import jobs
+    with patch.object(jobs, "_get_client", side_effect=RuntimeError("API down")):
+        result = jobs._vision_ask("fake_b64", "extract something")
+
+    assert result == ""
