@@ -26,6 +26,7 @@ def log_application(
     status: str = "applied",
 ) -> None:
     """Insert one application row. Commits immediately."""
+    conn = None
     try:
         conn = db.get_connection()
         conn.execute(
@@ -33,21 +34,26 @@ def log_application(
             (company, role, platform, url, status),
         )
         conn.commit()
-        conn.close()
         logger.info("Logged application: %s @ %s (%s)", role, company, status)
     except Exception as exc:
         logger.error("log_application failed: %s", exc)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def get_applications() -> list[dict]:
     """Return all rows as a list of dicts, newest first."""
+    conn = None
     try:
         conn = db.get_connection()
         rows = conn.execute(
             "SELECT * FROM applications ORDER BY applied_at DESC"
         ).fetchall()
-        conn.close()
         return [dict(row) for row in rows]
     except Exception as exc:
         logger.error("get_applications failed: %s", exc)
         return []
+    finally:
+        if conn is not None:
+            conn.close()
