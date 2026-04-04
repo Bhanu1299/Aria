@@ -245,6 +245,17 @@ def _vision_fallback(url: str, query: str) -> str:
     return _vision.read_screen(url, query)
 
 
+def _get_capability_response() -> str:
+    return (
+        "I can answer general knowledge questions, search the web, open websites and apps, "
+        "control media playback on Apple Music and YouTube, adjust Mac system settings by voice, "
+        "give you a morning briefing with weather, calendar, email, and news, "
+        "search for jobs on LinkedIn and Indeed, help you apply to jobs and track your applications, "
+        "check your system info like battery and wifi, take notes, set reminders, "
+        "and run calculations. Just tell me what you need."
+    )
+
+
 def _handle_intent(intent: dict, original_question: str) -> str:
     """Dispatch to the correct handler based on intent type."""
     intent_type = intent["type"]
@@ -396,6 +407,10 @@ def _handle_intent(intent: dict, original_question: str) -> str:
                 f"I had trouble completing the application for {job['title']} "
                 f"at {job['company']}. The browser is open so you can finish manually."
             )
+
+    # --- Capability: hardcoded response, no LLM call ---
+    if intent_type == "capability":
+        return _get_capability_response()
 
     # Fallback
     return answer_knowledge(original_question)
