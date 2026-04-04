@@ -349,6 +349,7 @@ def _handle_intent(intent: dict, original_question: str) -> str:
         speaker.say("Searching for jobs, one moment.")
         results = jobs.search_jobs(intent["query"])
         memory.store_jobs(results)
+        memory.store_last_search(intent["query"])
         return jobs.format_spoken_results(results)
 
     # --- Apply: fill job application in visible browser → voice confirm → submit ---
