@@ -6,7 +6,8 @@ Python then constructs all URLs — the LLM never invents URLs.
 
 Return dict schema:
   {
-    "type":         str,   # "knowledge" | "web_search" | "web_direct" | "app" | "media" | "navigate"
+    "type":         str,   # "knowledge" | "web_search" | "web_direct" | "app" | "media"
+                           #  | "navigate" | "app_control" | "briefing" | "jobs"
     "query":        str,   # clean query, location-injected for web_search if needed
     "url":          str,   # Google URL (web_search) | site URL (web_direct/navigate/media) | "" otherwise
     "instructions": str,   # what to extract from the page for the summarizer
@@ -65,6 +66,44 @@ _KNOWN_SITES: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# Job search pre-check — fires before Groq classifier to prevent "on LinkedIn"
+# or "on Indeed" from being misrouted to web_direct instead of jobs.
+# ---------------------------------------------------------------------------
+
+_JOB_SEARCH_RE = re.compile(
+    r"\b(find|search\s+for|look\s+for|show\s+me|get\s+me|any|are\s+there|looking\s+for)\b"
+    r".{0,60}"
+    r"\b(jobs?|job\s+listings?|positions?|openings?|job\s+openings?|roles?|vacancies?)\b",
+    re.IGNORECASE,
+)
+
+# Apply intent pre-check — fires before Groq classifier to route "apply to the Nth"
+# directly without an LLM call.
+_APPLY_INTENT_RE = re.compile(
+    r"(?:"
+    r"\b(?:apply|apply\s+to|apply\s+for)\b.{0,60}"
+    r"\b(?:first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\b"
+    r"|"
+    r"\b(?:first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\b.{0,30}"
+    r"\b(?:apply|apply\s+to|submit)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Capability intent pre-check — routes capability questions without an LLM call.
+_CAPABILITY_RE = re.compile(
+    r"\b(?:"
+    r"what\s+can\s+you\s+do"
+    r"|what\s+are\s+(?:your\s+)?capabilities"
+    r"|what\s+are\s+you\s+capable\s+of"
+    r"|what\s+(?:features?|skills?|abilities?)\s+do\s+you\s+have"
+    r"|help\s+me$"
+    r"|what\s+do\s+you\s+(?:do|know)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
 # Contact disambiguation — pre-check before Groq classifier
 # ---------------------------------------------------------------------------
 
@@ -107,7 +146,7 @@ Return ONLY a JSON object — no markdown, no explanation.
 
 Schema:
 {
-  "type": "knowledge" | "web_search" | "web_direct" | "app" | "media" | "navigate" | "app_control" | "briefing" | "jobs",
+  "type": "knowledge" | "web_search" | "web_direct" | "app" | "media" | "navigate" | "app_control" | "briefing" | "jobs" | "apply",
   "query": "<clean search terms — remove filler words like 'find me', 'search for', 'look up'>",
   "site": "<only for web_direct: youtube | reddit | linkedin | github | hackernews | spotify | other>",
   "site_name": "<only for navigate: short lowercase site name, e.g. 'youtube', 'github', 'claude', 'reddit'>",
@@ -124,13 +163,14 @@ Type rules:
 - media: music playback and YouTube — play/pause/skip/stop/what's playing for any music app, YouTube audio streaming, YouTube video
 - app_control: native Mac app control via AppleScript — Spotify playback (play/pause/skip/what's playing), system volume (set/mute/up/down), Finder (open folder), Calendar (read/add events), Mail (unread count/read latest), Reminders (add reminder), app open/quit/hide, screen reading
 - briefing: user wants a morning briefing, daily summary, or asks what's on their day. Trigger phrases: "give me my briefing", "morning briefing", "what's my day look like", "what do I have today", "daily summary", "what's going on today"
-- jobs: user wants to search for job listings — "find me jobs", "search for jobs", "any openings at", "job search", "find [role] jobs", "look for [role] positions", "any [role] roles", "are there any [role] openings"
+- jobs: user wants to search for job listings — "find me jobs", "search for jobs", "any openings at", "job search", "find [role] jobs", "look for [role] positions", "any [role] roles", "are there any [role] openings". Preserve filter keywords like 'remote', 'hybrid', 'on-site', 'posted this week', 'posted today' in the query — do not strip them.
+- apply: user wants to apply to a specific job by ordinal — "apply to the first job", "apply for the second one", "submit for the third position"
 
 IMPORTANT: Use "media" for ALL music and YouTube commands: "play", "pause", "skip", "next song", "next track", "what's playing", "now playing", "watch", "stop music", "stop playback", "play X on YouTube", "play X on [music app]". Do NOT use "web_direct" or "web_search" for these.
 IMPORTANT: If the user says "search YouTube for X" or "find X on Reddit" → type is "web_direct", never "media".
 IMPORTANT: If the user says "open Safari" or "open Spotify" (no URL/site intent) → type is "app", never "navigate".
 IMPORTANT: If the user says "open YouTube" or "go to Reddit" or "take me to GitHub" → type is "navigate", not "app".
-IMPORTANT: Use "jobs" (NOT "web_search") for any job search query — "find me jobs", "search for [role] jobs", "any [role] positions", "any [role] openings at [company]".
+IMPORTANT: Use "jobs" (NOT "web_search" or "web_direct") for any job search query — "find me jobs", "search for [role] jobs", "any [role] positions", "any [role] openings at [company]".
 IMPORTANT: Use "app_control" (not "app") for: Spotify play/pause/skip/what's playing, volume set/mute/up/down, brightness set/up/down, dark mode on/off/toggle, focus mode on/off (do not disturb, work, sleep, personal, etc.), wifi on/off, bluetooth on/off, low power mode on/off, screenshot/capture screen, calendar events, unread emails, read emails, check my inbox, latest emails, reminders, open/show Downloads/Documents/Desktop in Finder, quit or hide any app, "what does X say", "read what's on screen", "copy what's on screen", "copy the text on screen", "copy all visible text".
 
 location_sensitive = true when query implies local context: near, nearby, local, here, showtimes, restaurants, weather, events, tonight, today, now showing, in my area, jobs near
@@ -259,8 +299,40 @@ def route(command: str) -> dict:
     if contact_intent is not None:
         return contact_intent
 
+    # Apply intent pre-check — "apply to the Nth job" never needs an LLM call
+    if _APPLY_INTENT_RE.search(command):
+        logger.info("Apply pre-check matched: %r", command)
+        return {
+            "type": "apply",
+            "query": command.strip(),
+            "url": "",
+            "instructions": "",
+            "app_name": "",
+            "contact": "",
+            "site_name": "",
+        }
+
+    # Capability pre-check — never needs an LLM call
+    if _CAPABILITY_RE.search(command):
+        logger.info("Capability pre-check matched: %r", command)
+        return {
+            "type": "capability",
+            "query": command.strip(),
+            "url": "",
+            "instructions": "",
+            "app_name": "",
+            "contact": "",
+            "site_name": "",
+        }
+
     try:
         parsed = _classify(command)
+        # Job search pre-check — if regex matched job intent but LLM chose
+        # web_direct (e.g. "find jobs on LinkedIn"), override type to jobs
+        # while keeping the LLM's clean query extraction.
+        if parsed["type"] != "jobs" and _JOB_SEARCH_RE.search(command):
+            logger.info("Job pre-check override: %r → jobs (was %r)", command, parsed["type"])
+            parsed["type"] = "jobs"
         return _build_intent(command, parsed)
     except Exception as exc:
         logger.error("Router failed (%s) — falling back to knowledge query.", exc)
@@ -296,7 +368,7 @@ def _classify(command: str) -> dict:
 
     parsed = json.loads(raw)
 
-    if "type" not in parsed or parsed["type"] not in ("knowledge", "web_search", "web_direct", "app", "media", "navigate", "app_control", "briefing", "jobs"):
+    if "type" not in parsed or parsed["type"] not in ("knowledge", "web_search", "web_direct", "app", "media", "navigate", "app_control", "briefing", "jobs", "apply", "capability"):
         raise ValueError(f"Invalid type in classifier response: {parsed.get('type')!r}")
 
     # Normalise query — LLM sometimes returns null or empty
@@ -386,6 +458,12 @@ def _build_intent(original_command: str, parsed: dict) -> dict:
         return {**_base}
 
     if intent_type == "jobs":
+        return {**_base}
+
+    if intent_type == "apply":
+        return {**_base}
+
+    if intent_type == "capability":
         return {**_base}
 
     # Unknown type — fallback to knowledge
