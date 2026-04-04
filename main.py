@@ -25,10 +25,18 @@ import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
+import logging
+import re as _re
 import signal
 import sys
 import time
 import threading
+from typing import Optional
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(name)s] %(levelname)s: %(message)s",
+)
 
 import config
 from transcriber import Transcriber
@@ -45,6 +53,8 @@ import media
 import briefing
 import jobs
 import memory
+import tracker
+import agent_browser
 # vision is imported lazily inside _vision_fallback() to keep it off the
 # startup critical path — Playwright + ctranslate2 + vision all loading at
 # once on Python 3.9 macOS can trigger OpenMP duplicate-lib abort()
@@ -78,6 +88,10 @@ def _shutdown(signum, frame):
             browser.stop()
         except Exception as e:
             print(f"Error stopping browser: {e}")
+    try:
+        agent_browser.close()
+    except Exception as e:
+        print(f"Error closing agent browser: {e}")
     print("Aria stopped.")
     sys.exit(0)
 
@@ -122,11 +136,16 @@ def _process_release():
         print(f"[Aria] Transcribed: {question!r}")
         menubar.set_state("THINKING")
 
-        # Step 1 — classify and route
-        intent = route(question)
-        print(f"[Aria] Intent: type={intent['type']!r}  query={intent['query']!r}")
-
-        answer = _handle_intent(intent, question)
+        # Pre-check: ordinal job follow-ups ("tell me more about the second job")
+        followup = _check_jobs_followup(question)
+        if followup is not None:
+            print(f"[Aria] Jobs follow-up: {followup!r}")
+            answer = followup
+        else:
+            # Step 1 — classify and route
+            intent = route(question)
+            print(f"[Aria] Intent: type={intent['type']!r}  query={intent['query']!r}")
+            answer = _handle_intent(intent, question)
 
         print(f"[Aria] Answer: {answer!r}")
         speaker.say(answer)
@@ -144,6 +163,80 @@ def _process_release():
             print(f"[Aria] Error speaking error message: {say_err}")
         menubar.set_state("IDLE")
         _processing.clear()
+
+
+_ORDINAL_MAP = {
+    "first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3,
+    "fourth": 4, "4th": 4, "fifth": 5, "5th": 5,
+}
+_JOB_FOLLOWUP_RE = _re.compile(
+    r"\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\b",
+    _re.IGNORECASE,
+)
+_APPLY_RE = _re.compile(
+    r"\b(open|go\s+to|visit|navigate)\b",
+    _re.IGNORECASE,
+)
+# Apply commands must pass through to the router — never intercept them here.
+_IS_APPLY_RE = _re.compile(r"\b(apply|apply\s+to|apply\s+for|submit)\b", _re.IGNORECASE)
+
+
+def _check_jobs_followup(question: str) -> Optional[str]:
+    """
+    Intercept ordinal job-reference questions before routing.
+
+    Matches any question with an ordinal ("first", "second", etc.) while
+    jobs are saved in session memory. Uses vision to screenshot the job page
+    and answer the actual question, or opens the URL for "open"/"visit".
+
+    Apply commands are deliberately excluded — they route through the intent
+    system so the full applicator flow can run.
+    """
+    # Only intercept if we have jobs saved from a prior search
+    if not memory.get_persistent("last_jobs"):
+        return None
+    # Let apply/submit commands fall through to router → "apply" intent handler
+    if _IS_APPLY_RE.search(question):
+        return None
+    m = _JOB_FOLLOWUP_RE.search(question)
+    if not m:
+        return None
+    n = _ORDINAL_MAP.get(m.group(1).lower())
+    if n is None:
+        return None
+    job = memory.get_job_by_index(n)
+    if job is None:
+        return (
+            f"I don't have a {m.group(1)} job saved from this session. "
+            "Try searching for jobs first."
+        )
+
+    url = job.get("url", "").strip()
+
+    # "Apply for the third job" / "open the first listing" → open in browser
+    if url and _APPLY_RE.search(question):
+        import webbrowser
+        webbrowser.open(url)
+        return f"Opening the job listing for {job['title']} at {job['company']}."
+
+    # Detail questions ("tell me more", "what's the salary") → vision screenshot
+    if url:
+        try:
+            return _vision_fallback(url, question)
+        except Exception as exc:
+            print(f"[Aria] Vision fallback failed for job URL: {exc}")
+
+    # Fallback: return what we have cached.
+    detail = f"{job['title']} at {job['company']}"
+    if job.get("location"):
+        detail += f", located in {job['location']}"
+    if job.get("posted"):
+        detail += f", posted {job['posted']}"
+    if job.get("platform"):
+        detail += f". Listed on {job['platform']}."
+    else:
+        detail += "."
+    return detail
 
 
 def _vision_fallback(url: str, query: str) -> str:
@@ -257,6 +350,51 @@ def _handle_intent(intent: dict, original_question: str) -> str:
         results = jobs.search_jobs(intent["query"])
         memory.store_jobs(results)
         return jobs.format_spoken_results(results)
+
+    # --- Apply: fill job application in visible browser → voice confirm → submit ---
+    if intent_type == "apply":
+        m = _JOB_FOLLOWUP_RE.search(original_question)
+        if not m:
+            return (
+                "I'm not sure which job you want to apply to. "
+                "Try saying 'apply to the first job'."
+            )
+        n = _ORDINAL_MAP.get(m.group(1).lower())
+        job = memory.get_job_by_index(n) if n else None
+        if job is None:
+            return (
+                f"I don't have a {m.group(1)} job saved from this session. "
+                "Try searching for jobs first."
+            )
+        if not job.get("url"):
+            return (
+                f"I don't have a URL for the {m.group(1)} job "
+                f"at {job.get('company', 'that company')}."
+            )
+        print(f"[Aria] Apply: {job['title']} @ {job['company']} → {job['url']}")
+        speaker.say(
+            f"Starting application for {job['title']} at {job['company']}. "
+            "Opening browser now."
+        )
+        import applicator
+        result = applicator.run_application(
+            job=job,
+            voice_capture=voice_capture,
+            transcriber=transcriber_instance,
+            speaker=speaker,
+        )
+        if result == "submitted":
+            return f"Application submitted for {job['title']} at {job['company']}."
+        elif result == "not submitted":
+            return (
+                "Application not submitted. "
+                "The form is filled in your browser if you want to review it."
+            )
+        else:
+            return (
+                f"I had trouble completing the application for {job['title']} "
+                f"at {job['company']}. The browser is open so you can finish manually."
+            )
 
     # Fallback
     return answer_knowledge(original_question)
