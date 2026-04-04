@@ -21,6 +21,9 @@ def test_salary_80k():
 def test_salary_six_figures():
     assert _parse_salary_filter("six figure jobs") == "4"
 
+def test_salary_six_figures_hyphenated():
+    assert _parse_salary_filter("six-figure job") == "4"
+
 def test_salary_no_mention():
     assert _parse_salary_filter("find me remote SWE jobs") == ""
 
