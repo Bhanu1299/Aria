@@ -55,7 +55,7 @@ def _parse_salary_filter(query: str) -> str:
     q = query.lower()
 
     # "six figures" / "six-figure" → $100k+
-    if "six figure" in q:
+    if "six figure" in q or "six-figure" in q:
         return "4"
 
     # Pattern: "100k", "120,000", "$140k", "80 thousand"
