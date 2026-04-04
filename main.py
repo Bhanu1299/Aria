@@ -412,6 +412,17 @@ def _handle_intent(intent: dict, original_question: str) -> str:
     if intent_type == "capability":
         return _get_capability_response()
 
+    # --- Skill: local skill matched by skill_loader ---
+    if intent_type == "skill":
+        skill_fn = intent.get("_skill_fn")
+        if callable(skill_fn):
+            try:
+                return skill_fn(original_question)
+            except Exception as exc:
+                print(f"[Aria] Skill execution failed: {exc}")
+                return "I ran into a problem with that command. Please try again."
+        return answer_knowledge(original_question)
+
     # Fallback
     return answer_knowledge(original_question)
 

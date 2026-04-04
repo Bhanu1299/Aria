@@ -27,6 +27,10 @@ from urllib.parse import quote_plus
 from groq import Groq
 
 import config
+from skills import skill_loader as _skill_loader
+
+# Load skills on module import — happens once when router is first imported
+_skill_loader.load_skills()
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +303,21 @@ def route(command: str) -> dict:
     if contact_intent is not None:
         return contact_intent
 
+    # Skill pre-check — runs before Groq, zero API latency for matched skills
+    skill_fn = _skill_loader.match_skill(command)
+    if skill_fn is not None:
+        logger.info("Skill matched for: %r", command)
+        return {
+            "type": "skill",
+            "query": command.strip(),
+            "url": "",
+            "instructions": "",
+            "app_name": "",
+            "contact": "",
+            "site_name": "",
+            "_skill_fn": skill_fn,
+        }
+
     # Apply intent pre-check — "apply to the Nth job" never needs an LLM call
     if _APPLY_INTENT_RE.search(command):
         logger.info("Apply pre-check matched: %r", command)
@@ -368,7 +387,7 @@ def _classify(command: str) -> dict:
 
     parsed = json.loads(raw)
 
-    if "type" not in parsed or parsed["type"] not in ("knowledge", "web_search", "web_direct", "app", "media", "navigate", "app_control", "briefing", "jobs", "apply", "capability"):
+    if "type" not in parsed or parsed["type"] not in ("knowledge", "web_search", "web_direct", "app", "media", "navigate", "app_control", "briefing", "jobs", "apply", "capability", "skill"):
         raise ValueError(f"Invalid type in classifier response: {parsed.get('type')!r}")
 
     # Normalise query — LLM sometimes returns null or empty
@@ -464,6 +483,9 @@ def _build_intent(original_command: str, parsed: dict) -> dict:
         return {**_base}
 
     if intent_type == "capability":
+        return {**_base}
+
+    if intent_type == "skill":
         return {**_base}
 
     # Unknown type — fallback to knowledge
