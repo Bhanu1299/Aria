@@ -75,6 +75,7 @@ def generate_say_clips(
             )
             if result.returncode != 0:
                 print(f"  [warn] say failed for voice={voice}: {result.stderr.decode()}")
+                out_path.unlink(missing_ok=True)
                 continue
 
             # Pad or trim to CLIP_DURATION
@@ -94,13 +95,16 @@ async def _edge_clip(voice: str, phrase: str, out_path: Path) -> bool:
         await communicate.save(str(tmp))
 
         # Convert MP3 → 16kHz mono WAV using ffmpeg (always available on macOS)
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(tmp),
-             "-ar", "16000", "-ac", "1", str(out_path)],
-            capture_output=True,
-            check=True,
-        )
-        tmp.unlink(missing_ok=True)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(tmp),
+                 "-ar", "16000", "-ac", "1", str(out_path)],
+                capture_output=True,
+                check=True,
+            )
+        finally:
+            tmp.unlink(missing_ok=True)
+
         _normalise_wav(out_path)
         return True
     except Exception as exc:
@@ -116,20 +120,15 @@ async def generate_edge_clips(
     """Generate clips using Edge TTS (async). Returns number of clips created."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    count = 0
 
+    combos = [(voice, phrase) for voice in voices for phrase in phrases]
     tasks = []
-    paths = []
-    for i, voice in enumerate(voices):
-        for phrase in phrases:
-            slug = phrase.lower().replace(" ", "_").replace("!", "")
-            out_path = out / f"edge_{voice.replace('-', '_').lower()}_{slug}_{count:04d}.wav"
-            if out_path.exists():
-                count += 1
-                continue
-            tasks.append(_edge_clip(voice, phrase, out_path))
-            paths.append(out_path)
-            count += 1
+    for idx, (voice, phrase) in enumerate(combos):
+        slug = phrase.lower().replace(" ", "_").replace("!", "")
+        out_path = out / f"edge_{voice.replace('-', '_').lower()}_{slug}_{idx:04d}.wav"
+        if out_path.exists():
+            continue
+        tasks.append(_edge_clip(voice, phrase, out_path))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     ok = sum(1 for r in results if r is True)
@@ -149,6 +148,7 @@ def _normalise_wav(path: Path) -> None:
         sf.write(str(path), data, sr, subtype="PCM_16")
     except Exception as exc:
         print(f"  [warn] normalise failed for {path.name}: {exc}")
+        path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
