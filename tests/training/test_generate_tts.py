@@ -34,25 +34,34 @@ def test_say_writes_wav(tmp_path):
 
 
 def test_edge_tts_writes_wav(tmp_path):
-    """generate_edge_clips() creates WAV files."""
+    """generate_edge_clips() creates WAV files via Edge TTS."""
+    import asyncio
     from generate_tts import generate_edge_clips
 
     out_dir = tmp_path / "positive"
     out_dir.mkdir()
 
     async def fake_save(path):
-        import soundfile as sf2
-        import numpy as np2
-        sf2.write(path, np2.zeros(32000, dtype=np.int16), 16000, subtype="PCM_16")
+        # Write a dummy MP3 file (edge_tts.save() creates an MP3)
+        sf.write(path.replace(".mp3", ".wav"), np.zeros(32000, dtype=np.int16), 16000, subtype="PCM_16")
 
     mock_communicate = MagicMock()
     mock_communicate.return_value.save = fake_save
 
-    with patch("edge_tts.Communicate", mock_communicate):
-        import asyncio
-        asyncio.run(generate_edge_clips.__wrapped__(
-            out_dir=str(out_dir), voices=["en-US-JennyNeural"], phrases=["Aria"]
-        )) if hasattr(generate_edge_clips, "__wrapped__") else None
+    def fake_ffmpeg(cmd, **kwargs):
+        # ffmpeg command: ["ffmpeg", "-y", "-i", mp3_path, "-ar", "16000", "-ac", "1", wav_path]
+        # Just write the WAV directly since we already have audio
+        wav_path = cmd[-1]
+        sf.write(wav_path, np.zeros(32000, dtype=np.int16), 16000, subtype="PCM_16")
+        return MagicMock(returncode=0)
 
-    # At minimum the function must exist and be importable
-    assert callable(generate_edge_clips)
+    with patch("edge_tts.Communicate", mock_communicate):
+        with patch("subprocess.run", side_effect=fake_ffmpeg):
+            asyncio.run(generate_edge_clips(
+                out_dir=str(out_dir), voices=["en-US-JennyNeural"], phrases=["Aria"]
+            ))
+
+    wavs = list(out_dir.glob("*.wav"))
+    assert len(wavs) >= 1
+    data, sr = sf.read(str(wavs[0]))
+    assert sr == 16000
