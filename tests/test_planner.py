@@ -100,3 +100,78 @@ def test_memory_store_and_get_last_plan(tmp_path, monkeypatch):
     assert loaded_after_restart is not None
     assert loaded_after_restart["goal"] == "g"
     assert loaded_after_restart["results"] == {"k": "v"}
+
+
+# ---------------------------------------------------------------------------
+# Detection layer tests
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch
+import planner
+
+
+def test_is_multi_step_conjunction_two_verbs():
+    assert planner.is_multi_step("find the cheapest flight and then book it") is True
+
+
+def test_is_multi_step_and_add():
+    assert planner.is_multi_step("search for flights and add the best one to my calendar") is True
+
+
+def test_is_multi_step_single_action():
+    assert planner.is_multi_step("what is the weather today") is False
+
+
+def test_is_multi_step_no_conjunction():
+    assert planner.is_multi_step("search for jobs in New York") is False
+
+
+def test_is_multi_step_borderline_calls_groq():
+    # One conjunction, one verb — should call _groq_is_multi
+    with patch("planner._groq_is_multi", return_value=True) as mock:
+        result = planner.is_multi_step("find flights and then depart tomorrow")
+        mock.assert_called_once()
+        assert result is True
+
+
+def test_validate_steps_valid():
+    steps = [
+        {"id": 1, "description": "d1", "intent_type": "browser_task",
+         "params": {"browser_goal": "g"}, "result_key": "r1", "depends_on": []},
+        {"id": 2, "description": "d2", "intent_type": "knowledge",
+         "params": {"query": "q"}, "result_key": "r2", "depends_on": [1]},
+    ]
+    assert planner._validate_steps(steps) == steps
+
+
+def test_validate_steps_too_few():
+    steps = [{"id": 1, "description": "d", "intent_type": "browser_task",
+              "params": {}, "result_key": "r1", "depends_on": []}]
+    assert planner._validate_steps(steps) is None
+
+
+def test_validate_steps_too_many():
+    steps = [{"id": i, "description": "d", "intent_type": "browser_task",
+              "params": {}, "result_key": f"r{i}", "depends_on": []}
+             for i in range(1, 7)]  # 6 steps
+    assert planner._validate_steps(steps) is None
+
+
+def test_validate_steps_unknown_intent():
+    steps = [
+        {"id": 1, "description": "d1", "intent_type": "browser_task",
+         "params": {}, "result_key": "r1", "depends_on": []},
+        {"id": 2, "description": "d2", "intent_type": "INVALID_TYPE",
+         "params": {}, "result_key": "r2", "depends_on": []},
+    ]
+    assert planner._validate_steps(steps) is None
+
+
+def test_validate_steps_missing_field():
+    steps = [
+        {"id": 1, "description": "d1", "intent_type": "browser_task",
+         "params": {}, "depends_on": []},  # missing result_key
+        {"id": 2, "description": "d2", "intent_type": "knowledge",
+         "params": {}, "result_key": "r2", "depends_on": []},
+    ]
+    assert planner._validate_steps(steps) is None
