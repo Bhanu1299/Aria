@@ -1,9 +1,12 @@
 """
 Tests for plan_context.py and memory plan persistence.
 """
-import json
 import importlib
+import json
 import pytest
+from unittest.mock import patch, MagicMock
+from plan_context import PlanContext
+import planner
 
 
 @pytest.fixture(autouse=True)
@@ -106,9 +109,6 @@ def test_memory_store_and_get_last_plan(tmp_path, monkeypatch):
 # Detection layer tests
 # ---------------------------------------------------------------------------
 
-from unittest.mock import patch
-import planner
-
 
 def test_is_multi_step_conjunction_two_verbs():
     assert planner.is_multi_step("find the cheapest flight and then book it") is True
@@ -171,6 +171,16 @@ def test_validate_steps_missing_field():
     steps = [
         {"id": 1, "description": "d1", "intent_type": "browser_task",
          "params": {}, "depends_on": []},  # missing result_key
+        {"id": 2, "description": "d2", "intent_type": "knowledge",
+         "params": {}, "result_key": "r2", "depends_on": []},
+    ]
+    assert planner._validate_steps(steps) is None
+
+
+def test_validate_steps_missing_depends_on():
+    steps = [
+        {"id": 1, "description": "d1", "intent_type": "browser_task",
+         "params": {}, "result_key": "r1"},  # missing depends_on
         {"id": 2, "description": "d2", "intent_type": "knowledge",
          "params": {}, "result_key": "r2", "depends_on": []},
     ]

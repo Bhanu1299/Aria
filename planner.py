@@ -108,7 +108,7 @@ def _validate_steps(steps) -> list[dict] | None:
         logger.warning("Plan has %d steps (need %d-%d) — rejecting",
                        len(steps), _MIN_STEPS, _MAX_STEPS)
         return None
-    required_fields = ("id", "description", "intent_type", "params", "result_key")
+    required_fields = ("id", "description", "intent_type", "params", "result_key", "depends_on")
     for step in steps:
         if step.get("intent_type") not in _KNOWN_INTENT_TYPES:
             logger.warning("Unknown intent_type %r — rejecting plan", step.get("intent_type"))
