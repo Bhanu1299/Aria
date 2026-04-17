@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
 
 import db
@@ -128,3 +129,57 @@ def set_persistent(key: str, value) -> None:
     with _lock:
         session[key] = value
     _save(key, value, expires_hours=None)
+
+
+# ---------------------------------------------------------------------------
+# Job search cache (30-minute TTL, in-memory only)
+# ---------------------------------------------------------------------------
+
+_JOB_CACHE_TTL = 1800  # 30 minutes in seconds
+# Format: {"query_normalized": {"results": [...], "ts": float}}
+_job_cache: dict = {}
+_job_cache_lock = threading.Lock()
+
+
+def _normalize_query(query: str) -> str:
+    return " ".join(query.lower().strip().split())
+
+
+def get_cached_jobs(query: str) -> list[dict] | None:
+    """
+    Return cached job results for query if they are less than 30 minutes old.
+    Returns None if no valid cache entry exists.
+    """
+    key = _normalize_query(query)
+    with _job_cache_lock:
+        entry = _job_cache.get(key)
+    if entry is None:
+        return None
+    if time.time() - entry["ts"] > _JOB_CACHE_TTL:
+        return None
+    return entry["results"]
+
+
+def store_cached_jobs(query: str, results: list[dict]) -> None:
+    """Cache job results for query with current timestamp."""
+    key = _normalize_query(query)
+    with _job_cache_lock:
+        _job_cache[key] = {"results": results, "ts": time.time()}
+
+
+# ---------------------------------------------------------------------------
+# Last plan (24-hour TTL — for restart recovery)
+# ---------------------------------------------------------------------------
+
+
+def store_last_plan(plan_dict: dict) -> None:
+    """Persist the current plan context dict. 24-hour TTL."""
+    with _lock:
+        session["last_plan"] = plan_dict
+    _save("last_plan", plan_dict, expires_hours=24)
+
+
+def get_last_plan() -> dict | None:
+    """Return the last stored plan dict, or None if not set / expired."""
+    with _lock:
+        return session.get("last_plan")
