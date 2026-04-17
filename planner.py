@@ -131,3 +131,97 @@ def _get_client() -> Groq:
             raise RuntimeError("GROQ_API_KEY is not set in .env")
         _CLIENT = Groq(api_key=config.GROQ_API_KEY)
     return _CLIENT
+
+
+# ---------------------------------------------------------------------------
+# Plan generation
+# ---------------------------------------------------------------------------
+
+_PLAN_SYSTEM = (
+    "You are a task decomposition assistant for Aria, a Mac voice agent.\n"
+    "Break the user's goal into 2–5 sequential steps.\n\n"
+    "Each step MUST use one of these intent_type values exactly:\n"
+    "browser_task, knowledge, web_search, jobs, apply, app_control, navigate, media\n\n"
+    "Return ONLY a JSON array. No markdown. No explanation.\n\n"
+    "Example:\n"
+    '[\n'
+    '  {"id": 1, "description": "Search Kayak for cheapest flight NYC April 25",\n'
+    '   "intent_type": "browser_task",\n'
+    '   "params": {"browser_goal": "find cheapest flight to NYC on April 25 on Kayak"},\n'
+    '   "result_key": "flight_result", "depends_on": []},\n'
+    '  {"id": 2, "description": "Book the flight found in step 1",\n'
+    '   "intent_type": "browser_task",\n'
+    '   "params": {"browser_goal": "book the flight: {{flight_result}}"},\n'
+    '   "result_key": "booking_result", "depends_on": [1]}\n'
+    ']\n\n'
+    "Rules:\n"
+    "- 2 steps minimum, 5 maximum\n"
+    "- intent_type must be exactly one of the allowed values\n"
+    "- result_key must be a unique snake_case identifier\n"
+    "- depends_on lists step IDs whose results this step needs\n"
+    "- params key depends on intent: browser_task→browser_goal, "
+    "web_search/knowledge/jobs/media→query, navigate→site_name, app_control→query"
+)
+
+_REVISE_SYSTEM = (
+    "You are revising an Aria task plan based on user feedback.\n"
+    "Return the complete revised plan as a JSON array with the same format.\n"
+    "Only change the steps the user asked to change. Keep all other steps identical.\n"
+    "Allowed intent_type values: "
+    "browser_task, knowledge, web_search, jobs, apply, app_control, navigate, media\n"
+    "Return ONLY a JSON array. No markdown. No explanation."
+)
+
+
+def _strip_fences(raw: str) -> str:
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    return re.sub(r"\s*```$", "", raw.strip())
+
+
+def generate_plan(goal: str) -> list[dict] | None:
+    """
+    Call Groq to decompose goal into steps.
+    Returns validated steps or None on any failure.
+    """
+    try:
+        client = _get_client()
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": _PLAN_SYSTEM},
+                {"role": "user", "content": goal},
+            ],
+            temperature=0.1,
+            max_tokens=700,
+        )
+        raw = _strip_fences(resp.choices[0].message.content)
+        return _validate_steps(json.loads(raw))
+    except Exception as exc:
+        logger.error("generate_plan failed: %s", exc)
+        return None
+
+
+def revise_plan(steps: list[dict], feedback: str) -> list[dict] | None:
+    """
+    Revise plan based on user voice feedback. One revision allowed before execution.
+    Returns revised steps or None on failure (caller keeps original).
+    """
+    try:
+        client = _get_client()
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": _REVISE_SYSTEM},
+                {"role": "user", "content": (
+                    f"Current plan:\n{json.dumps(steps, indent=2)}\n\n"
+                    f"User feedback: {feedback}"
+                )},
+            ],
+            temperature=0.1,
+            max_tokens=700,
+        )
+        raw = _strip_fences(resp.choices[0].message.content)
+        return _validate_steps(json.loads(raw))
+    except Exception as exc:
+        logger.error("revise_plan failed: %s", exc)
+        return None
