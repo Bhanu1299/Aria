@@ -259,3 +259,64 @@ def test_revise_plan_valid():
         result = planner.revise_plan(original, "use Google Flights instead of Kayak")
     assert result is not None
     assert "Google Flights" in result[0]["description"]
+
+
+def test_substitute_placeholders_replaces_key():
+    params = {"browser_goal": "book flight: {{flight_result}}"}
+    results = {"flight_result": "Delta $320 8am Apr 25"}
+    out = planner._substitute_placeholders(params, results)
+    assert out["browser_goal"] == "book flight: Delta $320 8am Apr 25"
+
+
+def test_substitute_placeholders_no_match():
+    params = {"browser_goal": "find hotels in NYC"}
+    results = {"flight_result": "Delta $320"}
+    out = planner._substitute_placeholders(params, results)
+    assert out == params
+
+
+def test_substitute_placeholders_empty_results():
+    params = {"query": "weather NYC"}
+    out = planner._substitute_placeholders(params, {})
+    assert out == params
+
+
+def test_step_to_intent_browser_task():
+    step = {
+        "id": 1, "description": "search Kayak",
+        "intent_type": "browser_task",
+        "params": {"browser_goal": "find flights NYC"},
+        "result_key": "r1", "depends_on": [],
+    }
+    intent = planner._step_to_intent(step)
+    assert intent["type"] == "browser_task"
+    assert intent["browser_goal"] == "find flights NYC"
+    assert intent["url"] == ""
+    assert intent["app_name"] == ""
+
+
+def test_step_to_intent_knowledge():
+    step = {
+        "id": 1, "description": "what is the capital of France",
+        "intent_type": "knowledge",
+        "params": {"query": "capital of France"},
+        "result_key": "r1", "depends_on": [],
+    }
+    intent = planner._step_to_intent(step)
+    assert intent["type"] == "knowledge"
+    assert intent["query"] == "capital of France"
+
+
+def test_is_failure_empty():
+    assert planner._is_failure(None) is True
+    assert planner._is_failure("") is True
+
+
+def test_is_failure_stuck_phrase():
+    assert planner._is_failure("I got stuck and couldn't complete that.") is True
+    assert planner._is_failure("I ran into an error while researching.") is True
+
+
+def test_is_failure_success():
+    assert planner._is_failure("The cheapest flight is Delta at $320.") is False
+    assert planner._is_failure("Done. Added to your calendar.") is False

@@ -225,3 +225,146 @@ def revise_plan(steps: list[dict], feedback: str) -> list[dict] | None:
     except Exception as exc:
         logger.error("revise_plan failed: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Context injection
+# ---------------------------------------------------------------------------
+
+_INJECT_SYSTEM = (
+    "You are updating a task step's params by incorporating results from previous steps.\n"
+    "Return ONLY the updated params dict as a JSON object. No markdown. No explanation.\n"
+    "Replace any {{result_key}} placeholders and enrich params with relevant previous results."
+)
+
+_FAILURE_PHRASES = (
+    "got stuck", "couldn't complete", "ran into an error",
+    "error while", "i ran out", "couldn't find", "i got stuck",
+    "couldn't get", "i couldn't", "browser got stuck",
+)
+
+
+def _is_failure(result: str | None) -> bool:
+    """Return True if result indicates a failure or is empty."""
+    if not result:
+        return True
+    lower = result.lower()
+    return any(p in lower for p in _FAILURE_PHRASES)
+
+
+def _substitute_placeholders(params: dict, results: dict[str, str]) -> dict:
+    """
+    Pure string substitution: replace {{result_key}} with actual values.
+    No Groq call. Safe to test without mocking.
+    """
+    if not results:
+        return params
+    params_str = json.dumps(params)
+    for key, value in results.items():
+        params_str = params_str.replace(f"{{{{{key}}}}}", value)
+    try:
+        return json.loads(params_str)
+    except Exception:
+        return params
+
+
+def _inject_context(step: dict, results: dict[str, str]) -> dict:
+    """
+    Inject context from previous steps into this step's params.
+    Phase 1: simple {{placeholder}} substitution (no Groq).
+    Phase 2: Groq call to further enrich params with relevant context.
+    Falls back gracefully on any error.
+    """
+    if not results:
+        return step
+    substituted_params = _substitute_placeholders(step["params"], results)
+    context_summary = "\n".join(f"{k}: {v}" for k, v in results.items())
+    try:
+        client = _get_client()
+        resp = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": _INJECT_SYSTEM},
+                {"role": "user", "content": (
+                    f"Step description: {step['description']}\n"
+                    f"Current params: {json.dumps(substituted_params)}\n"
+                    f"Previous step results:\n{context_summary}\n\n"
+                    "Update params to incorporate the most relevant previous results."
+                )},
+            ],
+            temperature=0.0,
+            max_tokens=250,
+        )
+        raw = _strip_fences(resp.choices[0].message.content)
+        enriched = json.loads(raw)
+        if isinstance(enriched, dict):
+            return {**step, "params": enriched}
+    except Exception as exc:
+        logger.warning("_inject_context Groq call failed: %s — using substituted params", exc)
+    return {**step, "params": substituted_params}
+
+
+def _step_to_intent(step: dict) -> dict:
+    """Convert a plan step dict into an Aria routing intent dict."""
+    params = step.get("params", {})
+    return {
+        "type": step["intent_type"],
+        "query": params.get("query") or step["description"],
+        "url": params.get("url", ""),
+        "instructions": "",
+        "app_name": params.get("app_name", ""),
+        "contact": "",
+        "site_name": params.get("site_name", ""),
+        "browser_goal": params.get("browser_goal", step["description"]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Retry — alternative approach generation
+# ---------------------------------------------------------------------------
+
+_RETRY_SYSTEM = (
+    "You are regenerating a failed Aria task step with a meaningfully different approach.\n"
+    "Return ONLY a single JSON step object (not an array).\n"
+    "Allowed intent_type values: "
+    "browser_task, knowledge, web_search, jobs, apply, app_control, navigate, media\n"
+    "Try a different site, different phrasing, or different method — not a blind repeat."
+)
+
+
+def _generate_retry_step(step: dict, failure_reason: str, attempt: int) -> dict | None:
+    """
+    Generate a new variant of step with a different approach.
+    Preserves id, result_key, depends_on from the original step.
+    Returns None on failure (caller retries with original params).
+    """
+    try:
+        client = _get_client()
+        resp = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": _RETRY_SYSTEM},
+                {"role": "user", "content": (
+                    f"Failed step (attempt {attempt}):\n{json.dumps(step, indent=2)}\n\n"
+                    f"Failure reason: {failure_reason}\n\n"
+                    "Generate a different approach for the same goal."
+                )},
+            ],
+            temperature=0.3,
+            max_tokens=250,
+        )
+        raw = _strip_fences(resp.choices[0].message.content)
+        revised = json.loads(raw)
+        if not isinstance(revised, dict):
+            return None
+        if revised.get("intent_type") not in _KNOWN_INTENT_TYPES:
+            return None
+        return {
+            **revised,
+            "id": step["id"],
+            "result_key": step["result_key"],
+            "depends_on": step.get("depends_on", []),
+        }
+    except Exception as exc:
+        logger.error("_generate_retry_step failed: %s", exc)
+        return None
