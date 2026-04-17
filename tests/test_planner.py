@@ -185,3 +185,77 @@ def test_validate_steps_missing_depends_on():
          "params": {}, "result_key": "r2", "depends_on": []},
     ]
     assert planner._validate_steps(steps) is None
+
+
+def _make_groq_response(content: str):
+    msg = MagicMock()
+    msg.content = content
+    choice = MagicMock()
+    choice.message = msg
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+_VALID_STEPS_JSON = json.dumps([
+    {"id": 1, "description": "Search Kayak for flights",
+     "intent_type": "browser_task",
+     "params": {"browser_goal": "find cheap flights NYC"},
+     "result_key": "flight_result", "depends_on": []},
+    {"id": 2, "description": "Book the flight",
+     "intent_type": "browser_task",
+     "params": {"browser_goal": "book flight: {{flight_result}}"},
+     "result_key": "booking_result", "depends_on": [1]},
+])
+
+
+def test_generate_plan_valid():
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_groq_response(_VALID_STEPS_JSON)
+    with patch("planner._get_client", return_value=mock_client):
+        result = planner.generate_plan("find flights and book cheapest")
+    assert result is not None
+    assert len(result) == 2
+    assert result[0]["intent_type"] == "browser_task"
+
+
+def test_generate_plan_returns_none_on_invalid_json():
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_groq_response("not json at all")
+    with patch("planner._get_client", return_value=mock_client):
+        result = planner.generate_plan("whatever")
+    assert result is None
+
+
+def test_generate_plan_returns_none_on_bad_intent():
+    bad = json.dumps([
+        {"id": 1, "description": "d", "intent_type": "BOGUS",
+         "params": {}, "result_key": "r1", "depends_on": []},
+        {"id": 2, "description": "d", "intent_type": "browser_task",
+         "params": {}, "result_key": "r2", "depends_on": []},
+    ])
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_groq_response(bad)
+    with patch("planner._get_client", return_value=mock_client):
+        result = planner.generate_plan("whatever")
+    assert result is None
+
+
+def test_revise_plan_valid():
+    original = json.loads(_VALID_STEPS_JSON)
+    revised_json = json.dumps([
+        {"id": 1, "description": "Search Google Flights",
+         "intent_type": "browser_task",
+         "params": {"browser_goal": "find cheap flights NYC on Google Flights"},
+         "result_key": "flight_result", "depends_on": []},
+        {"id": 2, "description": "Book the flight",
+         "intent_type": "browser_task",
+         "params": {"browser_goal": "book flight: {{flight_result}}"},
+         "result_key": "booking_result", "depends_on": [1]},
+    ])
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_groq_response(revised_json)
+    with patch("planner._get_client", return_value=mock_client):
+        result = planner.revise_plan(original, "use Google Flights instead of Kayak")
+    assert result is not None
+    assert "Google Flights" in result[0]["description"]
