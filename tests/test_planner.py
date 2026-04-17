@@ -93,3 +93,10 @@ def test_memory_store_and_get_last_plan(tmp_path, monkeypatch):
     assert loaded["goal"] == "g"
     assert loaded["results"] == {"k": "v"}
     assert loaded["current_step"] == 1
+
+    # Simulate restart: reload memory module to clear in-memory session and re-read from DB
+    importlib.reload(memory)
+    loaded_after_restart = memory.get_last_plan()
+    assert loaded_after_restart is not None
+    assert loaded_after_restart["goal"] == "g"
+    assert loaded_after_restart["results"] == {"k": "v"}
