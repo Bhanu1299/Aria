@@ -368,3 +368,185 @@ def _generate_retry_step(step: dict, failure_reason: str, attempt: int) -> dict 
     except Exception as exc:
         logger.error("_generate_retry_step failed: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Execution helpers
+# ---------------------------------------------------------------------------
+
+def _speak_plan(steps: list[dict], speaker) -> None:
+    """Read the plan aloud."""
+    parts = [f"Step {s['id']}: {s['description']}" for s in steps]
+    speaker.say("Here's my plan: " + ". ".join(parts) + ". Should I go ahead?")
+
+
+def _listen_reply(voice_capture, transcriber, max_seconds: int = 8) -> str:
+    """Record and transcribe a short user reply. Returns '' on error."""
+    wav = voice_capture.record_once(max_seconds=max_seconds)
+    if wav is None:
+        return ""
+    try:
+        return transcriber.transcribe(wav).strip()
+    except Exception as exc:
+        logger.error("_listen_reply transcription failed: %s", exc)
+        return ""
+
+
+def _save_ctx(ctx: PlanContext) -> None:
+    """Persist plan context for restart recovery. Swallows errors."""
+    try:
+        memory.store_last_plan(ctx.to_dict())
+    except Exception as exc:
+        logger.warning("_save_ctx failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Execution loop
+# ---------------------------------------------------------------------------
+
+def execute_plan(
+    ctx: PlanContext,
+    speaker,
+    voice_capture,
+    transcriber,
+    handle_intent_fn,
+) -> str:
+    """
+    Execute all steps in ctx sequentially.
+    - Injects context from previous steps into each step's params.
+    - Narrates status between steps.
+    - Retries up to _MAX_RETRIES times with different approaches on failure.
+    - After all retries exhausted: asks user to skip / stop / give alternative.
+    Returns final spoken summary string.
+    """
+    from router import route as _route
+
+    completed: list[str] = []
+
+    for i, step in enumerate(ctx.steps):
+        ctx.current_step = step["id"]
+        ctx.retry_count = 0
+        current_step = _inject_context(step, ctx.results)
+        result: str | None = None
+        failure_reason = ""
+        succeeded = False
+
+        for attempt in range(1, _MAX_RETRIES + 1):
+            ctx.retry_count = attempt
+            _save_ctx(ctx)
+            try:
+                intent = _step_to_intent(current_step)
+                result = handle_intent_fn(intent, current_step["description"])
+                if _is_failure(result):
+                    failure_reason = result or "empty result"
+                    logger.warning("Step %d attempt %d failed: %s",
+                                   step["id"], attempt, failure_reason)
+                    if attempt < _MAX_RETRIES:
+                        retry_step = _generate_retry_step(current_step, failure_reason, attempt)
+                        if retry_step:
+                            current_step = _inject_context(retry_step, ctx.results)
+                    continue
+                succeeded = True
+                break
+            except Exception as exc:
+                failure_reason = str(exc)
+                logger.error("Step %d attempt %d exception: %s", step["id"], attempt, exc)
+                if attempt < _MAX_RETRIES:
+                    retry_step = _generate_retry_step(current_step, failure_reason, attempt)
+                    if retry_step:
+                        current_step = _inject_context(retry_step, ctx.results)
+
+        if not succeeded:
+            speaker.say(
+                f"I tried {_MAX_RETRIES} approaches and got stuck on step {step['id']}: "
+                f"{step['description']}. "
+                "Say skip to move on, stop to abort, or give me a different instruction."
+            )
+            reply = _listen_reply(voice_capture, transcriber, max_seconds=8).lower()
+
+            if any(w in reply for w in ("stop", "abort")):
+                done_str = (", ".join(completed)) if completed else "nothing"
+                return f"Stopped. Completed so far: {done_str}."
+
+            if any(w in reply for w in ("skip", "next", "move on", "forget it")):
+                speaker.say(f"Skipping step {step['id']}.")
+                continue
+
+            if reply:
+                speaker.say("Got it, trying that instead.")
+                try:
+                    alt_intent = _route(reply)
+                    result = handle_intent_fn(alt_intent, reply)
+                    if result and not _is_failure(result):
+                        succeeded = True
+                except Exception as exc:
+                    logger.error("Alternative instruction failed: %s", exc)
+
+            if not succeeded:
+                done_str = (", ".join(completed)) if completed else "nothing"
+                return (
+                    f"I got stuck on step {step['id']} and couldn't recover. "
+                    f"Completed: {done_str}."
+                )
+
+        ctx.results[step["result_key"]] = result or ""
+        completed.append(step["description"])
+        _save_ctx(ctx)
+
+        if i < len(ctx.steps) - 1:
+            next_step = ctx.steps[i + 1]
+            speaker.say(
+                f"Done. Moving to step {next_step['id']}: {next_step['description']}."
+            )
+
+    all_results = " ".join(v for v in ctx.results.values() if v)
+    return f"All done. {all_results}" if all_results else "All steps completed."
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def run(
+    goal: str,
+    speaker,
+    voice_capture,
+    transcriber,
+    handle_intent_fn,
+) -> str | None:
+    """
+    Full planner flow: generate → confirm (with optional one revision) → execute.
+
+    Returns:
+      str  — final spoken result to say to the user
+      None — plan generation failed or user declined; caller should fall back
+             to single-intent routing
+    """
+    try:
+        steps = generate_plan(goal)
+        if steps is None:
+            logger.warning("Plan generation failed for %r — caller should fall back", goal)
+            return None
+
+        _speak_plan(steps, speaker)
+        reply = _listen_reply(voice_capture, transcriber)
+
+        if any(w in reply.lower() for w in _STOP_WORDS):
+            return "Got it, I won't proceed with that."
+
+        if not any(w in reply.lower() for w in _YES_WORDS):
+            # Treat as revision request (allowed once)
+            revised = revise_plan(steps, reply)
+            if revised:
+                steps = revised
+            _speak_plan(steps, speaker)
+            reply2 = _listen_reply(voice_capture, transcriber)
+            if not any(w in reply2.lower() for w in _YES_WORDS):
+                return "Got it, let me know when you're ready."
+
+        ctx = PlanContext(goal=goal, steps=steps)
+        return execute_plan(ctx, speaker, voice_capture, transcriber, handle_intent_fn)
+
+    except Exception as exc:
+        logger.error("planner.run failed: %s", exc)
+        return None
