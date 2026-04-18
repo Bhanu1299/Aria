@@ -1,5 +1,121 @@
 # Session Log
 
+## Session: 2026-04-18 — Phase 3G: DOM-First Browser Redesign
+
+**Problem solved:** screenshot→vision loops caused stuck coordinate-click failures.
+Real case: "add AirPods Pro to cart" failed 3 times across planner retries.
+
+**What was built:**
+- `dom_browser.get_dom_snapshot()` — visible interactive elements as compact text
+- `_dom_decide()` + `_dom_research_decide()` — Groq text model (llama-3.3-70b-versatile)
+- `execute()` updated — selector-based click/click_text/type; coordinate path kept for vision fallback
+- Both loops wired: DOM path primary, vision fallback if `interactive_count < 5`
+- 22 new tests, 96 total passing
+
+**Branch:** `feature/dom-first-browser` — ready to merge
+
+---
+
+## Session: 2026-04-17 — Phase 3E IMPLEMENTED: General Browser Research
+
+**What was done:**
+- `requirements.txt` — added `anthropic`
+- `config.py` — added `ANTHROPIC_API_KEY`
+- `.env.example` — added `ANTHROPIC_API_KEY=` entry
+- `computer_use.py` — added `_CU_RESEARCH_SYSTEM`, `_VALID_RESEARCH_ACTIONS`, `_research_decide()`, `_claude_research_decide()`, `research_loop()`
+- `router.py` — added `_BROWSER_TASK_RE`, browser_task pre-check in `route()`, `browser_task` in classifier schema/rules/valid-types, `browser_task` case in `_build_intent()`
+- `main.py` — added `import computer_use`, browser_task handler in `_handle_intent()`, capability string updated
+
+**How it works:**
+- Say "Check Hertz car prices…" or "Compare flights…" → routes to `browser_task`
+- Groq Llama-4-Scout drives navigation/extraction by default (free)
+- If Groq stucks twice with zero data → switches to Claude claude-sonnet-4-6 (cost-capped at 20 steps)
+
+**To verify:**
+1. `pip install anthropic`
+2. Say: "Check Hertz car prices from April 24th to 30th, cheapest car"
+3. Watch logs for `research_loop done at step N`
+
+---
+
+## Session: 2026-04-17 — Phase 3E Planning (earlier)
+
+Full plan saved at: `/Users/bhanuteja/.claude/plans/partitioned-puzzling-blanket.md`
+
+### The feature
+Add `research_loop()` to Aria — voice-triggered general-purpose browser research.
+"Check Hertz prices for each day this week" → Aria browses, extracts, speaks results.
+
+### Architecture decision: Hybrid (Groq-first, Claude fallback)
+- Groq Llama-4-Scout runs by default (free, fast)
+- If Groq gets stuck 2x in a row with zero data → switch to Claude claude-sonnet-4-6
+- Claude capped at 20 steps per task (cost control, ~$0.15–0.25 per fallback)
+- ANTHROPIC_API_KEY needed in .env for fallback to work
+
+### Files to change (nothing written yet)
+1. `requirements.txt` — add `anthropic`
+2. `config.py` — add `ANTHROPIC_API_KEY` constant (after GROQ_API_KEY)
+3. `computer_use.py` — add `_CU_RESEARCH_SYSTEM`, `_VALID_RESEARCH_ACTIONS`,
+   `_research_decide()`, `_claude_research_decide()`, `_CLAUDE_MAX_STEPS=20`,
+   `research_loop()` — NO changes to existing functions
+4. `router.py` — add `_BROWSER_TASK_RE` regex, `browser_task` pre-check in route(),
+   extend `_CLASSIFY_SYSTEM` + valid types + `_build_intent()`
+5. `main.py` — add `import computer_use`, add `browser_task` handler in `_handle_intent()`
+
+### New actions in research_loop (vs current form-filling loop)
+- `navigate` → go to any URL mid-task
+- `extract` → record label+value data from current page
+- `done` → return spoken summary
+- Groq stuck → Claude fallback → Groq stuck again → partial-data return
+
+### To start next session
+1. Read plan: `cat /Users/bhanuteja/.claude/plans/partitioned-puzzling-blanket.md`
+2. Use `superpowers:executing-plans` skill
+3. Implement the 5 files in order (requirements → config → computer_use → router → main)
+4. Test: say "Check Hertz prices April 24 to 30 monthly rental cheapest car each day"
+
+---
+
+## Session: 2026-04-04 — Phase 3D Session 2
+
+**What we built:**
+
+### Part 1 — Bug Fixes
+- `skills/calculate/__init__.py` — % symbol pre-processing (`"15% of 320"` → `"15 * 0.01 * 320"`); added "what is"/"whats" triggers
+- `applicator.py` — expanded confirmation words: yes/submit/go ahead/do it/yes submit/send it/yep/yeah/sure/confirm
+- `router.py` — added `_RECALL_RE` pre-check; "what was my last search" routes to "recall" intent (no LLM call)
+- `main.py` — recall intent handler reads memory.get_last_search()
+
+### Part 2 — Wake Word
+- `requirements.txt` — added openwakeword, pyaudio
+- `wake_word.py` (NEW) — WakeWordListener; PyAudio 1280 frames/16kHz; hey_jarvis + alexa models (phonetic proxies); threshold 0.5; graceful fallback if not installed; guards against concurrent commands
+- `main.py` — extracted handle_command(transcript) from _process_release(); wake word path records 3s then transcribes; WakeWordListener started as daemon in main()
+
+### Part 3 — Scenes
+- `scenes.json` (NEW) — Daddy's Home, Coding Time, Let's Eat, Ship It
+- `scene_executor.py` (NEW) — load_scenes(), match_scene(), run_scene(); concurrent open_app/open_url; all action handlers
+- `router.py` — scene match added as PRIORITY 1 in route() (before all other checks)
+- `main.py` — scene intent handler runs run_scene() on daemon thread
+
+### Part 4 — Personality
+- `summarizer.py` — _WEB_SYSTEM_PROMPT + _KNOWLEDGE_SYSTEM_PROMPT: Aria personality, Jarvis competence, dark humor rules; identity injection preserved
+- `briefing.py` — _BRIEFING_PROMPT: Jarvis delivery style
+- `router.py` — _CLASSIFY_SYSTEM: personality intro; routing rules preserved
+- `jobs.py` — query parser prompt: personality header; JSON-only preserved
+- `mac_controller.py` — _SUB_CLASSIFY_SYSTEM: personality intro; full JSON schema preserved
+
+### Part 5 — Speed + Logs
+- `memory.py` — get_cached_jobs() / store_cached_jobs(): 30-min in-memory TTL cache
+- `main.py` — cache check in jobs handler; log suppression (basicConfig WARNING; all noisy loggers → ERROR; OpenSSL warning suppressed)
+
+**Next steps:**
+1. `pip install openwakeword pyaudio`
+2. `python main.py --login linkedin`
+3. Run 10-item verification checklist
+4. Session 3: Channel adapter layer (Telegram, iMessage, Discord)
+
+---
+
 ## Session: 2026-04-04 — Phase 3D Session 1
 
 **What we built:**
