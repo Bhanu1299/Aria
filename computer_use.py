@@ -40,7 +40,7 @@ _ACTION_SLEEP = 1.2  # base — actual sleep randomised via _human_sleep()
 
 _CLIENT: Groq | None = None
 _VALID_ACTIONS = {"click", "type", "scroll", "key", "confirm", "stuck", "needs_input"}
-_VALID_GENERAL_ACTIONS = {"click", "type", "scroll", "key", "navigate", "extract", "confirm", "needs_input", "done", "stuck"}
+_VALID_GENERAL_ACTIONS = {"click", "click_text", "type", "scroll", "key", "navigate", "extract", "confirm", "needs_input", "done", "stuck"}
 _VALID_DOM_FORM_ACTIONS = {"click", "click_text", "type", "scroll", "key", "confirm", "stuck", "needs_input"}
 _VALID_DOM_RESEARCH_ACTIONS = _VALID_GENERAL_ACTIONS | {"click_text"}
 _DOM_TEXT_MODEL = "llama-3.3-70b-versatile"
@@ -591,21 +591,31 @@ def execute(action: dict) -> None:
 
     def _do(page):
         if act == "click":
-            page.mouse.click(int(action.get("x", 0)), int(action.get("y", 0)))
+            if "selector" in action:
+                page.locator(action["selector"]).first.click(timeout=3000)
+            else:
+                page.mouse.click(int(action.get("x", 0)), int(action.get("y", 0)))
+        elif act == "click_text":
+            page.locator(f'text="{action.get("text", "")}"').first.click(timeout=3000)
         elif act == "type":
-            # Type at cursor position — do NOT select-all first, as that
-            # destroys pre-filled values in LinkedIn Easy Apply fields.
-            # Per-character delay to mimic human keystroke timing.
-            for char in action.get("text", ""):
-                page.keyboard.type(char)
-                time.sleep(random.uniform(0.03, 0.12))
+            if "selector" in action:
+                page.locator(action["selector"]).first.fill(
+                    action.get("text", ""), timeout=3000
+                )
+            else:
+                # Type at cursor position — do NOT select-all first, as that
+                # destroys pre-filled values in LinkedIn Easy Apply fields.
+                # Per-character delay to mimic human keystroke timing.
+                for char in action.get("text", ""):
+                    page.keyboard.type(char)
+                    time.sleep(random.uniform(0.03, 0.12))
         elif act == "scroll":
             direction = action.get("direction", "down")
             amount = int(action.get("amount", 400))
             page.mouse.wheel(0, amount if direction == "down" else -amount)
         elif act == "key":
             page.keyboard.press(action.get("key", "Tab"))
-        elif act in ("confirm", "stuck"):
+        elif act in ("confirm", "stuck", "navigate", "extract", "done", "needs_input"):
             pass  # caller handles these
         else:
             raise ValueError(f"Unknown action type: {act!r}")
