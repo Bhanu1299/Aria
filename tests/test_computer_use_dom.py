@@ -187,3 +187,73 @@ def test_execute_type_without_selector_uses_keyboard():
         with patch("time.sleep"):
             computer_use.execute({"action": "type", "text": "hi"})
     assert mock_page.keyboard.type.call_count == 2  # one call per character
+
+
+def test_run_loop_uses_dom_path_when_elements_present():
+    rich_snapshot = "URL: https://example.com\nTITLE: Test\n\nINTERACTIVE[10]:\n" + \
+        "\n".join(f"[{i}] BUTTON #btn{i} \"Button {i}\"" for i in range(10)) + \
+        "\n\nPAGE TEXT:\nsome text"
+
+    with patch("dom_browser.get_dom_snapshot", return_value=(rich_snapshot, 10)), \
+         patch("computer_use._dom_decide", return_value={"action": "confirm"}) as mock_dom, \
+         patch("computer_use.decide") as mock_vision, \
+         patch("computer_use.take_screenshot", return_value="fakeb64"), \
+         patch("computer_use.execute"), \
+         patch("computer_use._human_sleep"):
+        status, _ = computer_use.run_loop("fill a form", {}, max_steps=5)
+
+    assert status == "confirm"
+    mock_dom.assert_called()
+    mock_vision.assert_not_called()
+
+
+def test_run_loop_falls_back_to_vision_on_thin_dom():
+    thin_snapshot = "URL: https://example.com\nTITLE: CAPTCHA\n\nINTERACTIVE[2]:\n[0] BUTTON #v \"Verify\"\n\nPAGE TEXT:\nverify"
+
+    with patch("dom_browser.get_dom_snapshot", return_value=(thin_snapshot, 2)), \
+         patch("computer_use.decide", return_value={"action": "confirm"}) as mock_vision, \
+         patch("computer_use._dom_decide") as mock_dom, \
+         patch("computer_use.take_screenshot", return_value="fakeb64"), \
+         patch("dom_browser.save_debug_screenshot"), \
+         patch("computer_use.execute"), \
+         patch("computer_use._human_sleep"):
+        status, _ = computer_use.run_loop("fill a form", {}, max_steps=5)
+
+    assert status == "confirm"
+    mock_vision.assert_called()
+    mock_dom.assert_not_called()
+
+
+def test_research_loop_uses_dom_path_when_elements_present():
+    rich_snapshot = "URL: https://amazon.com\nTITLE: Amazon\n\nINTERACTIVE[10]:\n" + \
+        "\n".join(f"[{i}] BUTTON #btn{i} \"Btn {i}\"" for i in range(10)) + \
+        "\n\nPAGE TEXT:\nAmazon homepage"
+
+    with patch("dom_browser.get_dom_snapshot", return_value=(rich_snapshot, 10)), \
+         patch("computer_use._dom_research_decide",
+               return_value={"action": "done", "summary": "Task complete."}) as mock_dom, \
+         patch("computer_use._research_decide") as mock_vision, \
+         patch("computer_use.take_screenshot", return_value="fakeb64"), \
+         patch("computer_use._human_sleep"):
+        result = computer_use.research_loop("find airpods price")
+
+    assert result == "Task complete."
+    mock_dom.assert_called()
+    mock_vision.assert_not_called()
+
+
+def test_research_loop_falls_back_to_vision_on_thin_dom():
+    thin_snapshot = "URL: https://example.com\nTITLE: CAPTCHA\n\nINTERACTIVE[1]:\n[0] BUTTON #v \"Verify\"\n\nPAGE TEXT:\nverify"
+
+    with patch("dom_browser.get_dom_snapshot", return_value=(thin_snapshot, 1)), \
+         patch("computer_use._research_decide",
+               return_value={"action": "done", "summary": "Verified."}) as mock_vision, \
+         patch("computer_use._dom_research_decide") as mock_dom, \
+         patch("computer_use.take_screenshot", return_value="fakeb64"), \
+         patch("dom_browser.save_debug_screenshot"), \
+         patch("computer_use._human_sleep"):
+        result = computer_use.research_loop("handle captcha")
+
+    assert result == "Verified."
+    mock_vision.assert_called()
+    mock_dom.assert_not_called()
