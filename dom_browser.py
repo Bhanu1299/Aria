@@ -227,7 +227,12 @@ _DOM_EXTRACT_JS = """
         } else if (el.getAttribute('aria-label')) {
             selector = '[aria-label="' + el.getAttribute('aria-label').replace(/"/g, '\\"') + '"]';
         } else {
-            selector = el.tagName.toLowerCase();
+            const tag = el.tagName.toLowerCase();
+            const siblings = el.parentElement
+                ? Array.from(el.parentElement.querySelectorAll(':scope > ' + tag))
+                : [];
+            const idx = siblings.indexOf(el) + 1;
+            selector = tag + ':nth-of-type(' + idx + ')';
         }
 
         let text = '';
@@ -259,10 +264,14 @@ def get_dom_snapshot() -> tuple[str, int]:
         try:
             url = page.url
             title = page.title()
+        except Exception as exc:
+            logger.warning("get_dom_snapshot page access failed: %s", exc)
+            return ("", 0)
+        try:
             elements = page.evaluate(_DOM_EXTRACT_JS)
             body_text = page.evaluate("(document.body.innerText || '').slice(0, 800)")
         except Exception as exc:
-            logger.warning("get_dom_snapshot JS failed: %s", exc)
+            logger.warning("get_dom_snapshot JS failed on %s: %s", url, exc)
             return ("", 0)
 
         lines = [f"URL: {url}", f"TITLE: {title}", "", f"INTERACTIVE[{len(elements)}]:"]
@@ -276,7 +285,7 @@ def get_dom_snapshot() -> tuple[str, int]:
 
     try:
         result = agent_browser.run(_do)
-        return result if result else ("", 0)
+        return result if result is not None else ("", 0)
     except Exception as exc:
         logger.warning("get_dom_snapshot failed: %s", exc)
         return ("", 0)
