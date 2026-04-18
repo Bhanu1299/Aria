@@ -42,6 +42,7 @@ _CLIENT: Groq | None = None
 _VALID_ACTIONS = {"click", "type", "scroll", "key", "confirm", "stuck", "needs_input"}
 _VALID_GENERAL_ACTIONS = {"click", "type", "scroll", "key", "navigate", "extract", "confirm", "needs_input", "done", "stuck"}
 _VALID_DOM_FORM_ACTIONS = {"click", "click_text", "type", "scroll", "key", "confirm", "stuck", "needs_input"}
+_VALID_DOM_RESEARCH_ACTIONS = _VALID_GENERAL_ACTIONS | {"click_text"}
 _DOM_TEXT_MODEL = "llama-3.3-70b-versatile"
 
 _CU_GENERAL_SYSTEM = """You control a Chrome browser at 1280x900 resolution.
@@ -240,7 +241,6 @@ def _dom_research_decide(
     Groq text model decision for research loop (DOM-first path).
     Never raises — returns {"action": "stuck"} on any error.
     """
-    _VALID_DOM_RESEARCH_ACTIONS = _VALID_GENERAL_ACTIONS | {"click_text"}
     user_text = (
         f"Step {step} of {max_steps}.\n\n"
         f"Goal: {goal}\n\n"
