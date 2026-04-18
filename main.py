@@ -31,12 +31,35 @@ import signal
 import sys
 import time
 import threading
+import warnings
 from typing import Optional
 
+# ---------------------------------------------------------------------------
+# Log suppression — silence all noisy third-party libraries before they load.
+# Only keep: startup lines, [Aria] lines, genuine ERROR/WARNING output.
+# ---------------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="[%(name)s] %(levelname)s: %(message)s",
 )
+# Silence specific noisy loggers
+for _noisy_logger in [
+    "httpx", "httpcore",
+    "faster_whisper", "ctranslate2",
+    "browser", "agent_browser",
+    "jobs", "briefing", "memory",
+    "skills.skill_loader",
+    "menubar",
+    "urllib3",
+    "playwright",
+    "asyncio",
+    "scene_executor",
+]:
+    logging.getLogger(_noisy_logger).setLevel(logging.ERROR)
+
+# Suppress urllib3 / OpenSSL warning
+warnings.filterwarnings("ignore", ".*OpenSSL.*")
+warnings.filterwarnings("ignore", ".*NotOpenSSLWarning.*")
 
 import config
 from transcriber import Transcriber
@@ -48,6 +71,8 @@ from summarizer import summarize, answer_knowledge
 from menubar import AriaMenuBar
 from hotkey import HotkeyListener
 from app_launcher import open_app
+from wake_word import WakeWordListener
+import scene_executor
 import mac_controller
 import media
 import briefing
@@ -55,6 +80,8 @@ import jobs
 import memory
 import tracker
 import agent_browser
+import computer_use
+import planner
 # vision is imported lazily inside _vision_fallback() to keep it off the
 # startup critical path — Playwright + ctranslate2 + vision all loading at
 # once on Python 3.9 macOS can trigger OpenMP duplicate-lib abort()
@@ -106,49 +133,70 @@ def on_press():
 
     if _processing.is_set():
         return
+    # Mark processing NOW so wake word can't fire while we're recording
     _processing.set()
     menubar.set_state("LISTENING")
     voice_capture.start_recording()
     _recording_active.set()  # set AFTER start_recording() returns — prevents on_release racing in
 
 
-def _process_release():
-    """Full pipeline — runs on a dedicated thread, never blocks the hotkey thread."""
-    try:
-        wav_path = voice_capture.stop_recording()
-        question = transcriber_instance.transcribe(wav_path)
+def handle_command(transcript: str) -> None:
+    """
+    Full command pipeline. Called by hotkey path and wake word path.
+    transcript is always a real transcribed string — WakeWordListener handles
+    its own recording + transcription before calling here.
 
-        # Treat empty or noise-only transcripts as silence
-        # Whisper sometimes outputs ". . .", "...", "[BLANK_AUDIO]" etc. for silence
-        import re as _re
-        _cleaned = _re.sub(r'[\s\.\,\!\?\-\[\]]+', '', question)
+    Never raises. Guards against concurrent execution via _processing event.
+    """
+    if _processing.is_set():
+        return   # already handling a command — ignore concurrent trigger
+    _processing.set()
+
+    try:
+        # Validate — reject silence / noise
+        _cleaned = _re.sub(r'[\s\.\,\!\?\-\[\]]+', '', transcript)
         _SINGLE_WORD_COMMANDS = {
             "mute", "unmute", "pause", "stop", "skip", "next",
             "resume", "play", "screenshot",
         }
-        _is_single_word = question.lower().strip() in _SINGLE_WORD_COMMANDS
-        if not _cleaned or (len(question.split()) < 2 and not _is_single_word):
+        _is_single_word = transcript.lower().strip() in _SINGLE_WORD_COMMANDS
+        if not _cleaned or (len(transcript.split()) < 2 and not _is_single_word):
             speaker.say("I didn't catch that, please try again.")
             menubar.set_state("IDLE")
             _processing.clear()
             return
 
-        print(f"[Aria] Transcribed: {question!r}")
+        print(f"[Aria] Transcribed: {transcript!r}")
         menubar.set_state("THINKING")
 
         # Pre-check: ordinal job follow-ups ("tell me more about the second job")
-        followup = _check_jobs_followup(question)
+        followup = _check_jobs_followup(transcript)
         if followup is not None:
             print(f"[Aria] Jobs follow-up: {followup!r}")
             answer = followup
+        elif planner.is_multi_step(transcript):
+            print(f"[Aria] Multi-step detected: {transcript!r}")
+            answer = planner.run(
+                goal=transcript,
+                speaker=speaker,
+                voice_capture=voice_capture,
+                transcriber=transcriber_instance,
+                handle_intent_fn=_handle_intent,
+            )
+            if answer is None:
+                # Plan generation failed — fall back to single-intent routing
+                print("[Aria] Planner returned None — falling back to single-intent routing")
+                intent = route(transcript)
+                print(f"[Aria] Intent (fallback): type={intent['type']!r}  query={intent['query']!r}")
+                answer = _handle_intent(intent, transcript)
         else:
-            # Step 1 — classify and route
-            intent = route(question)
+            intent = route(transcript)
             print(f"[Aria] Intent: type={intent['type']!r}  query={intent['query']!r}")
-            answer = _handle_intent(intent, question)
+            answer = _handle_intent(intent, transcript)
 
-        print(f"[Aria] Answer: {answer!r}")
-        speaker.say(answer)
+        print(f"[Aria] Answer: {answer[:80]!r}")
+        if answer:
+            speaker.say(answer)
 
         menubar.set_state("DONE")
         time.sleep(1)
@@ -161,6 +209,31 @@ def _process_release():
             speaker.say("Something went wrong, please try again.")
         except Exception as say_err:
             print(f"[Aria] Error speaking error message: {say_err}")
+        menubar.set_state("IDLE")
+        _processing.clear()
+
+
+def _process_release():
+    """
+    Hotkey release handler — transcribes then calls handle_command().
+    Note: _processing is already set by on_press(). handle_command() will
+    detect it is set and skip its own set() — but will still run the pipeline
+    and clear it at the end. We clear it here only on early error.
+    """
+    try:
+        wav_path = voice_capture.stop_recording()
+        question = transcriber_instance.transcribe(wav_path)
+        # handle_command checks _processing.is_set() before setting it.
+        # Since on_press already set it, temporarily clear so handle_command
+        # can proceed (it will re-set immediately).
+        _processing.clear()
+        handle_command(question)
+    except Exception as e:
+        print(f"[Aria] Transcription error: {e}")
+        try:
+            speaker.say("Something went wrong, please try again.")
+        except Exception:
+            pass
         menubar.set_state("IDLE")
         _processing.clear()
 
@@ -251,6 +324,7 @@ def _get_capability_response() -> str:
         "control media playback on Apple Music and YouTube, adjust Mac system settings by voice, "
         "give you a morning briefing with weather, calendar, email, and news, "
         "search for jobs on LinkedIn and Indeed, help you apply to jobs and track your applications, "
+        "do multi-step browser research like comparing prices, checking rental availability, or finding deals, "
         "check your system info like battery and wifi, take notes, set reminders, "
         "and run calculations. Just tell me what you need."
     )
@@ -259,6 +333,15 @@ def _get_capability_response() -> str:
 def _handle_intent(intent: dict, original_question: str) -> str:
     """Dispatch to the correct handler based on intent type."""
     intent_type = intent["type"]
+
+    # --- Scene: execute macro, scene's speak action handles TTS ---
+    if intent_type == "scene":
+        threading.Thread(
+            target=scene_executor.run_scene,
+            args=(intent["_scene"],),
+            daemon=True,
+        ).start()
+        return ""   # scene's speak action handles TTS
 
     # --- Knowledge: answer directly from LLM, no browser ---
     if intent_type == "knowledge":
@@ -354,13 +437,19 @@ def _handle_intent(intent: dict, original_question: str) -> str:
         speaker.say("Getting your briefing, one moment.")
         return briefing.build_briefing()
 
-    # --- Jobs: LinkedIn + Indeed search via Google → vision pipeline ---
+    # --- Jobs: LinkedIn + Indeed search (with 30-min cache) ---
     if intent_type == "jobs":
         print(f"[Aria] Job search: {intent['query']!r}")
+        cached = memory.get_cached_jobs(intent["query"])
+        if cached is not None:
+            print("[Aria] Job search: returning cached results")
+            memory.store_jobs(cached)
+            return jobs.format_spoken_results(cached)
         speaker.say("Searching for jobs, one moment.")
         results = jobs.search_jobs(intent["query"])
         memory.store_jobs(results)
         memory.store_last_search(intent["query"])
+        memory.store_cached_jobs(intent["query"], results)
         return jobs.format_spoken_results(results)
 
     # --- Apply: fill job application in visible browser → voice confirm → submit ---
@@ -407,6 +496,47 @@ def _handle_intent(intent: dict, original_question: str) -> str:
                 f"I had trouble completing the application for {job['title']} "
                 f"at {job['company']}. The browser is open so you can finish manually."
             )
+
+    # --- Browser task: general-purpose browser loop (Groq-first, Claude fallback) ---
+    if intent_type == "browser_task":
+        goal = intent.get("browser_goal") or intent.get("query", original_question)
+        print(f"[Aria] Browser task: {goal!r}")
+        speaker.say("On it.")
+
+        def _confirm(summary: str) -> bool:
+            speaker.say(summary)
+            wav = voice_capture.record_once(max_seconds=5)
+            if wav is None:
+                return False
+            reply = transcriber_instance.transcribe(wav).lower().strip()
+            _YES = {"yes", "yeah", "yep", "sure", "do it", "go ahead", "confirm", "proceed", "ok", "okay"}
+            return any(w in reply for w in _YES)
+
+        def _get_input(field: str) -> str | None:
+            speaker.say(f"I need {field}. Please say it now.")
+            wav = voice_capture.record_once(max_seconds=10)
+            if wav is None:
+                return None
+            return transcriber_instance.transcribe(wav).strip() or None
+
+        try:
+            answer = computer_use.research_loop(
+                goal=goal,
+                max_steps=80,
+                confirm_fn=_confirm,
+                input_fn=_get_input,
+            )
+        except Exception as exc:
+            logger.error("research_loop failed: %s", exc)
+            answer = "I ran into an error. Try again with more detail."
+        return answer
+
+    # --- Recall: read last job search from memory, no LLM call ---
+    if intent_type == "recall":
+        last = memory.get_last_search()
+        if last:
+            return f"Your last job search was: {last}."
+        return "I don't have a previous search stored yet. Try searching for jobs first."
 
     # --- Capability: hardcoded response, no LLM call ---
     if intent_type == "capability":
@@ -472,6 +602,14 @@ def main():
     # 7. Hotkey listener
     hotkey_listener = HotkeyListener(on_press_cb=on_press, on_release_cb=on_release)
     hotkey_listener.start()
+
+    # 8. Wake word listener (always-on; gracefully disabled if openwakeword missing)
+    wake_word_listener = WakeWordListener(
+        handle_command_fn=handle_command,
+        processing_event=_processing,
+        transcriber=transcriber_instance,
+    )
+    wake_word_listener.start()
 
     print("Aria ready. Hold ⌥ Space to ask a question.")
 
