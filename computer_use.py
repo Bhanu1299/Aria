@@ -644,14 +644,19 @@ def run_loop(
     _recovered_once = False
 
     for step in range(start_step, max_steps + 1):
-        b64 = take_screenshot()
-        if b64 is None:
-            logger.error("Screenshot failed at step %d — aborting loop", step)
-            return ("stuck", None)
+        snapshot, interactive_count = dom_browser.get_dom_snapshot()
+        _vision_mode = interactive_count < 5
 
-        dom_browser.save_debug_screenshot(f"step_{step:02d}")
-
-        action = decide(b64, goal, context_data, step, max_steps, history=history)
+        if _vision_mode:
+            b64 = take_screenshot()
+            if b64 is None:
+                logger.error("Screenshot failed at step %d — aborting loop", step)
+                return ("stuck", None)
+            dom_browser.save_debug_screenshot(f"step_{step:02d}")
+            action = decide(b64, goal, context_data, step, max_steps, history=history)
+        else:
+            b64 = None
+            action = _dom_decide(snapshot, goal, context_data, step, max_steps, history=history)
 
         if action["action"] == "confirm":
             return ("confirm", None)
@@ -701,6 +706,7 @@ def run_loop(
         history.append({
             "step": step,
             "action": action["action"],
+            "selector": action.get("selector"),
             "x": action.get("x"),
             "y": action.get("y"),
             "text": action.get("text"),
@@ -715,16 +721,27 @@ def run_loop(
 
         _human_sleep()
 
-        # Screenshot change detection — warn model if action had no visible effect
-        post_b64 = take_screenshot()
-        if post_b64 is not None:
-            pre_hash = hashlib.md5(b64.encode()).hexdigest()
-            post_hash = hashlib.md5(post_b64.encode()).hexdigest()
-            if pre_hash == post_hash:
+        # Change detection — warn model if action had no visible effect
+        if _vision_mode:
+            post_b64 = take_screenshot()
+            if post_b64 is not None:
+                pre_hash = hashlib.md5(b64.encode()).hexdigest()
+                post_hash = hashlib.md5(post_b64.encode()).hexdigest()
+                if pre_hash == post_hash:
+                    history.append({
+                        "step": step,
+                        "action": "no_change",
+                        "reason": "page did not visibly change after last action — try a different approach",
+                    })
+        else:
+            post_snapshot, _ = dom_browser.get_dom_snapshot()
+            pre_interactive = snapshot.split("PAGE TEXT:")[0]
+            post_interactive = post_snapshot.split("PAGE TEXT:")[0]
+            if pre_interactive == post_interactive:
                 history.append({
                     "step": step,
                     "action": "no_change",
-                    "reason": "page did not visibly change after last action — try a different approach",
+                    "reason": "page did not change after last action — try a different approach",
                 })
 
     logger.warning("run_loop hit max_steps=%d without confirm or stuck", max_steps)
@@ -761,12 +778,15 @@ def research_loop(
     _claude_steps_used = 0
 
     for step in range(1, max_steps + 1):
-        b64 = take_screenshot()
-        if b64 is None:
-            logger.error("research_loop screenshot failed at step %d", step)
-            return "I ran into a browser error while researching that."
+        snapshot, interactive_count = dom_browser.get_dom_snapshot()
+        _vision_mode = interactive_count < 5
 
-        dom_browser.save_debug_screenshot(f"research_step_{step:02d}")
+        if _vision_mode or _use_claude:
+            b64 = take_screenshot()
+            if b64 is None:
+                logger.error("research_loop screenshot failed at step %d", step)
+                return "I ran into a browser error while researching that."
+            dom_browser.save_debug_screenshot(f"research_step_{step:02d}")
 
         if _use_claude:
             if _claude_steps_used >= _CLAUDE_MAX_STEPS:
@@ -777,8 +797,10 @@ def research_loop(
                 return "I couldn't complete the research within the step budget."
             action = _claude_research_decide(b64, goal, step, max_steps, history, collected_data)
             _claude_steps_used += 1
-        else:
+        elif _vision_mode:
             action = _research_decide(b64, goal, step, max_steps, history, collected_data)
+        else:
+            action = _dom_research_decide(snapshot, goal, step, max_steps, history, collected_data)
 
         if action["action"] == "done":
             summary = action.get("summary", "").strip()
@@ -877,11 +899,12 @@ def research_loop(
                 return "I got stuck in a loop and couldn't complete the research."
 
         h_entry = {"step": step, "action": action["action"], "reason": action.get("reason", "")}
-        if action["action"] == "navigate":  h_entry["url"] = action.get("url", "")
-        elif action["action"] == "extract": h_entry["label"] = action.get("label", ""); h_entry["value"] = action.get("value", "")
-        elif action["action"] == "click":   h_entry["x"] = action.get("x"); h_entry["y"] = action.get("y")
-        elif action["action"] == "type":    h_entry["text"] = action.get("text", "")
-        elif action["action"] == "key":     h_entry["key"] = action.get("key", "")
+        if action["action"] == "navigate":     h_entry["url"] = action.get("url", "")
+        elif action["action"] == "extract":    h_entry["label"] = action.get("label", ""); h_entry["value"] = action.get("value", "")
+        elif action["action"] == "click":      h_entry["selector"] = action.get("selector"); h_entry["x"] = action.get("x"); h_entry["y"] = action.get("y")
+        elif action["action"] == "click_text": h_entry["text"] = action.get("text", "")
+        elif action["action"] == "type":       h_entry["selector"] = action.get("selector"); h_entry["text"] = action.get("text", "")
+        elif action["action"] == "key":        h_entry["key"] = action.get("key", "")
         history.append(h_entry)
 
         if action["action"] == "navigate":
@@ -919,14 +942,24 @@ def research_loop(
                 logger.warning("Step %d execute error: %s — continuing", step, exc)
             _human_sleep()
 
-            post_b64 = take_screenshot()
-            if post_b64 is not None:
-                pre_hash = hashlib.md5(b64.encode()).hexdigest()
-                post_hash = hashlib.md5(post_b64.encode()).hexdigest()
-                if pre_hash == post_hash:
+            if _vision_mode or _use_claude:
+                post_b64 = take_screenshot()
+                if post_b64 is not None:
+                    pre_hash = hashlib.md5(b64.encode()).hexdigest()
+                    post_hash = hashlib.md5(post_b64.encode()).hexdigest()
+                    if pre_hash == post_hash:
+                        history.append({
+                            "step": step, "action": "no_change",
+                            "reason": "page did not visibly change — try a different approach",
+                        })
+            else:
+                post_snapshot, _ = dom_browser.get_dom_snapshot()
+                pre_interactive = snapshot.split("PAGE TEXT:")[0]
+                post_interactive = post_snapshot.split("PAGE TEXT:")[0]
+                if pre_interactive == post_interactive:
                     history.append({
                         "step": step, "action": "no_change",
-                        "reason": "page did not visibly change — try a different approach",
+                        "reason": "page did not change after last action — try a different approach",
                     })
 
     logger.warning("research_loop hit max_steps=%d", max_steps)
