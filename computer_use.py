@@ -134,6 +134,35 @@ Rules:
 - Use "stuck" only as last resort (CAPTCHA, hard login wall, repeated failures).
 """
 
+_CU_DOM_GENERAL_SYSTEM = """You control a Chrome browser. You receive a DOM snapshot of the current page.
+Complete ANY browser task: research, shopping, messaging, form submission, booking, or anything else.
+
+Return ONLY a JSON object — no markdown, no explanation:
+
+{"action": "navigate",    "url": "https://amazon.com",                    "reason": "go to Amazon"}
+{"action": "click",       "selector": "#add-to-cart-button",              "reason": "clicking Add to Cart"}
+{"action": "click_text",  "text": "Add to Cart",                          "reason": "clicking by visible text"}
+{"action": "type",        "selector": "#search", "text": "AirPods Pro",   "reason": "typing search query"}
+{"action": "scroll",      "direction": "down", "amount": 400,             "reason": "revealing more content"}
+{"action": "key",         "key": "Enter",                                 "reason": "submitting search"}
+{"action": "extract",     "label": "price", "value": "$249",              "reason": "recording price"}
+{"action": "confirm",     "summary": "About to add AirPods to cart...",   "reason": "irreversible action"}
+{"action": "needs_input", "field": "delivery address",                    "reason": "required, not in context"}
+{"action": "done",        "summary": "AirPods Pro added to cart.",        "reason": "task complete"}
+{"action": "stuck",       "reason": "Login required, no session"}
+
+Rules:
+- Use selectors from the INTERACTIVE list. Prefer #id selectors.
+- Use "navigate" to jump directly to URLs — faster than clicking menus.
+- Use "extract" to record any data worth reporting to the user.
+- Use "confirm" BEFORE any irreversible action (checkout, purchase, send, submit, delete).
+- Use "done" when task is fully complete with a clear spoken summary.
+- Use "needs_input" when a required field is missing from context.
+- Use "stuck" only as last resort. Always try alternatives first.
+- Do NOT re-extract data you already have. Do NOT re-navigate to a page you just left.
+- If approaching step limit with partial results, use "done" with what you have.
+"""
+
 
 def _dom_decide(
     snapshot: str,
@@ -196,6 +225,74 @@ def _dom_decide(
         return parsed
     except Exception as exc:
         logger.error("_dom_decide failed (step %d): %s", step, exc)
+        return {"action": "stuck", "reason": f"LLM error: {exc}"}
+
+
+def _dom_research_decide(
+    snapshot: str,
+    goal: str,
+    step: int,
+    max_steps: int,
+    history: list[dict],
+    collected_data: list[dict],
+) -> dict:
+    """
+    Groq text model decision for research loop (DOM-first path).
+    Never raises — returns {"action": "stuck"} on any error.
+    """
+    _VALID_DOM_RESEARCH_ACTIONS = _VALID_GENERAL_ACTIONS | {"click_text"}
+    user_text = (
+        f"Step {step} of {max_steps}.\n\n"
+        f"Goal: {goal}\n\n"
+        f"Data collected so far ({len(collected_data)} items):\n"
+        f"{json.dumps(collected_data, indent=2)}\n\n"
+        f"Current page DOM snapshot:\n{snapshot}"
+    )
+    if history:
+        recent = history[-6:]
+        lines = []
+        for h in recent:
+            desc = f"  Step {h['step']}: {h['action']}"
+            if h.get("url"):      desc += f" url={h['url']!r}"
+            if h.get("selector"): desc += f" selector={h['selector']!r}"
+            if h.get("label"):    desc += f" label={h['label']!r} value={h.get('value', '')!r}"
+            if h.get("text"):     desc += f" text={h['text']!r}"
+            if h.get("key"):      desc += f" key={h['key']}"
+            if h.get("reason"):   desc += f" — {h['reason']}"
+            lines.append(desc)
+        user_text += (
+            "\n\nPrevious actions (do NOT repeat):\n" + "\n".join(lines)
+            + "\n\nDo NOT re-extract data you already have. "
+              "If you have all needed data, return 'done' with a complete summary."
+        )
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=_DOM_TEXT_MODEL,
+            messages=[
+                {"role": "system", "content": _CU_DOM_GENERAL_SYSTEM},
+                {"role": "user", "content": user_text},
+            ],
+            temperature=0.1,
+            max_tokens=300,
+        )
+        raw = response.choices[0].message.content.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw.strip())
+        raw = _extract_first_json(raw)
+        parsed = json.loads(raw)
+        if parsed.get("action") not in _VALID_DOM_RESEARCH_ACTIONS:
+            raise ValueError(f"Unknown action: {parsed.get('action')!r}")
+        logger.info(
+            "DOM research step %d/%d  action=%r  selector=%s  reason=%r",
+            step, max_steps,
+            parsed.get("action"),
+            parsed.get("selector", "-"),
+            parsed.get("reason", ""),
+        )
+        return parsed
+    except Exception as exc:
+        logger.error("_dom_research_decide failed (step %d): %s", step, exc)
         return {"action": "stuck", "reason": f"LLM error: {exc}"}
 
 
