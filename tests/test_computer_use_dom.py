@@ -78,3 +78,67 @@ def test_dom_decide_passes_history_to_prompt():
     user_content = call_args[1]["messages"][1]["content"]
     assert "Step 1: click" in user_content
     assert result["action"] == "scroll"
+
+
+def test_dom_research_decide_returns_navigate():
+    mock_client = _mock_groq_response(
+        '{"action": "navigate", "url": "https://amazon.com", "reason": "go to amazon"}'
+    )
+    with patch("computer_use._get_client", return_value=mock_client):
+        result = computer_use._dom_research_decide(
+            snapshot=SAMPLE_SNAPSHOT,
+            goal="search amazon for airpods",
+            step=1,
+            max_steps=80,
+            history=[],
+            collected_data=[],
+        )
+    assert result["action"] == "navigate"
+    assert result["url"] == "https://amazon.com"
+
+
+def test_dom_research_decide_returns_done():
+    mock_client = _mock_groq_response(
+        '{"action": "done", "summary": "AirPods Pro costs $249.", "reason": "found price"}'
+    )
+    with patch("computer_use._get_client", return_value=mock_client):
+        result = computer_use._dom_research_decide(
+            snapshot=SAMPLE_SNAPSHOT,
+            goal="find airpods price",
+            step=3,
+            max_steps=80,
+            history=[],
+            collected_data=[{"label": "price", "value": "$249"}],
+        )
+    assert result["action"] == "done"
+    assert "$249" in result["summary"]
+
+
+def test_dom_research_decide_returns_stuck_on_error():
+    with patch("computer_use._get_client", side_effect=RuntimeError("api down")):
+        result = computer_use._dom_research_decide(
+            snapshot=SAMPLE_SNAPSHOT,
+            goal="goal",
+            step=1,
+            max_steps=10,
+            history=[],
+            collected_data=[],
+        )
+    assert result["action"] == "stuck"
+
+
+def test_dom_research_decide_click_text_is_valid():
+    mock_client = _mock_groq_response(
+        '{"action": "click_text", "text": "Add to Cart", "reason": "add product"}'
+    )
+    with patch("computer_use._get_client", return_value=mock_client):
+        result = computer_use._dom_research_decide(
+            snapshot=SAMPLE_SNAPSHOT,
+            goal="add to cart",
+            step=2,
+            max_steps=80,
+            history=[],
+            collected_data=[],
+        )
+    assert result["action"] == "click_text"
+    assert result["text"] == "Add to Cart"
