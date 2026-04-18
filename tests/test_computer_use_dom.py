@@ -142,3 +142,48 @@ def test_dom_research_decide_click_text_is_valid():
         )
     assert result["action"] == "click_text"
     assert result["text"] == "Add to Cart"
+
+
+def _fake_browser_run(page):
+    def _run(fn):
+        fn(page)
+    return _run
+
+
+def test_execute_click_with_selector():
+    mock_page = MagicMock()
+    with patch("agent_browser.run", side_effect=_fake_browser_run(mock_page)):
+        computer_use.execute({"action": "click", "selector": "#add-to-cart-button"})
+    mock_page.locator.assert_called_with("#add-to-cart-button")
+    mock_page.locator.return_value.first.click.assert_called_once_with(timeout=3000)
+
+
+def test_execute_click_text():
+    mock_page = MagicMock()
+    with patch("agent_browser.run", side_effect=_fake_browser_run(mock_page)):
+        computer_use.execute({"action": "click_text", "text": "Add to Cart"})
+    mock_page.locator.assert_called_with('text="Add to Cart"')
+    mock_page.locator.return_value.first.click.assert_called_once_with(timeout=3000)
+
+
+def test_execute_type_with_selector():
+    mock_page = MagicMock()
+    with patch("agent_browser.run", side_effect=_fake_browser_run(mock_page)):
+        computer_use.execute({"action": "type", "selector": "#search", "text": "AirPods Pro"})
+    mock_page.locator.assert_called_with("#search")
+    mock_page.locator.return_value.first.fill.assert_called_once_with("AirPods Pro", timeout=3000)
+
+
+def test_execute_click_coordinates_unchanged():
+    mock_page = MagicMock()
+    with patch("agent_browser.run", side_effect=_fake_browser_run(mock_page)):
+        computer_use.execute({"action": "click", "x": 640, "y": 450})
+    mock_page.mouse.click.assert_called_once_with(640, 450)
+
+
+def test_execute_type_without_selector_uses_keyboard():
+    mock_page = MagicMock()
+    with patch("agent_browser.run", side_effect=_fake_browser_run(mock_page)):
+        with patch("time.sleep"):
+            computer_use.execute({"action": "type", "text": "hi"})
+    assert mock_page.keyboard.type.call_count == 2  # one call per character
