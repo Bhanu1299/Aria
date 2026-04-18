@@ -596,7 +596,8 @@ def execute(action: dict) -> None:
             else:
                 page.mouse.click(int(action.get("x", 0)), int(action.get("y", 0)))
         elif act == "click_text":
-            page.locator(f'text="{action.get("text", "")}"').first.click(timeout=3000)
+            _ct = action.get("text", "").replace('"', '\\"')
+            page.locator(f'text="{_ct}"').first.click(timeout=3000)
         elif act == "type":
             if "selector" in action:
                 page.locator(action["selector"]).first.fill(
