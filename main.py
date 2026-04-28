@@ -512,7 +512,7 @@ def _handle_intent(intent: dict, original_question: str) -> str:
             _YES = {"yes", "yeah", "yep", "sure", "do it", "go ahead", "confirm", "proceed", "ok", "okay"}
             return any(w in reply for w in _YES)
 
-        def _get_input(field: str) -> str | None:
+        def _get_input(field: str) -> Optional[str]:
             speaker.say(f"I need {field}. Please say it now.")
             wav = voice_capture.record_once(max_seconds=10)
             if wav is None:
