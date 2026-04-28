@@ -8,3 +8,4 @@ __pycache__/
 .DS_Store
 .aria_profile/
 .worktrees/
+.claude/
