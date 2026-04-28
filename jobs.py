@@ -122,9 +122,9 @@ def _parse_query(query: str) -> tuple[str, str]:
                 {
                     "role": "system",
                     "content": (
-                        "Extract job search intent. Return JSON only with 'role' "
-                        "(job title/type) and 'location' (city, 'remote', or empty string). "
-                        "No markdown, no extras. "
+                        "You are Aria — Bhanu's personal AI. "
+                        "Extract job search intent. Return JSON only — no markdown, no extras. "
+                        "Keys: 'role' (job title/type) and 'location' (city, 'remote', or empty string). "
                         'Example: {"role": "software engineer", "location": "New York"}'
                     ),
                 },

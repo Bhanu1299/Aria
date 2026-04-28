@@ -17,6 +17,8 @@ TRIGGERS = [
     "compute",
     "how much is",
     "what is the result of",
+    "what is",
+    "whats",
 ]
 
 _OPS = {
@@ -59,6 +61,12 @@ def handle(command: str) -> str:
     # Strip trigger phrases
     for trigger in TRIGGERS:
         expr = expr.replace(trigger, "")
+
+    # Pre-process % symbol before spoken-form replacements
+    # "15% of 320" → "15 * 0.01 * 320"
+    expr = re.sub(r'(\d+(?:\.\d+)?)\s*%\s*of\s*', r'\1 * 0.01 * ', expr, flags=re.IGNORECASE)
+    # bare "15%" → "(15/100)"
+    expr = re.sub(r'(\d+(?:\.\d+)?)\s*%', r'(\1/100)', expr)
 
     # Translate spoken operators to symbols
     for pattern, replacement in _SPOKEN_MAP:

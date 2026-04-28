@@ -1,0 +1,45 @@
+{
+  "scenes": [
+    {
+      "name": "Daddy's Home",
+      "triggers": ["daddy's home", "daddys home", "daddy is home", "i'm home", "im home"],
+      "actions": [
+        {"type": "open_app", "app": "Mail"},
+        {"type": "open_url", "url": "https://linkedin.com/jobs"},
+        {"type": "open_url", "url": "https://gmail.com"},
+        {"type": "briefing"},
+        {"type": "job_alerts"},
+        {"type": "speak", "text": "Welcome back. Pulling up everything you need."}
+      ]
+    },
+    {
+      "name": "Coding Time",
+      "triggers": ["coding time", "let's code", "lets code", "time to code", "work time"],
+      "actions": [
+        {"type": "open_app", "app": "Antigravity"},
+        {"type": "open_url", "url": "https://claude.ai"},
+        {"type": "open_app", "app": "Music"},
+        {"type": "speak", "text": "Coding time. Let's get it."}
+      ]
+    },
+    {
+      "name": "Let's Eat",
+      "triggers": ["let's eat", "lets eat", "food time", "break time", "i'm eating"],
+      "actions": [
+        {"type": "pause_music"},
+        {"type": "lock_mac"},
+        {"type": "speak", "text": "Enjoy your food. I'll be here."}
+      ]
+    },
+    {
+      "name": "Ship It",
+      "triggers": ["ship it", "let's ship", "lets ship", "deploy"],
+      "actions": [
+        {"type": "open_app", "app": "Terminal"},
+        {"type": "open_url", "url": "https://github.com"},
+        {"type": "play_hype_music", "duration_seconds": 10},
+        {"type": "speak", "text": "Shipping. Don't break prod."}
+      ]
+    }
+  ]
+}
