@@ -9,3 +9,7 @@ __pycache__/
 .aria_profile/
 .worktrees/
 .claude/
+claude.md
+CLAUDE.md
+.mcp.json
+docs/superpowers/
