@@ -152,7 +152,7 @@ Stored to `memory.py` (SQLite) so "what was I doing?" works across restarts.
 | Plan generation fails | Fall back to single-intent routing, no crash |
 | Unknown intent_type in plan | Reject plan, fall back to single-intent |
 | Step fails after 3 retries | Ask user: skip / try something else / abort |
-| User says "stop" mid-plan | Abort immediately, speak what was completed. **No rollback** — completed steps (bookings, calendar entries, messages) are not undone. Aria warns before any irreversible step via the existing `confirm` checkpoint so the user has already opted in. Partial state (e.g. booked flight but no calendar entry) is the user's responsibility to resolve manually. |
+| User says "stop" mid-plan | Abort immediately, speak what was completed |
 | Ambiguous result | Voice checkpoint before advancing |
 | Context injection fails | Use raw step params without injection, log warning |
 

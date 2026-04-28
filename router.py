@@ -28,6 +28,7 @@ from groq import Groq
 
 import config
 from skills import skill_loader as _skill_loader
+import scene_executor as _scene_executor
 
 # Load skills on module import — happens once when router is first imported
 _skill_loader.load_skills()
@@ -94,6 +95,26 @@ _APPLY_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Browser task pre-check — obvious research commands skip the classifier
+_BROWSER_TASK_RE = re.compile(
+    r"\b(?:"
+    r"check\s+(?:prices?|rates?|availability|deals?)"
+    r"|compare\s+(?:prices?|flights?|rates?|options?|cars?)"
+    r"|find\s+(?:the\s+)?(?:cheapest|best\s+price|lowest\s+rate)"
+    r"|look\s+up\s+(?:apartments?|rentals?|listings?|flights?)"
+    r"|search\s+(?:zillow|kayak|hertz|expedia|booking\.com|airbnb)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Recall intent pre-check — "what was my last search" never needs an LLM call.
+_RECALL_RE = re.compile(
+    r'\b(last|previous|recent)\b.{0,40}\b(search|job|look|query)\b'
+    r'|what\s+(did\s+i|was\s+my)\s+last'
+    r'|last\s+job\s+search',
+    re.IGNORECASE,
+)
+
 # Capability intent pre-check — routes capability questions without an LLM call.
 _CAPABILITY_RE = re.compile(
     r"\b(?:"
@@ -144,17 +165,16 @@ _LOCATION_KEYWORDS = {
 # Classifier prompt
 # ---------------------------------------------------------------------------
 
-_CLASSIFY_SYSTEM = """You are an intent classifier for a voice assistant. Classify the voice command and extract search terms.
-
-Return ONLY a JSON object — no markdown, no explanation.
+_CLASSIFY_SYSTEM = """You are Aria — Bhanu's personal AI, built to be fast, sharp, and occasionally hilarious. You are classifying voice commands to route them to the right handler. Return ONLY a JSON object — no markdown, no explanation, no personality in this response.
 
 Schema:
 {
-  "type": "knowledge" | "web_search" | "web_direct" | "app" | "media" | "navigate" | "app_control" | "briefing" | "jobs" | "apply",
+  "type": "knowledge" | "web_search" | "web_direct" | "app" | "media" | "navigate" | "app_control" | "briefing" | "jobs" | "apply" | "browser_task",
   "query": "<clean search terms — remove filler words like 'find me', 'search for', 'look up'>",
   "site": "<only for web_direct: youtube | reddit | linkedin | github | hackernews | spotify | other>",
   "site_name": "<only for navigate: short lowercase site name, e.g. 'youtube', 'github', 'claude', 'reddit'>",
   "app_name": "<only for app: application name as it appears in macOS Applications folder, e.g. 'Safari', 'Spotify', 'Calendar'>",
+  "browser_goal": "<full research goal preserving all details — only for browser_task>",
   "location_sensitive": true | false
 }
 
@@ -169,6 +189,7 @@ Type rules:
 - briefing: user wants a morning briefing, daily summary, or asks what's on their day. Trigger phrases: "give me my briefing", "morning briefing", "what's my day look like", "what do I have today", "daily summary", "what's going on today"
 - jobs: user wants to search for job listings — "find me jobs", "search for jobs", "any openings at", "job search", "find [role] jobs", "look for [role] positions", "any [role] roles", "are there any [role] openings". Preserve filter keywords like 'remote', 'hybrid', 'on-site', 'posted this week', 'posted today' in the query — do not strip them.
 - apply: user wants to apply to a specific job by ordinal — "apply to the first job", "apply for the second one", "submit for the third position"
+- browser_task: multi-step browser research requiring navigation across pages and data extraction — price comparisons, rental searches across dates, flight/hotel/apartment searches, anything needing the browser to visit multiple URLs and synthesize findings. Use browser_task (NOT web_search) for any request requiring sequential browser actions to gather and compare data. Preserve all specific details (dates, location, price range) verbatim in browser_goal.
 
 IMPORTANT: Use "media" for ALL music and YouTube commands: "play", "pause", "skip", "next song", "next track", "what's playing", "now playing", "watch", "stop music", "stop playback", "play X on YouTube", "play X on [music app]". Do NOT use "web_direct" or "web_search" for these.
 IMPORTANT: If the user says "search YouTube for X" or "find X on Reddit" → type is "web_direct", never "media".
@@ -294,10 +315,32 @@ def route(command: str) -> dict:
     """
     Classify a voice command and return a routing dict.
 
-    Runs a contact pre-check before the Groq classifier to prevent
-    short names from being misrouted as brand/site names.
+    Priority order:
+      1. Scene match (highest — runs before everything else)
+      2. Contact disambiguation
+      3. Skill pre-check (zero Groq latency)
+      4. Apply pre-check
+      5. Capability pre-check
+      6. Recall pre-check
+      7. Groq classifier
+
     Never raises — falls back to a knowledge query on any error.
     """
+    # PRIORITY 1 — Scene match (macros; run before all other checks)
+    scene = _scene_executor.match_scene(command)
+    if scene is not None:
+        logger.info("Scene matched: %r for command: %r", scene.get("name"), command)
+        return {
+            "type": "scene",
+            "query": command.strip(),
+            "url": "",
+            "instructions": "",
+            "app_name": "",
+            "contact": "",
+            "site_name": "",
+            "_scene": scene,
+        }
+
     # Contact disambiguation pre-check — runs before the LLM
     contact_intent = _check_contact_intent(command)
     if contact_intent is not None:
@@ -318,6 +361,16 @@ def route(command: str) -> dict:
             "_skill_fn": skill_fn,
         }
 
+    # Browser task pre-check — obvious research commands skip the classifier
+    if _BROWSER_TASK_RE.search(command):
+        logger.info("browser_task pre-check matched: %r", command)
+        return {
+            "type": "browser_task",
+            "query": command.strip(),
+            "browser_goal": command.strip(),
+            "url": "", "app_name": "", "contact": "", "site_name": "",
+        }
+
     # Apply intent pre-check — "apply to the Nth job" never needs an LLM call
     if _APPLY_INTENT_RE.search(command):
         logger.info("Apply pre-check matched: %r", command)
@@ -336,6 +389,19 @@ def route(command: str) -> dict:
         logger.info("Capability pre-check matched: %r", command)
         return {
             "type": "capability",
+            "query": command.strip(),
+            "url": "",
+            "instructions": "",
+            "app_name": "",
+            "contact": "",
+            "site_name": "",
+        }
+
+    # Recall pre-check — "what was my last search" reads SQLite, no LLM needed
+    if _RECALL_RE.search(command):
+        logger.info("Recall pre-check matched: %r", command)
+        return {
+            "type": "recall",
             "query": command.strip(),
             "url": "",
             "instructions": "",
@@ -387,7 +453,7 @@ def _classify(command: str) -> dict:
 
     parsed = json.loads(raw)
 
-    if "type" not in parsed or parsed["type"] not in ("knowledge", "web_search", "web_direct", "app", "media", "navigate", "app_control", "briefing", "jobs", "apply", "capability", "skill"):
+    if "type" not in parsed or parsed["type"] not in ("knowledge", "web_search", "web_direct", "app", "media", "navigate", "app_control", "briefing", "jobs", "apply", "browser_task", "capability", "skill"):
         raise ValueError(f"Invalid type in classifier response: {parsed.get('type')!r}")
 
     # Normalise query — LLM sometimes returns null or empty
@@ -481,6 +547,10 @@ def _build_intent(original_command: str, parsed: dict) -> dict:
 
     if intent_type == "apply":
         return {**_base}
+
+    if intent_type == "browser_task":
+        browser_goal = (parsed.get("browser_goal") or query).strip()
+        return {**_base, "query": query, "browser_goal": browser_goal}
 
     if intent_type == "capability":
         return {**_base}
