@@ -1,10 +1,10 @@
-# Phase 5: Awareness & Speed Upgrades — Implementation Plan
+# Phase 4 (cont.): Awareness & Speed Upgrades — Implementation Plan
 
 > **For agentic workers:** Use superpowers:subagent-driven-development or superpowers:executing-plans to implement task-by-task.
 
 **Goal:** Extend Aria with memory consolidation, macOS notifications, STT accuracy improvements, follow-up suggestions, and faster transcription — all ported from `claude-code-main/src/services/`.
 
-**Architecture:** Six self-contained tasks. Tier 1 builds on Phase 4's live memory system. Tier 2 adds awareness and accuracy. Tier 3 cuts hotkey-to-response latency. Each task produces working, testable code before moving to the next.
+**Architecture:** Six self-contained tasks (Tasks 9–14 of Phase 4). Tier 1 builds on Phase 4's live memory system. Tier 2 adds awareness and accuracy. Tier 3 cuts hotkey-to-response latency. Each task produces working, testable code before moving to the next.
 
 **Tech Stack:** Python 3.9+, Groq (llama-3.3-70b-versatile), faster-whisper, osascript, numpy — all already in requirements. No new dependencies.
 

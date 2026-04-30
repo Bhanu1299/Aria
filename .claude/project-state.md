@@ -1,21 +1,20 @@
 # Aria Project State
 
-## Status: PHASE 4 COMPLETE — All 8 tasks shipped to main
-## Phase 5: PLANNED — Plan at docs/superpowers/plans/2026-04-30-phase5-awareness-speed.md
-## Branch: main (Phase 4 merged)
+## Status: PHASE 4 Tasks 1-8 COMPLETE — Tasks 9-14 PLANNED
+## Branch: main (Tasks 1-8 merged)
 
-## NEXT: Start Phase 5
-Run: `git checkout -b feature/phase5-awareness-speed`
-Plan is at: docs/superpowers/plans/2026-04-30-phase5-awareness-speed.md
+## NEXT: Start Phase 4 Tasks 9-14
+Run: `git checkout -b feature/phase4-awareness-speed`
+Plan is at: docs/superpowers/plans/2026-04-30-phase4-awareness-speed.md
 
-## Phase 5 — Awareness & Speed (PLANNED)
+## Phase 4 — Awareness & Speed (Tasks 9-14, PLANNED)
 
-### 🔲 Task 1: Session Notes Compaction (compact.py)
-### 🔲 Task 2: AutoDream — Background Memory Consolidation (auto_dream.py)
-### 🔲 Task 3: Notifier (notifier.py)
-### 🔲 Task 4: Voice Keyterms — STT Accuracy (voice_keyterms.py)
-### 🔲 Task 5: Prompt Suggestions (prompt_suggester.py)
-### 🔲 Task 6: Numpy Transcription — Faster STT
+### 🔲 Task 9: Session Notes Compaction (compact.py)
+### 🔲 Task 10: AutoDream — Background Memory Consolidation (auto_dream.py)
+### 🔲 Task 11: Notifier (notifier.py)
+### 🔲 Task 12: Voice Keyterms — STT Accuracy (voice_keyterms.py)
+### 🔲 Task 13: Prompt Suggestions (prompt_suggester.py)
+### 🔲 Task 14: Numpy Transcription — Faster STT
 
 ---
 
