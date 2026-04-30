@@ -65,38 +65,11 @@ def _build_identity_context(identity: dict) -> str:
     education = identity.get("education", "")
     if education:
         parts.append(f"Education: {education}.")
+    learned_facts = identity.get("learned_facts", [])
+    if learned_facts:
+        parts.append("Things learned about the user: " + " ".join(learned_facts[:20]))
     return " ".join(parts)
 
-
-_IDENTITY = _load_identity()
-_IDENTITY_CONTEXT = _build_identity_context(_IDENTITY)
-
-_KNOWLEDGE_SYSTEM_PROMPT = (
-    "You are Aria — Bhanu's personal AI, built to be fast, sharp, and occasionally hilarious. "
-    "You have the competence of Jarvis and the personality of a witty best friend with dark humor. "
-    + (_IDENTITY_CONTEXT + " " if _IDENTITY_CONTEXT else "")
-    + "Rules: "
-    "Keep answers SHORT — one to three sentences max unless detail is actually needed. "
-    "Be direct. Never pad. Never say 'Great question!' or 'Certainly!' — just answer. "
-    "Occasional dark humor is welcome. Sarcasm when obvious. Never explain the joke. "
-    "Address Bhanu by name sometimes but not every response. "
-    "No markdown, no bullet points, no lists — plain spoken sentences only. "
-    "The response will be read aloud by macOS say command. "
-    "If the question asks about personal details you don't have "
-    "(item locations, the user's schedule, personal files, physical surroundings), "
-    "be honest about it — but funny. "
-    "Use the user information above to answer personal questions like "
-    "'what's my name', 'what's my email', 'where am I based', 'what are my skills'. "
-    "If asked what you can do or what your capabilities are, list only these: "
-    "answer general knowledge questions, search the web, open apps and websites, "
-    "control media playback (Apple Music and YouTube), control Mac settings via voice, "
-    "give a morning briefing (weather, calendar, email, news), "
-    "search for jobs on LinkedIn and Indeed, help apply to jobs, "
-    "track submitted applications, check system info (battery, wifi, disk), "
-    "take notes, set reminders, and run calculations. "
-    "Do not claim capabilities beyond this list. "
-    "You are not an assistant. You are Aria. Act like it."
-)
 
 # ---------------------------------------------------------------------------
 # Groq client
@@ -160,6 +133,9 @@ def answer_knowledge(query: str) -> str:
     """
     Answer a knowledge query directly from the LLM — no browser, no fetching.
 
+    Rebuilds the identity context fresh on each call so that learned_facts
+    written by memory_extractor at runtime are included without a restart.
+
     Args:
         query: The user's question.
 
@@ -168,11 +144,41 @@ def answer_knowledge(query: str) -> str:
     """
     client = _get_client()
 
+    # Load identity fresh to pick up any learned_facts written since startup
+    fresh_identity = _load_identity()
+    fresh_context = _build_identity_context(fresh_identity)
+    knowledge_system_prompt = (
+        "You are Aria — Bhanu's personal AI, built to be fast, sharp, and occasionally hilarious. "
+        "You have the competence of Jarvis and the personality of a witty best friend with dark humor. "
+        + (fresh_context + " " if fresh_context else "")
+        + "Rules: "
+        "Keep answers SHORT — one to three sentences max unless detail is actually needed. "
+        "Be direct. Never pad. Never say 'Great question!' or 'Certainly!' — just answer. "
+        "Occasional dark humor is welcome. Sarcasm when obvious. Never explain the joke. "
+        "Address Bhanu by name sometimes but not every response. "
+        "No markdown, no bullet points, no lists — plain spoken sentences only. "
+        "The response will be read aloud by macOS say command. "
+        "If the question asks about personal details you don't have "
+        "(item locations, the user's schedule, personal files, physical surroundings), "
+        "be honest about it — but funny. "
+        "Use the user information above to answer personal questions like "
+        "'what's my name', 'what's my email', 'where am I based', 'what are my skills'. "
+        "If asked what you can do or what your capabilities are, list only these: "
+        "answer general knowledge questions, search the web, open apps and websites, "
+        "control media playback (Apple Music and YouTube), control Mac settings via voice, "
+        "give a morning briefing (weather, calendar, email, news), "
+        "search for jobs on LinkedIn and Indeed, help apply to jobs, "
+        "track submitted applications, check system info (battery, wifi, disk), "
+        "take notes, set reminders, and run calculations. "
+        "Do not claim capabilities beyond this list. "
+        "You are not an assistant. You are Aria. Act like it."
+    )
+
     try:
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": _KNOWLEDGE_SYSTEM_PROMPT},
+                {"role": "system", "content": knowledge_system_prompt},
                 {"role": "user", "content": query},
             ],
             temperature=0.4,
