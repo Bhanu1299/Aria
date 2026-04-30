@@ -165,6 +165,30 @@ Rules:
 """
 
 
+def _with_retry(fn, *args, max_retries: int = 3, base_delay: float = 1.0, **kwargs):
+    """
+    Call fn(*args, **kwargs) with exponential backoff on failure.
+    Retries up to max_retries times with delays: base_delay, base_delay*2, base_delay*4...
+    Returns the result on success. Raises the last exception if all retries fail.
+    Detects rate-limit errors (status 429 or "rate limit" in error message) and always retries those.
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt == max_retries:
+                raise
+            delay = base_delay * (2 ** attempt)
+            logger.warning(
+                "_with_retry: attempt %d/%d failed (%s), retrying in %.1fs",
+                attempt + 1, max_retries, exc, delay,
+            )
+            time.sleep(delay)
+    raise last_exc
+
+
 def _dom_decide(
     snapshot: str,
     goal: str,
@@ -199,7 +223,8 @@ def _dom_decide(
         )
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        response = _with_retry(
+            client.chat.completions.create,
             model=_DOM_TEXT_MODEL,
             messages=[
                 {"role": "system", "content": _CU_DOM_SYSTEM},
@@ -267,7 +292,8 @@ def _dom_research_decide(
         )
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        response = _with_retry(
+            client.chat.completions.create,
             model=_DOM_TEXT_MODEL,
             messages=[
                 {"role": "system", "content": _CU_DOM_GENERAL_SYSTEM},
@@ -465,7 +491,8 @@ def _research_decide(
         )
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        response = _with_retry(
+            client.chat.completions.create,
             model=_VISION_MODEL,
             messages=[
                 {"role": "system", "content": _CU_GENERAL_SYSTEM},
@@ -624,11 +651,48 @@ def execute(action: dict) -> None:
     agent_browser.run(_do)
 
 
+def _format_progress(action: dict) -> str:
+    """Convert an action dict to a short human-readable progress string."""
+    act = action.get("action", "")
+    reason = action.get("reason", "")
+    text = action.get("text", "")
+    url = action.get("url", "")
+
+    if act == "navigate" and url:
+        parts = url.split("/")
+        domain = parts[2] if len(parts) > 2 else url
+        return f"Navigating to {domain}"
+    if act == "type" and text:
+        short = text[:30] + "..." if len(text) > 30 else text
+        return f"Typing: {short}"
+    if act == "click":
+        return "Clicking" + (f": {reason[:40]}" if reason else "")
+    if act == "scroll":
+        return f"Scrolling {action.get('direction', 'down')}"
+    if act == "search" and text:
+        return f"Searching for {text[:40]}"
+    if act == "extract":
+        label = action.get("label", "data")
+        return f"Extracting {label}"
+    if act == "key":
+        key = action.get("key", "key")
+        return f"Pressing {key}"
+    if act == "click_text":
+        text = action.get("text", "")
+        short = text[:30] + "..." if len(text) > 30 else text
+        return f"Clicking: {short}"
+    if reason:
+        words = reason.split()[:10]
+        return " ".join(words)
+    return act.capitalize() if act else "Working..."
+
+
 def run_loop(
     goal: str,
     context_data: dict,
     max_steps: int = 30,
     start_step: int = 1,
+    progress_fn=None,
 ) -> tuple[str, dict | None]:
     """
     Run the see→think→act loop until done.
@@ -714,6 +778,12 @@ def run_loop(
             "reason": action.get("reason", ""),
         })
 
+        if progress_fn is not None:
+            try:
+                progress_fn(_format_progress(action))
+            except Exception:
+                pass
+
         try:
             execute(action)
         except Exception as exc:
@@ -757,6 +827,7 @@ def research_loop(
     max_steps: int = 80,
     confirm_fn=None,
     input_fn=None,
+    progress_fn=None,
 ) -> str:
     """
     General-purpose browser task loop — research, shopping, forms, messaging, anything.
@@ -801,6 +872,14 @@ def research_loop(
             action = _research_decide(b64, goal, step, max_steps, history, collected_data)
         else:
             action = _dom_research_decide(snapshot, goal, step, max_steps, history, collected_data)
+
+        # Budget warning at 80% of max steps
+        budget_threshold = int(max_steps * 0.8)
+        if step == budget_threshold and progress_fn is not None:
+            try:
+                progress_fn("Getting close to the step limit, wrapping up...")
+            except Exception:
+                pass
 
         if action["action"] == "done":
             summary = action.get("summary", "").strip()
@@ -908,6 +987,11 @@ def research_loop(
         history.append(h_entry)
 
         if action["action"] == "navigate":
+            if progress_fn is not None:
+                try:
+                    progress_fn(_format_progress(action))
+                except Exception:
+                    pass
             url = action.get("url", "").strip()
             if not url or not url.startswith(("http://", "https://")):
                 logger.warning("research_loop navigate: invalid URL %r — skipping", url)
@@ -936,6 +1020,11 @@ def research_loop(
             continue
 
         else:
+            if progress_fn is not None:
+                try:
+                    progress_fn(_format_progress(action))
+                except Exception:
+                    pass
             try:
                 execute(action)
             except Exception as exc:

@@ -16,6 +16,8 @@ Pipeline:
                  (fallback: vision.read_screen if fetch returns garbage)
 """
 
+from __future__ import annotations
+
 # ---------------------------------------------------------------------------
 # MKL / OpenMP guard — must be set before ANY library that loads OpenMP
 # (ctranslate2, numpy, sounddevice, playwright can all trigger duplicate-lib
@@ -82,6 +84,10 @@ import tracker
 import agent_browser
 import computer_use
 import planner
+import session_notes
+import memory_extractor
+import away_summary
+from sleep_guard import SleepGuard
 # vision is imported lazily inside _vision_fallback() to keep it off the
 # startup critical path — Playwright + ctranslate2 + vision all loading at
 # once on Python 3.9 macOS can trigger OpenMP duplicate-lib abort()
@@ -91,6 +97,7 @@ import planner
 # ---------------------------------------------------------------------------
 _processing = threading.Event()   # set = currently processing, clear = idle
 _recording_active = threading.Event()  # set = start_recording() was called
+sleep_guard = SleepGuard()         # keeps Mac awake during long tasks
 
 menubar: AriaMenuBar = None
 voice_capture: VoiceCapture = None
@@ -136,7 +143,7 @@ def on_press():
     # Mark processing NOW so wake word can't fire while we're recording
     _processing.set()
     menubar.set_state("LISTENING")
-    voice_capture.start_recording()
+    voice_capture.start_recording(auto_stop=True, on_auto_stop=on_release)
     _recording_active.set()  # set AFTER start_recording() returns — prevents on_release racing in
 
 
@@ -153,6 +160,7 @@ def handle_command(transcript: str) -> None:
     _processing.set()
 
     try:
+        sleep_guard.acquire()
         # Validate — reject silence / noise
         _cleaned = _re.sub(r'[\s\.\,\!\?\-\[\]]+', '', transcript)
         _SINGLE_WORD_COMMANDS = {
@@ -163,7 +171,6 @@ def handle_command(transcript: str) -> None:
         if not _cleaned or (len(transcript.split()) < 2 and not _is_single_word):
             speaker.say("I didn't catch that, please try again.")
             menubar.set_state("IDLE")
-            _processing.clear()
             return
 
         print(f"[Aria] Transcribed: {transcript!r}")
@@ -197,11 +204,12 @@ def handle_command(transcript: str) -> None:
         print(f"[Aria] Answer: {answer[:80]!r}")
         if answer:
             speaker.say(answer)
+            session_notes.extract_async(transcript, answer)
+            memory_extractor.extract_async(transcript, answer)
 
         menubar.set_state("DONE")
         time.sleep(1)
         menubar.set_state("IDLE")
-        _processing.clear()
 
     except Exception as e:
         print(f"[Aria] Error during processing: {e}")
@@ -210,7 +218,9 @@ def handle_command(transcript: str) -> None:
         except Exception as say_err:
             print(f"[Aria] Error speaking error message: {say_err}")
         menubar.set_state("IDLE")
+    finally:
         _processing.clear()
+        sleep_guard.release()
 
 
 def _process_release():
@@ -519,12 +529,20 @@ def _handle_intent(intent: dict, original_question: str) -> str:
                 return None
             return transcriber_instance.transcribe(wav).strip() or None
 
+        _last_progress: list[str] = [""]
+
+        def _on_progress(msg: str) -> None:
+            if msg and msg != _last_progress[0]:
+                _last_progress[0] = msg
+                speaker.say(msg)
+
         try:
             answer = computer_use.research_loop(
                 goal=goal,
                 max_steps=80,
                 confirm_fn=_confirm,
                 input_fn=_get_input,
+                progress_fn=_on_progress,
             )
         except Exception as exc:
             logger.error("research_loop failed: %s", exc)
@@ -598,6 +616,9 @@ def main():
 
     # 6. Menu bar
     menubar = AriaMenuBar()
+
+    # 6b. Away summary — speak a greeting based on prior session notes
+    away_summary.speak_greeting(speaker)
 
     # 7. Hotkey listener
     hotkey_listener = HotkeyListener(on_press_cb=on_press, on_release_cb=on_release)
