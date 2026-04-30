@@ -166,7 +166,6 @@ def handle_command(transcript: str) -> None:
         if not _cleaned or (len(transcript.split()) < 2 and not _is_single_word):
             speaker.say("I didn't catch that, please try again.")
             menubar.set_state("IDLE")
-            _processing.clear()
             return
 
         print(f"[Aria] Transcribed: {transcript!r}")
@@ -204,7 +203,6 @@ def handle_command(transcript: str) -> None:
         menubar.set_state("DONE")
         time.sleep(1)
         menubar.set_state("IDLE")
-        _processing.clear()
 
     except Exception as e:
         print(f"[Aria] Error during processing: {e}")
@@ -213,8 +211,8 @@ def handle_command(transcript: str) -> None:
         except Exception as say_err:
             print(f"[Aria] Error speaking error message: {say_err}")
         menubar.set_state("IDLE")
-        _processing.clear()
     finally:
+        _processing.clear()
         sleep_guard.release()
 
 
