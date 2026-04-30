@@ -14,6 +14,9 @@ Public API:
   get_last_search()            retrieve last search query
   get_persistent(key)          read any persistent value from session
   set_persistent(key, value)   write any persistent value (no expiry)
+  store_session_notes(notes)   append turn summary to running session log (no expiry)
+  get_session_notes()          retrieve full session log, "" if empty
+  clear_session_notes()        delete session log from memory + SQLite
 """
 
 from __future__ import annotations
@@ -183,3 +186,41 @@ def get_last_plan() -> dict | None:
     """Return the last stored plan dict, or None if not set / expired."""
     with _lock:
         return session.get("last_plan")
+
+
+# ---------------------------------------------------------------------------
+# Session notes (no expiry — persists across restarts)
+# ---------------------------------------------------------------------------
+
+_SESSION_NOTES_KEY = "session_notes"
+
+
+def store_session_notes(notes: str) -> None:
+    """Append bullet-point notes for this turn to the running session log. Never expires."""
+    with _lock:
+        existing = session.get(_SESSION_NOTES_KEY, "")
+        combined = (existing + "\n\n" + notes).strip() if existing else notes
+        session[_SESSION_NOTES_KEY] = combined
+    _save(_SESSION_NOTES_KEY, combined, expires_hours=None)
+
+
+def get_session_notes() -> str:
+    """Return the last stored session notes, or empty string if none."""
+    with _lock:
+        return session.get(_SESSION_NOTES_KEY, "")
+
+
+def clear_session_notes() -> None:
+    """Remove session notes from both in-memory session and SQLite."""
+    with _lock:
+        session.pop(_SESSION_NOTES_KEY, None)
+    conn = None
+    try:
+        conn = db.get_connection()
+        conn.execute("DELETE FROM memory WHERE key = ?", (_SESSION_NOTES_KEY,))
+        conn.commit()
+    except Exception as exc:
+        logger.error("memory.clear_session_notes failed: %s", exc)
+    finally:
+        if conn is not None:
+            conn.close()
