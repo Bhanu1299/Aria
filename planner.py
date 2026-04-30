@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from groq import Groq
 
@@ -28,6 +29,10 @@ _KNOWN_INTENT_TYPES = frozenset({
     "browser_task", "knowledge", "web_search", "jobs",
     "apply", "app_control", "navigate", "media",
 })
+
+# Intent types that are safe to run in parallel (read-only, no state mutation).
+# browser_task, apply, app_control, navigate, media are serial — they mutate state.
+_PARALLEL_INTENTS = frozenset({"knowledge", "web_search", "jobs"})
 
 _MAX_STEPS = 5
 _MIN_STEPS = 2
@@ -371,6 +376,92 @@ def _generate_retry_step(step: dict, failure_reason: str, attempt: int) -> dict 
 
 
 # ---------------------------------------------------------------------------
+# Parallel execution helpers
+# ---------------------------------------------------------------------------
+
+def _classify_dependencies(steps: list[dict]) -> list[list[dict]]:
+    """
+    Partition steps into ordered batches for parallel execution.
+    Steps within a batch can run concurrently; batches run serially.
+
+    A step goes in a parallel batch if:
+      - its intent_type is in _PARALLEL_INTENTS (read-only), AND
+      - its depends_on is empty (no unsatisfied dependencies)
+
+    All other steps run alone in their own serial batch.
+
+    Static classification — no Groq call needed; intent types are the reliable signal.
+    """
+    batches: list[list[dict]] = []
+    current_parallel: list[dict] = []
+
+    for step in steps:
+        is_read_only = step.get("intent_type") in _PARALLEL_INTENTS
+        has_no_deps = not step.get("depends_on")
+
+        if is_read_only and has_no_deps:
+            current_parallel.append(step)
+        else:
+            # Flush any accumulated parallel steps first
+            if current_parallel:
+                batches.append(current_parallel)
+                current_parallel = []
+            # Serial step gets its own batch
+            batches.append([step])
+
+    # Flush remaining parallel steps
+    if current_parallel:
+        batches.append(current_parallel)
+
+    return batches
+
+
+def _execute_batch(
+    batch: list[dict],
+    ctx: PlanContext,
+    handle_intent_fn,
+) -> dict[str, str]:
+    """
+    Run all steps in batch concurrently using ThreadPoolExecutor.
+    Returns {result_key: result} for all steps in the batch.
+    Single-step batches skip the executor to avoid threading overhead.
+
+    Parallel steps are read-only lookups; no retry needed (unlike serial state-mutating steps).
+    """
+    if len(batch) == 1:
+        # Single step — no threading overhead
+        step = batch[0]
+        injected = _inject_context(step, ctx.results)
+        intent = _step_to_intent(injected)
+        try:
+            result = handle_intent_fn(intent, injected["description"])
+        except Exception as exc:
+            logger.error("_execute_batch single step failed: %s", exc)
+            result = f"Step {step['id']} failed: {exc}"
+        return {step["result_key"]: result or ""}
+
+    results: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {}
+        for step in batch:
+            injected = _inject_context(step, ctx.results)
+            intent = _step_to_intent(injected)
+            future = executor.submit(handle_intent_fn, intent, injected["description"])
+            futures[future] = step
+
+        for future in as_completed(futures):
+            step = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                logger.error("Parallel step %d failed: %s", step["id"], exc)
+                result = f"Step {step['id']} failed: {exc}"
+            results[step["result_key"]] = result or ""
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Execution helpers
 # ---------------------------------------------------------------------------
 
@@ -404,6 +495,95 @@ def _save_ctx(ctx: PlanContext) -> None:
 # Execution loop
 # ---------------------------------------------------------------------------
 
+def _execute_step_with_retry(
+    step: dict,
+    ctx: PlanContext,
+    speaker,
+    voice_capture,
+    transcriber,
+    handle_intent_fn,
+    completed: list[str],
+) -> str | None:
+    """
+    Execute a single step with up to _MAX_RETRIES attempts and interactive
+    skip/stop/alternative recovery on exhaustion.
+
+    Returns:
+      str  — result value on success
+      None — step was skipped (caller should continue)
+    Raises:
+      StopIteration — user said stop/abort
+      RuntimeError  — unrecoverable failure after interactive recovery attempt
+    """
+    from router import route as _route
+
+    ctx.current_step = step["id"]
+    ctx.retry_count = 0
+    current_step = _inject_context(step, ctx.results)
+    result: str | None = None
+    failure_reason = ""
+    succeeded = False
+
+    for attempt in range(1, _MAX_RETRIES + 1):
+        ctx.retry_count = attempt
+        _save_ctx(ctx)
+        try:
+            intent = _step_to_intent(current_step)
+            result = handle_intent_fn(intent, current_step["description"])
+            if _is_failure(result):
+                failure_reason = result or "empty result"
+                logger.warning("Step %d attempt %d failed: %s",
+                               step["id"], attempt, failure_reason)
+                if attempt < _MAX_RETRIES:
+                    retry_step = _generate_retry_step(current_step, failure_reason, attempt)
+                    if retry_step:
+                        current_step = _inject_context(retry_step, ctx.results)
+                continue
+            succeeded = True
+            break
+        except Exception as exc:
+            failure_reason = str(exc)
+            logger.error("Step %d attempt %d exception: %s", step["id"], attempt, exc)
+            if attempt < _MAX_RETRIES:
+                retry_step = _generate_retry_step(current_step, failure_reason, attempt)
+                if retry_step:
+                    current_step = _inject_context(retry_step, ctx.results)
+
+    if not succeeded:
+        speaker.say(
+            f"I tried {_MAX_RETRIES} approaches and got stuck on step {step['id']}: "
+            f"{step['description']}. "
+            "Say skip to move on, stop to abort, or give me a different instruction."
+        )
+        reply = _listen_reply(voice_capture, transcriber, max_seconds=8).lower()
+
+        if any(w in reply for w in ("stop", "abort")):
+            raise StopIteration("user requested stop")
+
+        if any(w in reply for w in ("skip", "next", "move on", "forget it")):
+            speaker.say(f"Skipping step {step['id']}.")
+            return None  # signal: skipped
+
+        if reply:
+            speaker.say("Got it, trying that instead.")
+            try:
+                alt_intent = _route(reply)
+                result = handle_intent_fn(alt_intent, reply)
+                if result and not _is_failure(result):
+                    succeeded = True
+            except Exception as exc:
+                logger.error("Alternative instruction failed: %s", exc)
+
+        if not succeeded:
+            done_str = (", ".join(completed)) if completed else "nothing"
+            raise RuntimeError(
+                f"I got stuck on step {step['id']} and couldn't recover. "
+                f"Completed: {done_str}."
+            )
+
+    return result or ""
+
+
 def execute_plan(
     ctx: PlanContext,
     speaker,
@@ -412,89 +592,90 @@ def execute_plan(
     handle_intent_fn,
 ) -> str:
     """
-    Execute all steps in ctx sequentially.
-    - Injects context from previous steps into each step's params.
-    - Narrates status between steps.
-    - Retries up to _MAX_RETRIES times with different approaches on failure.
-    - After all retries exhausted: asks user to skip / stop / give alternative.
+    Execute all steps in ctx using parallel batches where safe.
+    - Classifies steps into serial/parallel batches via _classify_dependencies().
+    - Parallel batches (read-only intents, no deps) run concurrently via ThreadPoolExecutor.
+    - Serial steps get full retry/skip/stop/alternative interactive recovery.
+    - Narrates parallel execution and inter-batch transitions.
     Returns final spoken summary string.
     """
-    from router import route as _route
-
     completed: list[str] = []
+    batches = _classify_dependencies(ctx.steps)
 
-    for i, step in enumerate(ctx.steps):
-        ctx.current_step = step["id"]
-        ctx.retry_count = 0
-        current_step = _inject_context(step, ctx.results)
-        result: str | None = None
-        failure_reason = ""
-        succeeded = False
+    for batch_idx, batch in enumerate(batches):
+        # Narrate if this batch runs in parallel
+        if len(batch) > 1:
+            step_nums = " and ".join(str(s["id"]) for s in batch)
+            speaker.say(f"Running steps {step_nums} in parallel.")
 
-        for attempt in range(1, _MAX_RETRIES + 1):
-            ctx.retry_count = attempt
-            _save_ctx(ctx)
+        if len(batch) == 1:
+            # Single step — use full retry/interactive-recovery path
+            step = batch[0]
             try:
-                intent = _step_to_intent(current_step)
-                result = handle_intent_fn(intent, current_step["description"])
-                if _is_failure(result):
-                    failure_reason = result or "empty result"
-                    logger.warning("Step %d attempt %d failed: %s",
-                                   step["id"], attempt, failure_reason)
-                    if attempt < _MAX_RETRIES:
-                        retry_step = _generate_retry_step(current_step, failure_reason, attempt)
-                        if retry_step:
-                            current_step = _inject_context(retry_step, ctx.results)
-                    continue
-                succeeded = True
-                break
-            except Exception as exc:
-                failure_reason = str(exc)
-                logger.error("Step %d attempt %d exception: %s", step["id"], attempt, exc)
-                if attempt < _MAX_RETRIES:
-                    retry_step = _generate_retry_step(current_step, failure_reason, attempt)
-                    if retry_step:
-                        current_step = _inject_context(retry_step, ctx.results)
-
-        if not succeeded:
-            speaker.say(
-                f"I tried {_MAX_RETRIES} approaches and got stuck on step {step['id']}: "
-                f"{step['description']}. "
-                "Say skip to move on, stop to abort, or give me a different instruction."
-            )
-            reply = _listen_reply(voice_capture, transcriber, max_seconds=8).lower()
-
-            if any(w in reply for w in ("stop", "abort")):
+                result = _execute_step_with_retry(
+                    step, ctx, speaker, voice_capture, transcriber,
+                    handle_intent_fn, completed,
+                )
+            except StopIteration:
                 done_str = (", ".join(completed)) if completed else "nothing"
                 return f"Stopped. Completed so far: {done_str}."
+            except RuntimeError as exc:
+                return str(exc)
 
-            if any(w in reply for w in ("skip", "next", "move on", "forget it")):
-                speaker.say(f"Skipping step {step['id']}.")
-                continue
+            if result is None:
+                # Skipped
+                pass
+            else:
+                ctx.results[step["result_key"]] = result
+                completed.append(step["description"])
 
-            if reply:
-                speaker.say("Got it, trying that instead.")
-                try:
-                    alt_intent = _route(reply)
-                    result = handle_intent_fn(alt_intent, reply)
-                    if result and not _is_failure(result):
-                        succeeded = True
-                except Exception as exc:
-                    logger.error("Alternative instruction failed: %s", exc)
+            _save_ctx(ctx)
+        else:
+            # Parallel batch — run concurrently, collect all results
+            batch_results = _execute_batch(batch, ctx, handle_intent_fn)
 
-            if not succeeded:
-                done_str = (", ".join(completed)) if completed else "nothing"
-                return (
-                    f"I got stuck on step {step['id']} and couldn't recover. "
-                    f"Completed: {done_str}."
-                )
+            for step in batch:
+                result = batch_results.get(step["result_key"], "")
+                if _is_failure(result):
+                    # Parallel failures: apply interactive recovery per step
+                    speaker.say(
+                        f"Step {step['id']} failed: {step['description']}. "
+                        "Say skip to move on, stop to abort, or give me a different instruction."
+                    )
+                    reply = _listen_reply(voice_capture, transcriber, max_seconds=8).lower()
 
-        ctx.results[step["result_key"]] = result or ""
-        completed.append(step["description"])
-        _save_ctx(ctx)
+                    if any(w in reply for w in ("stop", "abort")):
+                        done_str = (", ".join(completed)) if completed else "nothing"
+                        return f"Stopped. Completed so far: {done_str}."
 
-        if i < len(ctx.steps) - 1:
-            next_step = ctx.steps[i + 1]
+                    if any(w in reply for w in ("skip", "next", "move on", "forget it")):
+                        speaker.say(f"Skipping step {step['id']}.")
+                        continue
+
+                    # Treat as alternative instruction
+                    if reply:
+                        speaker.say("Got it, trying that instead.")
+                        try:
+                            from router import route as _route
+                            alt_intent = _route(reply)
+                            result = handle_intent_fn(alt_intent, reply)
+                        except Exception as exc:
+                            logger.error("Alternative instruction for parallel step failed: %s", exc)
+                            result = ""
+
+                    if not result or _is_failure(result):
+                        speaker.say(f"Skipping step {step['id']}.")
+                        continue
+
+                ctx.results[step["result_key"]] = result
+                completed.append(step["description"])
+
+            _save_ctx(ctx)
+
+        # Narrate transition to next batch (if not the last)
+        next_batch_idx = batch_idx + 1
+        if next_batch_idx < len(batches):
+            next_step = batches[next_batch_idx][0]
             speaker.say(
                 f"Done. Moving to step {next_step['id']}: {next_step['description']}."
             )
