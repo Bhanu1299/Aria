@@ -624,11 +624,48 @@ def execute(action: dict) -> None:
     agent_browser.run(_do)
 
 
+def _format_progress(action: dict) -> str:
+    """Convert an action dict to a short human-readable progress string."""
+    act = action.get("action", "")
+    reason = action.get("reason", "")
+    text = action.get("text", "")
+    url = action.get("url", "")
+
+    if act == "navigate" and url:
+        parts = url.split("/")
+        domain = parts[2] if len(parts) > 2 else url
+        return f"Navigating to {domain}"
+    if act == "type" and text:
+        short = text[:30] + "..." if len(text) > 30 else text
+        return f"Typing: {short}"
+    if act == "click":
+        return "Clicking" + (f": {reason[:40]}" if reason else "")
+    if act == "scroll":
+        return f"Scrolling {action.get('direction', 'down')}"
+    if act == "search" and text:
+        return f"Searching for {text[:40]}"
+    if act == "extract":
+        label = action.get("label", "data")
+        return f"Extracting {label}"
+    if act == "key":
+        key = action.get("key", "key")
+        return f"Pressing {key}"
+    if act == "click_text":
+        text = action.get("text", "")
+        short = text[:30] + "..." if len(text) > 30 else text
+        return f"Clicking: {short}"
+    if reason:
+        words = reason.split()[:10]
+        return " ".join(words)
+    return act.capitalize() if act else "Working..."
+
+
 def run_loop(
     goal: str,
     context_data: dict,
     max_steps: int = 30,
     start_step: int = 1,
+    progress_fn=None,
 ) -> tuple[str, dict | None]:
     """
     Run the see→think→act loop until done.
@@ -714,6 +751,12 @@ def run_loop(
             "reason": action.get("reason", ""),
         })
 
+        if progress_fn is not None:
+            try:
+                progress_fn(_format_progress(action))
+            except Exception:
+                pass
+
         try:
             execute(action)
         except Exception as exc:
@@ -757,6 +800,7 @@ def research_loop(
     max_steps: int = 80,
     confirm_fn=None,
     input_fn=None,
+    progress_fn=None,
 ) -> str:
     """
     General-purpose browser task loop — research, shopping, forms, messaging, anything.
@@ -908,6 +952,11 @@ def research_loop(
         history.append(h_entry)
 
         if action["action"] == "navigate":
+            if progress_fn is not None:
+                try:
+                    progress_fn(_format_progress(action))
+                except Exception:
+                    pass
             url = action.get("url", "").strip()
             if not url or not url.startswith(("http://", "https://")):
                 logger.warning("research_loop navigate: invalid URL %r — skipping", url)
@@ -936,6 +985,11 @@ def research_loop(
             continue
 
         else:
+            if progress_fn is not None:
+                try:
+                    progress_fn(_format_progress(action))
+                except Exception:
+                    pass
             try:
                 execute(action)
             except Exception as exc:

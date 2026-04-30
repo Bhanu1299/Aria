@@ -16,6 +16,8 @@ Pipeline:
                  (fallback: vision.read_screen if fetch returns garbage)
 """
 
+from __future__ import annotations
+
 # ---------------------------------------------------------------------------
 # MKL / OpenMP guard — must be set before ANY library that loads OpenMP
 # (ctranslate2, numpy, sounddevice, playwright can all trigger duplicate-lib
@@ -527,12 +529,20 @@ def _handle_intent(intent: dict, original_question: str) -> str:
                 return None
             return transcriber_instance.transcribe(wav).strip() or None
 
+        _last_progress: list[str] = [""]
+
+        def _on_progress(msg: str) -> None:
+            if msg and msg != _last_progress[0]:
+                _last_progress[0] = msg
+                speaker.say(msg)
+
         try:
             answer = computer_use.research_loop(
                 goal=goal,
                 max_steps=80,
                 confirm_fn=_confirm,
                 input_fn=_get_input,
+                progress_fn=_on_progress,
             )
         except Exception as exc:
             logger.error("research_loop failed: %s", exc)
