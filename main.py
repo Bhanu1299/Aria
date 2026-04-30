@@ -82,6 +82,7 @@ import tracker
 import agent_browser
 import computer_use
 import planner
+from sleep_guard import SleepGuard
 # vision is imported lazily inside _vision_fallback() to keep it off the
 # startup critical path — Playwright + ctranslate2 + vision all loading at
 # once on Python 3.9 macOS can trigger OpenMP duplicate-lib abort()
@@ -91,6 +92,7 @@ import planner
 # ---------------------------------------------------------------------------
 _processing = threading.Event()   # set = currently processing, clear = idle
 _recording_active = threading.Event()  # set = start_recording() was called
+sleep_guard = SleepGuard()         # keeps Mac awake during long tasks
 
 menubar: AriaMenuBar = None
 voice_capture: VoiceCapture = None
@@ -152,6 +154,7 @@ def handle_command(transcript: str) -> None:
         return   # already handling a command — ignore concurrent trigger
     _processing.set()
 
+    sleep_guard.acquire()
     try:
         # Validate — reject silence / noise
         _cleaned = _re.sub(r'[\s\.\,\!\?\-\[\]]+', '', transcript)
@@ -211,6 +214,8 @@ def handle_command(transcript: str) -> None:
             print(f"[Aria] Error speaking error message: {say_err}")
         menubar.set_state("IDLE")
         _processing.clear()
+    finally:
+        sleep_guard.release()
 
 
 def _process_release():
