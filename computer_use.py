@@ -165,6 +165,30 @@ Rules:
 """
 
 
+def _with_retry(fn, *args, max_retries: int = 3, base_delay: float = 1.0, **kwargs):
+    """
+    Call fn(*args, **kwargs) with exponential backoff on failure.
+    Retries up to max_retries times with delays: base_delay, base_delay*2, base_delay*4...
+    Returns the result on success. Raises the last exception if all retries fail.
+    Detects rate-limit errors (status 429 or "rate limit" in error message) and always retries those.
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt == max_retries:
+                raise
+            delay = base_delay * (2 ** attempt)
+            logger.warning(
+                "_with_retry: attempt %d/%d failed (%s), retrying in %.1fs",
+                attempt + 1, max_retries, exc, delay,
+            )
+            time.sleep(delay)
+    raise last_exc
+
+
 def _dom_decide(
     snapshot: str,
     goal: str,
@@ -199,7 +223,8 @@ def _dom_decide(
         )
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        response = _with_retry(
+            client.chat.completions.create,
             model=_DOM_TEXT_MODEL,
             messages=[
                 {"role": "system", "content": _CU_DOM_SYSTEM},
@@ -267,7 +292,8 @@ def _dom_research_decide(
         )
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        response = _with_retry(
+            client.chat.completions.create,
             model=_DOM_TEXT_MODEL,
             messages=[
                 {"role": "system", "content": _CU_DOM_GENERAL_SYSTEM},
@@ -465,7 +491,8 @@ def _research_decide(
         )
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        response = _with_retry(
+            client.chat.completions.create,
             model=_VISION_MODEL,
             messages=[
                 {"role": "system", "content": _CU_GENERAL_SYSTEM},
@@ -845,6 +872,14 @@ def research_loop(
             action = _research_decide(b64, goal, step, max_steps, history, collected_data)
         else:
             action = _dom_research_decide(snapshot, goal, step, max_steps, history, collected_data)
+
+        # Budget warning at 80% of max steps
+        budget_threshold = int(max_steps * 0.8)
+        if step == budget_threshold and progress_fn is not None:
+            try:
+                progress_fn("Getting close to the step limit, wrapping up...")
+            except Exception:
+                pass
 
         if action["action"] == "done":
             summary = action.get("summary", "").strip()
