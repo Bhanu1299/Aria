@@ -8,11 +8,30 @@
   "resume_path": "~/Documents/Bhanu_Teja_Resume.pdf",
   "summary": "Backend systems and GenAI pipelines. M.S. CS, University at Buffalo.",
   "skills": [
-    "Python", "TypeScript", "JavaScript", "SQL", "Java",
-    "LangChain", "LangGraph", "RAG", "FAISS", "Pinecone", "Groq",
-    "FastAPI", "Node.js", "REST APIs", "Async Programming",
-    "PostgreSQL", "MongoDB", "Spark", "Kafka",
-    "AWS", "Docker", "CI/CD", "GitHub Actions", "Playwright"
+    "Python",
+    "TypeScript",
+    "JavaScript",
+    "SQL",
+    "Java",
+    "LangChain",
+    "LangGraph",
+    "RAG",
+    "FAISS",
+    "Pinecone",
+    "Groq",
+    "FastAPI",
+    "Node.js",
+    "REST APIs",
+    "Async Programming",
+    "PostgreSQL",
+    "MongoDB",
+    "Spark",
+    "Kafka",
+    "AWS",
+    "Docker",
+    "CI/CD",
+    "GitHub Actions",
+    "Playwright"
   ],
   "experience": [
     {
@@ -27,5 +46,8 @@
     }
   ],
   "education": "M.S. Computer Science, University at Buffalo (Dec 2025)",
-  "target_roles": []
+  "target_roles": [],
+  "learned_facts": [
+    "User is patient"
+  ]
 }
