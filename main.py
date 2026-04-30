@@ -84,6 +84,7 @@ import computer_use
 import planner
 import session_notes
 import memory_extractor
+import away_summary
 from sleep_guard import SleepGuard
 # vision is imported lazily inside _vision_fallback() to keep it off the
 # startup critical path — Playwright + ctranslate2 + vision all loading at
@@ -605,6 +606,9 @@ def main():
 
     # 6. Menu bar
     menubar = AriaMenuBar()
+
+    # 6b. Away summary — speak a greeting based on prior session notes
+    away_summary.speak_greeting(speaker)
 
     # 7. Hotkey listener
     hotkey_listener = HotkeyListener(on_press_cb=on_press, on_release_cb=on_release)
