@@ -83,6 +83,7 @@ import agent_browser
 import computer_use
 import planner
 import session_notes
+import memory_extractor
 from sleep_guard import SleepGuard
 # vision is imported lazily inside _vision_fallback() to keep it off the
 # startup critical path — Playwright + ctranslate2 + vision all loading at
@@ -201,6 +202,7 @@ def handle_command(transcript: str) -> None:
         if answer:
             speaker.say(answer)
             session_notes.extract_async(transcript, answer)
+            memory_extractor.extract_async(transcript, answer)
 
         menubar.set_state("DONE")
         time.sleep(1)
