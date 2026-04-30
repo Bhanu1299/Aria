@@ -197,9 +197,13 @@ _SESSION_NOTES_KEY = "session_notes"
 
 def store_session_notes(notes: str) -> None:
     """Append bullet-point notes for this turn to the running session log. Never expires."""
+    import compact
     with _lock:
         existing = session.get(_SESSION_NOTES_KEY, "")
-        combined = (existing + "\n\n" + notes).strip() if existing else notes
+    combined = (existing + "\n\n" + notes).strip() if existing else notes
+    if compact.needs_compaction(combined):
+        combined = compact.compress(combined)
+    with _lock:
         session[_SESSION_NOTES_KEY] = combined
     _save(_SESSION_NOTES_KEY, combined, expires_hours=None)
 
