@@ -40,6 +40,8 @@ _CLIENT: Groq | None = None
 def _get_client() -> Groq:
     global _CLIENT
     if _CLIENT is None:
+        if not config.GROQ_API_KEY:
+            raise RuntimeError("GROQ_API_KEY is not set — session notes disabled")
         _CLIENT = Groq(api_key=config.GROQ_API_KEY)
     return _CLIENT
 
