@@ -143,7 +143,7 @@ def on_press():
     # Mark processing NOW so wake word can't fire while we're recording
     _processing.set()
     menubar.set_state("LISTENING")
-    voice_capture.start_recording()
+    voice_capture.start_recording(auto_stop=True, on_auto_stop=on_release)
     _recording_active.set()  # set AFTER start_recording() returns — prevents on_release racing in
 
 
