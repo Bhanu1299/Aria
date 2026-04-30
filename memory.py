@@ -14,6 +14,9 @@ Public API:
   get_last_search()            retrieve last search query
   get_persistent(key)          read any persistent value from session
   set_persistent(key, value)   write any persistent value (no expiry)
+  store_session_notes(notes)   append turn summary to running session log (no expiry)
+  get_session_notes()          retrieve full session log, "" if empty
+  clear_session_notes()        delete session log from memory + SQLite
 """
 
 from __future__ import annotations
@@ -193,10 +196,12 @@ _SESSION_NOTES_KEY = "session_notes"
 
 
 def store_session_notes(notes: str) -> None:
-    """Persist bullet-point session notes.  Never expires."""
+    """Append bullet-point notes for this turn to the running session log. Never expires."""
     with _lock:
-        session[_SESSION_NOTES_KEY] = notes
-    _save(_SESSION_NOTES_KEY, notes, expires_hours=None)
+        existing = session.get(_SESSION_NOTES_KEY, "")
+        combined = (existing + "\n\n" + notes).strip() if existing else notes
+        session[_SESSION_NOTES_KEY] = combined
+    _save(_SESSION_NOTES_KEY, combined, expires_hours=None)
 
 
 def get_session_notes() -> str:
