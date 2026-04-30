@@ -154,8 +154,8 @@ def handle_command(transcript: str) -> None:
         return   # already handling a command — ignore concurrent trigger
     _processing.set()
 
-    sleep_guard.acquire()
     try:
+        sleep_guard.acquire()
         # Validate — reject silence / noise
         _cleaned = _re.sub(r'[\s\.\,\!\?\-\[\]]+', '', transcript)
         _SINGLE_WORD_COMMANDS = {
