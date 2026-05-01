@@ -92,6 +92,7 @@ import auto_dream
 import away_summary
 import notifier
 import voice_keyterms
+import prompt_suggester
 from sleep_guard import SleepGuard
 
 # Build domain vocab hint prompt once at module load — passed to every transcribe() call
@@ -198,6 +199,7 @@ def handle_command(transcript: str) -> None:
                 transcriber=transcriber_instance,
                 handle_intent_fn=_handle_intent,
             )
+            intent = None
             if answer is None:
                 # Plan generation failed — fall back to single-intent routing
                 print("[Aria] Planner returned None — falling back to single-intent routing")
@@ -212,6 +214,7 @@ def handle_command(transcript: str) -> None:
         print(f"[Aria] Answer: {answer[:80]!r}")
         if answer:
             speaker.say(answer)
+            prompt_suggester.suggest_async(intent.get("type", "") if intent else "", answer, speaker)
             session_notes.extract_async(transcript, answer)
             memory_extractor.extract_async(transcript, answer)
             auto_dream.maybe_consolidate_async(transcript, answer)
