@@ -228,3 +228,26 @@ def clear_session_notes() -> None:
     finally:
         if conn is not None:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Command counter (for AutoDream — no expiry)
+# ---------------------------------------------------------------------------
+
+_COMMAND_COUNT_KEY = "command_count"
+
+
+def increment_command_count() -> int:
+    """Increment and return the persistent command counter."""
+    with _lock:
+        count = session.get(_COMMAND_COUNT_KEY, 0) + 1
+        session[_COMMAND_COUNT_KEY] = count
+        _save(_COMMAND_COUNT_KEY, count, expires_hours=None)
+    return count
+
+
+def reset_command_count() -> None:
+    """Reset the persistent command counter to zero."""
+    with _lock:
+        session[_COMMAND_COUNT_KEY] = 0
+        _save(_COMMAND_COUNT_KEY, 0, expires_hours=None)
