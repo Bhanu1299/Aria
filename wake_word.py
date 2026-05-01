@@ -65,6 +65,12 @@ _DING_SOUND = "/System/Library/Sounds/Tink.aiff"
 _PORCUPINE_MODEL_PATH = os.path.expanduser("~/.aria/hey_aria.ppn")
 _PORCUPINE_KEY_ENV = "PORCUPINE_KEY"
 
+# Custom OWW model (set up by training pipeline)
+_CUSTOM_MODEL_PATH = os.path.expanduser("~/.aria/aria.onnx")
+_CUSTOM_THRESHOLD = 0.7   # starting point — tune after real-world testing
+_CUSTOM_N_MFCC = 20
+_CUSTOM_WINDOW_SECS = 2.0
+
 
 class WakeWordListener:
     """
@@ -126,6 +132,17 @@ class WakeWordListener:
             return False
         try:
             import pvporcupine  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def _can_use_custom_model(self) -> bool:
+        """Returns True if a custom-trained ONNX model exists at ~/.aria/aria.onnx."""
+        if not os.path.isfile(_CUSTOM_MODEL_PATH):
+            return False
+        try:
+            import onnxruntime  # noqa: F401
+            import librosa  # noqa: F401
             return True
         except ImportError:
             return False
@@ -304,6 +321,95 @@ class WakeWordListener:
                 pass
 
     # ------------------------------------------------------------------
+    # Custom ONNX backend
+    # ------------------------------------------------------------------
+
+    def _run_custom_onnx(self) -> None:
+        """Sliding-window MFCC inference using the custom-trained aria.onnx model."""
+        try:
+            import onnxruntime as ort
+            import librosa
+            import pyaudio as _pa
+        except ImportError as exc:
+            print(f"[Aria] Custom model disabled — missing dep: {exc}")
+            self._run_openwakeword()
+            return
+
+        try:
+            session = ort.InferenceSession(_CUSTOM_MODEL_PATH)
+            input_name = session.get_inputs()[0].name
+            label_name = session.get_outputs()[1].name
+        except Exception as exc:
+            print(f"[Aria] Custom model load failed: {exc} — falling back to openwakeword")
+            self._run_openwakeword()
+            return
+
+        pa = _pa.PyAudio()
+        stream = None
+        window_samples = int(_SAMPLE_RATE * _CUSTOM_WINDOW_SECS)
+        buffer = np.zeros(window_samples, dtype=np.int16)
+        last_triggered = 0.0
+
+        try:
+            stream = pa.open(
+                rate=_SAMPLE_RATE, channels=1,
+                format=_pa.paInt16, input=True,
+                frames_per_buffer=_CHUNK_SIZE,
+            )
+            print(f"[Aria] Wake word active (custom ONNX model, threshold={_CUSTOM_THRESHOLD}).")
+
+            while not self._stop_event.is_set():
+                try:
+                    chunk = stream.read(_CHUNK_SIZE, exception_on_overflow=False)
+                except OSError as exc:
+                    logger.warning("Custom model mic read error: %s", exc)
+                    time.sleep(0.1)
+                    continue
+
+                # Slide buffer: drop oldest _CHUNK_SIZE samples, append new chunk
+                new_samples = np.frombuffer(chunk, dtype=np.int16)
+                buffer = np.roll(buffer, -_CHUNK_SIZE)
+                buffer[-_CHUNK_SIZE:] = new_samples
+
+                now = time.time()
+                if (now - last_triggered) < _COOLDOWN_SECS:
+                    continue
+                if self._processing is not None and self._processing.is_set():
+                    continue
+
+                # Extract MFCC features and run inference
+                try:
+                    audio_f32 = buffer.astype(np.float32) / 32768.0
+                    mfcc = librosa.feature.mfcc(
+                        y=audio_f32, sr=_SAMPLE_RATE, n_mfcc=_CUSTOM_N_MFCC
+                    )
+                    feat = np.mean(mfcc, axis=1).astype(np.float32).reshape(1, -1)
+                    probs = session.run([label_name], {input_name: feat})[0]
+                    score = float(probs[0][1])
+                except Exception as exc:
+                    logger.debug("Custom model inference error: %s", exc)
+                    continue
+
+                if score >= _CUSTOM_THRESHOLD:
+                    print(f"[Aria] Wake word detected (custom model, score={score:.2f})")
+                    self._on_wake(stream, _SAMPLE_RATE, _CHUNK_SIZE)
+                    last_triggered = time.time()
+
+        except Exception as exc:
+            logger.error("Custom ONNX listener crashed: %s", exc)
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop_stream()
+                    stream.close()
+                except Exception:
+                    pass
+            try:
+                pa.terminate()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
     # Shared: post-wake recording + dispatch
     # ------------------------------------------------------------------
 
@@ -406,6 +512,9 @@ class WakeWordListener:
         if self._can_use_porcupine():
             print("[Aria] Wake word backend: Porcupine (custom 'Hey Aria' model)")
             self._run_porcupine()
+        elif self._can_use_custom_model():
+            print("[Aria] Wake word backend: custom ONNX model (~/.aria/aria.onnx)")
+            self._run_custom_onnx()
         else:
             print("[Aria] Wake word backend: openwakeword fallback (proxy model)")
             self._run_openwakeword()
