@@ -43,10 +43,10 @@ class Transcriber:
     # Public API — safe to call from any thread
     # ------------------------------------------------------------------
 
-    def transcribe(self, audio_path: str) -> str:
+    def transcribe(self, audio_path: str, initial_prompt: str = "") -> str:
         """Submit audio_path for transcription. Blocks until the result arrives."""
         result_q: queue.Queue[str] = queue.Queue()
-        self._request_q.put((audio_path, result_q))
+        self._request_q.put((audio_path, initial_prompt, result_q))
         try:
             return result_q.get(timeout=60)
         except queue.Empty:
@@ -81,11 +81,15 @@ class Transcriber:
             if item is _STOP:
                 break
 
-            audio_path, result_q = item
+            audio_or_path, initial_prompt, result_q = item
+            audio_path = audio_or_path
             print(f"[TRANSCRIBE] Transcribing {audio_path}...")
             try:
                 segments, _info = self._model.transcribe(
-                    audio_path, beam_size=5, language="en"
+                    audio_path,
+                    beam_size=5,
+                    language="en",
+                    initial_prompt=initial_prompt or None,
                 )
                 text = "".join(seg.text for seg in segments).strip()
                 print(f'[TRANSCRIBE] Result: "{text}"')
