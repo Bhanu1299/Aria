@@ -63,6 +63,8 @@ for _noisy_logger in [
 warnings.filterwarnings("ignore", ".*OpenSSL.*")
 warnings.filterwarnings("ignore", ".*NotOpenSSLWarning.*")
 
+logger = logging.getLogger(__name__)
+
 import config
 from transcriber import Transcriber
 from voice_capture import VoiceCapture
@@ -88,6 +90,7 @@ import session_notes
 import memory_extractor
 import auto_dream
 import away_summary
+import notifier
 from sleep_guard import SleepGuard
 # vision is imported lazily inside _vision_fallback() to keep it off the
 # startup critical path — Playwright + ctranslate2 + vision all loading at
@@ -538,6 +541,7 @@ def _handle_intent(intent: dict, original_question: str) -> str:
                 _last_progress[0] = msg
                 speaker.say(msg)
 
+        _t0 = time.monotonic()
         try:
             answer = computer_use.research_loop(
                 goal=goal,
@@ -549,6 +553,8 @@ def _handle_intent(intent: dict, original_question: str) -> str:
         except Exception as exc:
             logger.error("research_loop failed: %s", exc)
             answer = "I ran into an error. Try again with more detail."
+        else:
+            notifier.notify_if_slow(time.monotonic() - _t0, goal, answer)
         return answer
 
     # --- Recall: read last job search from memory, no LLM call ---
