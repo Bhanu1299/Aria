@@ -18,6 +18,8 @@ import queue
 import threading
 import logging
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 _STOP = object()  # sentinel to shut down the worker
@@ -53,6 +55,16 @@ class Transcriber:
             logger.error("Transcription timed out for: %s", audio_path)
             return ""
 
+    def transcribe_numpy(self, audio: np.ndarray, initial_prompt: str = "") -> str:
+        """Submit a numpy float32 audio array for transcription. Blocks until result."""
+        result_q: queue.Queue[str] = queue.Queue()
+        self._request_q.put((audio, initial_prompt, result_q))
+        try:
+            return result_q.get(timeout=60)
+        except queue.Empty:
+            logger.error("Transcription (numpy) timed out")
+            return ""
+
     def stop(self) -> None:
         """Shut down the worker thread."""
         self._request_q.put(_STOP)
@@ -82,11 +94,12 @@ class Transcriber:
                 break
 
             audio_or_path, initial_prompt, result_q = item
-            audio_path = audio_or_path
-            print(f"[TRANSCRIBE] Transcribing {audio_path}...")
+            is_numpy = isinstance(audio_or_path, np.ndarray)
+            label = f"numpy array ({len(audio_or_path)} samples)" if is_numpy else str(audio_or_path)
+            print(f"[TRANSCRIBE] Transcribing {label}...")
             try:
                 segments, _info = self._model.transcribe(
-                    audio_path,
+                    audio_or_path,
                     beam_size=5,
                     language="en",
                     initial_prompt=initial_prompt or None,

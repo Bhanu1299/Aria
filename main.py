@@ -243,8 +243,16 @@ def _process_release():
     and clear it at the end. We clear it here only on early error.
     """
     try:
+        # Call get_audio_array() BEFORE stop_recording() (stop clears _chunks)
+        audio_array = voice_capture.get_audio_array()
         wav_path = voice_capture.stop_recording()
-        question = transcriber_instance.transcribe(wav_path, initial_prompt=_KEYTERMS_PROMPT)
+        if audio_array is not None:
+            question = transcriber_instance.transcribe_numpy(audio_array, initial_prompt=_KEYTERMS_PROMPT)
+            if not question:
+                # fallback to file path if numpy path returns empty
+                question = transcriber_instance.transcribe(wav_path, initial_prompt=_KEYTERMS_PROMPT)
+        else:
+            question = transcriber_instance.transcribe(wav_path, initial_prompt=_KEYTERMS_PROMPT)
         # handle_command checks _processing.is_set() before setting it.
         # Since on_press already set it, temporarily clear so handle_command
         # can proceed (it will re-set immediately).

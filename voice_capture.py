@@ -116,6 +116,17 @@ class VoiceCapture:
         self._chunks = []
         return OUTPUT_PATH
 
+    def get_audio_array(self) -> np.ndarray | None:
+        """
+        Return recorded audio as float32 numpy array normalized to [-1, 1].
+        Must be called BEFORE stop_recording() — stop_recording clears _chunks.
+        faster-whisper accepts this directly, no disk I/O needed.
+        """
+        if not self._chunks:
+            return None
+        audio = np.concatenate(self._chunks, axis=0)
+        return audio.squeeze().astype(np.float32) / 32768.0
+
     def record_once(self, max_seconds: int = 5) -> Optional[str]:
         """Record for a fixed duration and return the WAV path. Returns None on error."""
         try:
