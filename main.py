@@ -91,7 +91,11 @@ import memory_extractor
 import auto_dream
 import away_summary
 import notifier
+import voice_keyterms
 from sleep_guard import SleepGuard
+
+# Build domain vocab hint prompt once at module load — passed to every transcribe() call
+_KEYTERMS_PROMPT = voice_keyterms.build_prompt()
 # vision is imported lazily inside _vision_fallback() to keep it off the
 # startup critical path — Playwright + ctranslate2 + vision all loading at
 # once on Python 3.9 macOS can trigger OpenMP duplicate-lib abort()
@@ -237,7 +241,7 @@ def _process_release():
     """
     try:
         wav_path = voice_capture.stop_recording()
-        question = transcriber_instance.transcribe(wav_path)
+        question = transcriber_instance.transcribe(wav_path, initial_prompt=_KEYTERMS_PROMPT)
         # handle_command checks _processing.is_set() before setting it.
         # Since on_press already set it, temporarily clear so handle_command
         # can proceed (it will re-set immediately).
@@ -532,7 +536,7 @@ def _handle_intent(intent: dict, original_question: str) -> str:
             wav = voice_capture.record_once(max_seconds=10)
             if wav is None:
                 return None
-            return transcriber_instance.transcribe(wav).strip() or None
+            return transcriber_instance.transcribe(wav, initial_prompt=_KEYTERMS_PROMPT).strip() or None
 
         _last_progress: list[str] = [""]
 
