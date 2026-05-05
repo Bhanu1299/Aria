@@ -1,0 +1,429 @@
+"""
+coder.py — Aria Phase 4b: Agentic Code Execution Engine.
+
+Handles "code" and "project" intents. Runs fully autonomously:
+  voice command → Claude API (tool loop) → execute tools → speak result.
+
+Tools available to Claude:
+  bash, file_read, file_write, file_edit, glob, grep
+
+Live menubar feedback updates as each tool fires.
+Project management: new_project(), switch_project(), get_active_project().
+"""
+from __future__ import annotations
+
+import glob as _glob_module
+import json
+import logging
+import os
+import re
+import subprocess
+import tempfile
+from typing import Any
+
+import anthropic
+
+import config
+
+logger = logging.getLogger(__name__)
+
+_IDENTITY_PATH = os.path.join(os.path.dirname(__file__), "identity.json")
+_BASH_TIMEOUT = config.CODER_BASH_TIMEOUT
+_MAX_TOOL_CALLS = config.CODER_MAX_TOOL_CALLS
+
+_CLIENT: anthropic.Anthropic | None = None
+
+# ---------------------------------------------------------------------------
+# Claude tools definition
+# ---------------------------------------------------------------------------
+
+_TOOLS: list[dict] = [
+    {
+        "name": "bash",
+        "description": "Run a shell command in the active project directory. Captures stdout and stderr.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to run"},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "file_read",
+        "description": "Read the contents of a file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute or relative file path"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "file_write",
+        "description": "Create or overwrite a file with given content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path"},
+                "content": {"type": "string", "description": "File content"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "file_edit",
+        "description": "Replace an exact string in a file. Fails if old_str not found.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path"},
+                "old_str": {"type": "string", "description": "Exact string to replace"},
+                "new_str": {"type": "string", "description": "Replacement string"},
+            },
+            "required": ["path", "old_str", "new_str"],
+        },
+    },
+    {
+        "name": "glob",
+        "description": "Find files matching a glob pattern.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py'"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "Search file content for a pattern.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Search pattern (regex)"},
+                "path": {"type": "string", "description": "File or directory to search"},
+            },
+            "required": ["pattern", "path"],
+        },
+    },
+]
+
+_SYSTEM_PROMPT = """\
+You are Aria's coding engine — a fully autonomous software engineer.
+Execute the user's request completely on your own using the tools available.
+Work in the active project directory. Never ask for confirmation.
+If a command fails, read the error and fix it. Iterate until done.
+When finished, respond with a concise 1-2 sentence summary of what was accomplished.
+"""
+
+# ---------------------------------------------------------------------------
+# Tool implementations
+# ---------------------------------------------------------------------------
+
+def _tool_bash(command: str, cwd: str | None = None) -> str:
+    """Run shell command, return combined stdout+stderr. Never raises."""
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd or get_active_project(),
+            capture_output=True,
+            text=True,
+            timeout=_BASH_TIMEOUT,
+        )
+        output = result.stdout + result.stderr
+        return output.strip() or "(no output)"
+    except subprocess.TimeoutExpired:
+        return f"Error: command timeout after {_BASH_TIMEOUT}s"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+def _tool_file_read(path: str) -> str:
+    """Read file content. Returns error string on failure."""
+    try:
+        path = _resolve_path(path)
+        with open(path) as f:
+            return f.read()
+    except Exception as exc:
+        return f"Error reading {path}: {exc}"
+
+
+def _tool_file_write(path: str, content: str) -> str:
+    """Write file, creating parent dirs as needed. Returns status string."""
+    try:
+        path = _resolve_path(path)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+        return f"Written {path}"
+    except Exception as exc:
+        return f"Error writing {path}: {exc}"
+
+
+def _tool_file_edit(path: str, old_str: str, new_str: str) -> str:
+    """Replace exact string in file. Returns error if old_str not found."""
+    try:
+        path = _resolve_path(path)
+        with open(path) as f:
+            content = f.read()
+        if old_str not in content:
+            return f"Error: string not found in {path}"
+        new_content = content.replace(old_str, new_str, 1)
+        with open(path, "w") as f:
+            f.write(new_content)
+        return f"Edited {path}"
+    except Exception as exc:
+        return f"Error editing {path}: {exc}"
+
+
+def _tool_glob(pattern: str) -> str:
+    """Find files matching pattern. Returns newline-separated list."""
+    try:
+        if not os.path.isabs(pattern):
+            pattern = os.path.join(get_active_project(), pattern)
+        matches = _glob_module.glob(pattern, recursive=True)
+        return "\n".join(sorted(matches)) if matches else "(no matches)"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+def _tool_grep(pattern: str, path: str) -> str:
+    """Search for pattern in path. Returns matching lines."""
+    try:
+        path = _resolve_path(path)
+        result = subprocess.run(
+            ["grep", "-rn", pattern, path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout.strip() or "(no matches)"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+def _resolve_path(path: str) -> str:
+    """Make relative paths absolute using active project as base."""
+    if os.path.isabs(path):
+        return path
+    return os.path.join(get_active_project(), path)
+
+
+# ---------------------------------------------------------------------------
+# Project management
+# ---------------------------------------------------------------------------
+
+def _load_identity() -> dict:
+    try:
+        with open(_IDENTITY_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_identity(identity: dict) -> None:
+    try:
+        dir_ = os.path.dirname(_IDENTITY_PATH)
+        with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False, suffix=".tmp") as f:
+            json.dump(identity, f, indent=2)
+            tmp = f.name
+        os.replace(tmp, _IDENTITY_PATH)
+    except Exception as exc:
+        logger.warning("coder: failed to save identity: %s", exc)
+
+
+def get_active_project() -> str:
+    """Return active project path. Falls back to PROJECTS_HOME."""
+    identity = _load_identity()
+    path = identity.get("active_project", "").strip()
+    if path and os.path.isdir(path):
+        return path
+    return config.PROJECTS_HOME
+
+
+def new_project(name: str) -> str:
+    """Create new project directory and set it as active. Returns status string."""
+    path = os.path.join(config.PROJECTS_HOME, name)
+    os.makedirs(path, exist_ok=True)
+    identity = _load_identity()
+    identity["active_project"] = path
+    _save_identity(identity)
+    return path
+
+
+def switch_project(name: str) -> str:
+    """Switch active project to named directory. Returns path."""
+    path = os.path.join(config.PROJECTS_HOME, name)
+    identity = _load_identity()
+    identity["active_project"] = path
+    _save_identity(identity)
+    return path
+
+
+def list_projects() -> list[str]:
+    """Return list of project directory names in PROJECTS_HOME."""
+    try:
+        return [
+            d for d in os.listdir(config.PROJECTS_HOME)
+            if os.path.isdir(os.path.join(config.PROJECTS_HOME, d))
+        ]
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Tool dispatcher
+# ---------------------------------------------------------------------------
+
+def _dispatch_tool(name: str, input_: dict) -> str:
+    if name == "bash":
+        return _tool_bash(input_["command"])
+    if name == "file_read":
+        return _tool_file_read(input_["path"])
+    if name == "file_write":
+        return _tool_file_write(input_["path"], input_["content"])
+    if name == "file_edit":
+        return _tool_file_edit(input_["path"], input_["old_str"], input_["new_str"])
+    if name == "glob":
+        return _tool_glob(input_["pattern"])
+    if name == "grep":
+        return _tool_grep(input_["pattern"], input_["path"])
+    return f"Error: unknown tool {name!r}"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic client
+# ---------------------------------------------------------------------------
+
+def _get_client() -> anthropic.Anthropic:
+    global _CLIENT
+    if _CLIENT is None:
+        if not config.ANTHROPIC_API_KEY:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        _CLIENT = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    return _CLIENT
+
+
+# ---------------------------------------------------------------------------
+# Main execution loop
+# ---------------------------------------------------------------------------
+
+def run(command: str, menubar=None) -> str:
+    """
+    Execute voice command autonomously using the Claude tool loop.
+    Returns final spoken summary. Never raises.
+    """
+    try:
+        client = _get_client()
+        messages: list[dict] = [{"role": "user", "content": command}]
+        tool_calls = 0
+
+        while tool_calls < _MAX_TOOL_CALLS:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=4096,
+                system=_SYSTEM_PROMPT,
+                tools=_TOOLS,
+                messages=messages,
+            )
+
+            if response.stop_reason == "end_turn":
+                # Extract final text
+                for block in response.content:
+                    if hasattr(block, "text") and block.text:
+                        return block.text.strip()
+                return "Done."
+
+            if response.stop_reason != "tool_use":
+                return "Done."
+
+            # Process all tool calls in this response
+            tool_results = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                tool_calls += 1
+                tool_name = block.name
+                tool_input = block.input
+
+                # Update menubar with live feedback
+                if menubar is not None:
+                    label = _menubar_label(tool_name, tool_input)
+                    try:
+                        menubar.set_state_label(f"CODING • {label}")
+                    except Exception:
+                        pass
+
+                logger.debug("coder: tool %s input=%r", tool_name, tool_input)
+                result = _dispatch_tool(tool_name, tool_input)
+                logger.debug("coder: tool %s result=%r", tool_name, result[:200])
+
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            # Add assistant response + tool results to conversation
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+
+        return "Done — reached maximum tool call limit."
+
+    except Exception as exc:
+        logger.error("coder.run failed: %s", exc)
+        return f"Coding task failed: {exc}"
+
+
+def _menubar_label(tool_name: str, tool_input: dict) -> str:
+    if tool_name == "bash":
+        cmd = tool_input.get("command", "")[:40]
+        return f"running {cmd}..."
+    if tool_name == "file_write":
+        return f"writing {os.path.basename(tool_input.get('path', ''))}..."
+    if tool_name == "file_read":
+        return f"reading {os.path.basename(tool_input.get('path', ''))}..."
+    if tool_name == "file_edit":
+        return f"editing {os.path.basename(tool_input.get('path', ''))}..."
+    if tool_name == "glob":
+        return "finding files..."
+    if tool_name == "grep":
+        return "searching..."
+    return f"{tool_name}..."
+
+
+# ---------------------------------------------------------------------------
+# Project intent handler
+# ---------------------------------------------------------------------------
+
+_NEW_PROJECT_RE = re.compile(
+    r"\bnew\s+project\s+(?:called|named)?\s+([a-zA-Z0-9_\-]+)\b",
+    re.IGNORECASE,
+)
+_SWITCH_RE = re.compile(
+    r"\b(?:switch|go)\s+to\s+(?:project\s+)?([a-zA-Z0-9_\-]+)\b",
+    re.IGNORECASE,
+)
+
+
+def handle_project(command: str) -> str:
+    """Handle project management commands. Returns spoken response."""
+    m = _NEW_PROJECT_RE.search(command)
+    if m:
+        name = m.group(1)
+        new_project(name)
+        return f"Created project {name} and switched to it."
+
+    m = _SWITCH_RE.search(command)
+    if m:
+        name = m.group(1)
+        switch_project(name)
+        return f"Switched to {name}."
+
+    projects = list_projects()
+    if projects:
+        return "Your projects: " + ", ".join(projects) + "."
+    return f"No projects found in {config.PROJECTS_HOME}."

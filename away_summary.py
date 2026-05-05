@@ -1,5 +1,5 @@
 """
-away_summary.py — Aria Phase 4: Away Summary (spoken startup greeting).
+away_summary.py — Aria Phase 4: Away Summary (spoken startup greeting + gap detection).
 
 On startup, loads session notes and last search from prior sessions and
 generates a short spoken greeting via Groq, then speaks it aloud.
@@ -16,12 +16,19 @@ Public API:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import tempfile
+from datetime import datetime, timezone, timedelta
 
 from groq import Groq
 
 import config
 import memory
+
+_IDENTITY_PATH = os.path.join(os.path.dirname(__file__), "identity.json")
+_AWAY_GAP_MINUTES = 30
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +116,49 @@ def generate(session_notes: str, last_search: str) -> str:
 # ---------------------------------------------------------------------------
 # Speak greeting
 # ---------------------------------------------------------------------------
+
+def check_and_speak(speaker) -> None:
+    """
+    If more than 30 minutes have passed since last_active_at in identity.json,
+    speak a 1-sentence recap of the last task. Never raises.
+    """
+    try:
+        with open(_IDENTITY_PATH) as f:
+            identity = json.load(f)
+        last_active_str = identity.get("last_active_at")
+        if not last_active_str:
+            return
+        last_active = datetime.fromisoformat(last_active_str)
+        if last_active.tzinfo is None:
+            last_active = last_active.replace(tzinfo=timezone.utc)
+        gap = datetime.now(timezone.utc) - last_active
+        if gap < timedelta(minutes=_AWAY_GAP_MINUTES):
+            return
+        summary = identity.get("last_task_summary", "")
+        if summary:
+            speaker.say(f"Welcome back. Last time: {summary}")
+    except Exception as exc:
+        logger.warning("away_summary.check_and_speak failed: %s", exc)
+
+
+def update_last_active(task_summary: str) -> None:
+    """Write last_active_at and last_task_summary to identity.json. Never raises."""
+    try:
+        try:
+            with open(_IDENTITY_PATH) as f:
+                identity = json.load(f)
+        except Exception:
+            identity = {}
+        identity["last_active_at"] = datetime.now(timezone.utc).isoformat()
+        identity["last_task_summary"] = task_summary
+        dir_ = os.path.dirname(_IDENTITY_PATH)
+        with tempfile.NamedTemporaryFile("w", dir=dir_, delete=False, suffix=".tmp") as f:
+            json.dump(identity, f, indent=2)
+            tmp = f.name
+        os.replace(tmp, _IDENTITY_PATH)
+    except Exception as exc:
+        logger.warning("away_summary.update_last_active failed: %s", exc)
+
 
 def speak_greeting(speaker) -> None:
     """

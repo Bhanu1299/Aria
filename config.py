@@ -43,6 +43,14 @@ GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
 # ---------------------------------------------------------------------------
+# Coder — agentic code execution
+# ---------------------------------------------------------------------------
+
+PROJECTS_HOME: str = os.path.expanduser(os.getenv("PROJECTS_HOME", "~/Documents/trae_projects"))
+CODER_BASH_TIMEOUT: int = int(os.getenv("CODER_BASH_TIMEOUT", "60"))
+CODER_MAX_TOOL_CALLS: int = int(os.getenv("CODER_MAX_TOOL_CALLS", "50"))
+
+# ---------------------------------------------------------------------------
 # Location — auto-detected at startup, never hardcoded
 # ---------------------------------------------------------------------------
 

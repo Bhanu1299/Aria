@@ -107,6 +107,33 @@ _BROWSER_TASK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Code intent pre-check — "write/create/build/run/fix code" commands
+_CODE_RE = re.compile(
+    r"\b(?:"
+    r"write\s+(?:a\s+)?(?:python|flask|fastapi|script|function|class|test|code)"
+    r"|create\s+(?:a\s+)?(?:script|file|class|function|app|server|api)"
+    r"|build\s+(?:a\s+)?(?:app|server|api|script|tool|cli)"
+    r"|run\s+(?:the\s+)?(?:tests?|script|server|code|app)"
+    r"|fix\s+(?:the\s+)?(?:bug|error|issue|code|test)"
+    r"|install\s+(?:the\s+)?(?:package|dependency|dependencies|requirements)"
+    r"|refactor\s+(?:the\s+)?(?:code|function|class|file)"
+    r"|add\s+(?:a\s+)?(?:function|method|class|endpoint|route|feature)"
+    r"|implement\s+(?:a\s+)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Project management pre-check
+_PROJECT_RE = re.compile(
+    r"\b(?:"
+    r"new\s+project\s+(?:called|named)?"
+    r"|switch\s+to\s+(?:project\s+)?"
+    r"|list\s+(?:my\s+)?projects?"
+    r"|go\s+to\s+(?:project\s+)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # Recall intent pre-check — "what was my last search" never needs an LLM call.
 _RECALL_RE = re.compile(
     r'\b(last|previous|recent)\b.{0,40}\b(search|job|look|query)\b'
@@ -410,6 +437,32 @@ def route(command: str) -> dict:
             "site_name": "",
         }
 
+    # Project management pre-check — no LLM needed
+    if _PROJECT_RE.search(command):
+        logger.info("Project pre-check matched: %r", command)
+        return {
+            "type": "project",
+            "query": command.strip(),
+            "url": "",
+            "instructions": "",
+            "app_name": "",
+            "contact": "",
+            "site_name": "",
+        }
+
+    # Code pre-check — explicit coding commands skip the classifier
+    if _CODE_RE.search(command):
+        logger.info("Code pre-check matched: %r", command)
+        return {
+            "type": "code",
+            "query": command.strip(),
+            "url": "",
+            "instructions": "",
+            "app_name": "",
+            "contact": "",
+            "site_name": "",
+        }
+
     try:
         parsed = _classify(command)
         # Job search pre-check — if regex matched job intent but LLM chose
@@ -453,7 +506,7 @@ def _classify(command: str) -> dict:
 
     parsed = json.loads(raw)
 
-    if "type" not in parsed or parsed["type"] not in ("knowledge", "web_search", "web_direct", "app", "media", "navigate", "app_control", "briefing", "jobs", "apply", "browser_task", "capability", "skill"):
+    if "type" not in parsed or parsed["type"] not in ("knowledge", "web_search", "web_direct", "app", "media", "navigate", "app_control", "briefing", "jobs", "apply", "browser_task", "capability", "skill", "code", "project"):
         raise ValueError(f"Invalid type in classifier response: {parsed.get('type')!r}")
 
     # Normalise query — LLM sometimes returns null or empty

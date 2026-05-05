@@ -14,6 +14,7 @@ ICONS = {
     "LISTENING": "🎙",
     "THINKING":  "⏳",
     "DONE":      "✓",
+    "CODING":    "⚙",
 }
 
 
@@ -44,6 +45,10 @@ class AriaMenuBar(rumps.App):
             return
         self.title = icon
         print(f"[MENUBAR] State → {state}")
+
+    def set_state_label(self, label: str):
+        """Set an arbitrary label on the menu bar icon (used by coder for live feedback)."""
+        self.title = label
 
     def stop(self):
         """Quit the rumps application. Safe to call from any thread."""

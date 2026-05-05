@@ -49,5 +49,8 @@
   "target_roles": [],
   "learned_facts": [
     "User is patient"
-  ]
+  ],
+  "active_project": "",
+  "last_active_at": "",
+  "last_task_summary": ""
 }
