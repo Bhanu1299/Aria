@@ -93,6 +93,10 @@ import away_summary
 import notifier
 import voice_keyterms
 import prompt_suggester
+import prevent_sleep
+import tips
+import agent_summary
+import coder
 from sleep_guard import SleepGuard
 
 # Build domain vocab hint prompt once at module load — passed to every transcribe() call
@@ -170,6 +174,9 @@ def handle_command(transcript: str) -> None:
 
     try:
         sleep_guard.acquire()
+        prevent_sleep.start()
+        # Check for away gap before processing — speak recap if 30+ min idle
+        away_summary.check_and_speak(speaker)
         # Validate — reject silence / noise
         _cleaned = _re.sub(r'[\s\.\,\!\?\-\[\]]+', '', transcript)
         _SINGLE_WORD_COMMANDS = {
@@ -213,11 +220,20 @@ def handle_command(transcript: str) -> None:
 
         print(f"[Aria] Answer: {answer[:80]!r}")
         if answer:
-            speaker.say(answer)
-            prompt_suggester.suggest_async(intent.get("type", "") if intent else "", answer, speaker)
+            _intent_type = intent.get("type", "") if intent else ""
+            # Code intent: agent_summary speaks a clean recap in background.
+            # All other intents: speak immediately, no extra API latency.
+            if _intent_type == "code":
+                agent_summary.summarize_async(_intent_type, answer, speaker)
+            else:
+                speaker.say(answer)
+            prompt_suggester.suggest_async(_intent_type, answer, speaker)
             session_notes.extract_async(transcript, answer)
             memory_extractor.extract_async(transcript, answer)
             auto_dream.maybe_consolidate_async(transcript, answer)
+            away_summary.update_last_active(answer[:120])
+            _count = memory.increment_command_count()
+            tips.maybe_speak_tip(_count, speaker)
 
         menubar.set_state("DONE")
         time.sleep(1)
@@ -233,6 +249,7 @@ def handle_command(transcript: str) -> None:
     finally:
         _processing.clear()
         sleep_guard.release()
+        prevent_sleep.stop()
 
 
 def _process_release():
@@ -593,6 +610,17 @@ def _handle_intent(intent: dict, original_question: str) -> str:
                 print(f"[Aria] Skill execution failed: {exc}")
                 return "I ran into a problem with that command. Please try again."
         return answer_knowledge(original_question)
+
+    # --- Code: agentic code execution ---
+    if intent_type == "code":
+        print(f"[Aria] Code task: {intent['query']!r}")
+        menubar.set_state("CODING")
+        return coder.run(intent["query"], menubar=menubar)
+
+    # --- Project: project management ---
+    if intent_type == "project":
+        print(f"[Aria] Project command: {intent['query']!r}")
+        return coder.handle_project(intent["query"])
 
     # Fallback
     return answer_knowledge(original_question)
