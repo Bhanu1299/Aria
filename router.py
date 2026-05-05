@@ -107,18 +107,21 @@ _BROWSER_TASK_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Code intent pre-check — "write/create/build/run/fix code" commands
+# Code intent pre-check — coding + "make me X" commands
 _CODE_RE = re.compile(
     r"\b(?:"
     r"write\s+(?:a\s+)?(?:python|flask|fastapi|script|function|class|test|code)"
-    r"|create\s+(?:a\s+)?(?:script|file|class|function|app|server|api)"
-    r"|build\s+(?:a\s+)?(?:app|server|api|script|tool|cli)"
+    r"|create\s+(?:a\s+)?(?:script|file|class|function|app|server|api|website|page|portfolio|dashboard|tool)"
+    r"|build\s+(?:a\s+|me\s+a\s+)?(?:app|server|api|script|tool|cli|website|page|portfolio|dashboard)"
+    r"|make\s+(?:a\s+|me\s+a?\s+)?(?:app|script|tool|cli|website|page|portfolio|dashboard|server|api|function|class)"
     r"|run\s+(?:the\s+)?(?:tests?|script|server|code|app)"
     r"|fix\s+(?:the\s+)?(?:bug|error|issue|code|test)"
     r"|install\s+(?:the\s+)?(?:package|dependency|dependencies|requirements)"
     r"|refactor\s+(?:the\s+)?(?:code|function|class|file)"
     r"|add\s+(?:a\s+)?(?:function|method|class|endpoint|route|feature)"
     r"|implement\s+(?:a\s+)?"
+    r"|deploy\s+(?:it\s+)?(?:locally|to\s+local|on\s+local)"
+    r"|start\s+(?:the\s+)?(?:server|app|dev\s+server)"
     r")\b",
     re.IGNORECASE,
 )
