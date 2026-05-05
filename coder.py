@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 import anthropic
@@ -115,6 +116,12 @@ You are Aria's coding engine — a fully autonomous software engineer.
 Execute the user's request completely on your own using the tools available.
 Work in the active project directory. Never ask for confirmation.
 If a command fails, read the error and fix it. Iterate until done.
+
+For web apps / servers:
+- The bash tool auto-detects server commands and backgrounds them, then opens the browser.
+- Just call bash with the normal run command (e.g. "python app.py") — do NOT add & yourself.
+- After the server starts you will get back the localhost URL confirming it's running.
+
 When finished, respond with a concise 1-2 sentence summary of what was accomplished.
 """
 
@@ -122,13 +129,36 @@ When finished, respond with a concise 1-2 sentence summary of what was accomplis
 # Tool implementations
 # ---------------------------------------------------------------------------
 
+# Patterns that indicate a long-running server process
+_SERVER_RE = re.compile(
+    r"\b(?:python|python3|node|npm\s+(?:start|run)|uvicorn|gunicorn|flask|fastapi|http\.server|serve)\b"
+    r".*(?:app\.py|server\.py|main\.py|index\.js|run|start|serve)\b"
+    r"|python3?\s+-m\s+(?:http\.server|flask|uvicorn)",
+    re.IGNORECASE,
+)
+
+# Ports to check after starting a server
+_PORT_RE = re.compile(r"(?:port|:)\s*(\d{4,5})", re.IGNORECASE)
+
+
 def _tool_bash(command: str, cwd: str | None = None) -> str:
-    """Run shell command, return combined stdout+stderr. Never raises."""
+    """Run shell command, return combined stdout+stderr. Never raises.
+
+    If command looks like a blocking server, backgrounds it automatically,
+    waits 2 seconds for startup, then opens the browser to localhost.
+    """
+    work_dir = cwd or get_active_project()
+    # Strip trailing & if user already tried to background it
+    cmd_stripped = command.rstrip("& \t")
+
+    if _SERVER_RE.search(cmd_stripped) and "&" not in command:
+        return _run_server(cmd_stripped, work_dir)
+
     try:
         result = subprocess.run(
             command,
             shell=True,
-            cwd=cwd or get_active_project(),
+            cwd=work_dir,
             capture_output=True,
             text=True,
             timeout=_BASH_TIMEOUT,
@@ -139,6 +169,45 @@ def _tool_bash(command: str, cwd: str | None = None) -> str:
         return f"Error: command timeout after {_BASH_TIMEOUT}s"
     except Exception as exc:
         return f"Error: {exc}"
+
+
+def _run_server(command: str, cwd: str) -> str:
+    """Start a server process in the background, open browser to localhost."""
+    try:
+        # Detect port from command, default 5000
+        m = _PORT_RE.search(command)
+        port = int(m.group(1)) if m else 5000
+        # flask default
+        if "flask" in command.lower() or "app.py" in command.lower():
+            port = 5000
+        if "8000" in command:
+            port = 8000
+        if "8080" in command:
+            port = 8080
+
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(2)  # give server time to start
+        if proc.poll() is not None:
+            # Server already exited — grab output
+            out, err = proc.communicate()
+            return f"Server exited early:\n{(out + err).decode()[:500]}"
+
+        # Open browser
+        try:
+            subprocess.Popen(["open", f"http://localhost:{port}"])
+        except Exception:
+            pass
+
+        logger.debug("coder: server started on port %d (pid %d)", port, proc.pid)
+        return f"Server started on http://localhost:{port} (pid {proc.pid}). Browser opened."
+    except Exception as exc:
+        return f"Error starting server: {exc}"
 
 
 def _tool_file_read(path: str) -> str:
