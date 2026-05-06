@@ -70,7 +70,6 @@ from transcriber import Transcriber
 from voice_capture import VoiceCapture
 from speaker import Speaker
 from browser import BrowserExecutor, goto as browser_goto
-from router import route
 from summarizer import summarize, answer_knowledge
 from menubar import AriaMenuBar
 from hotkey import HotkeyListener
@@ -85,7 +84,6 @@ import memory
 import tracker
 import agent_browser
 import computer_use
-import planner
 import session_notes
 import memory_extractor
 import auto_dream
@@ -98,6 +96,9 @@ import tips
 import agent_summary
 import coder
 from sleep_guard import SleepGuard
+from tool import ToolRegistry
+from agent import Agent
+from plugins.core import CorePlugin
 
 # Build domain vocab hint prompt once at module load — passed to every transcribe() call
 _KEYTERMS_PROMPT = voice_keyterms.build_prompt()
@@ -118,6 +119,7 @@ transcriber_instance: Transcriber = None
 speaker: Speaker = None
 browser: BrowserExecutor = None
 hotkey_listener: HotkeyListener = None
+_agent: Agent = None
 
 
 # ---------------------------------------------------------------------------
@@ -197,37 +199,14 @@ def handle_command(transcript: str) -> None:
         if followup is not None:
             print(f"[Aria] Jobs follow-up: {followup!r}")
             answer = followup
-        elif planner.is_multi_step(transcript):
-            print(f"[Aria] Multi-step detected: {transcript!r}")
-            answer = planner.run(
-                goal=transcript,
-                speaker=speaker,
-                voice_capture=voice_capture,
-                transcriber=transcriber_instance,
-                handle_intent_fn=_handle_intent,
-            )
-            intent = None
-            if answer is None:
-                # Plan generation failed — fall back to single-intent routing
-                print("[Aria] Planner returned None — falling back to single-intent routing")
-                intent = route(transcript)
-                print(f"[Aria] Intent (fallback): type={intent['type']!r}  query={intent['query']!r}")
-                answer = _handle_intent(intent, transcript)
         else:
-            intent = route(transcript)
-            print(f"[Aria] Intent: type={intent['type']!r}  query={intent['query']!r}")
-            answer = _handle_intent(intent, transcript)
+            print(f"[Aria] Agent running: {transcript!r}")
+            answer = _agent.run(transcript)
 
         print(f"[Aria] Answer: {answer[:80]!r}")
         if answer:
-            _intent_type = intent.get("type", "") if intent else ""
-            # Code intent: agent_summary speaks a clean recap in background.
-            # All other intents: speak immediately, no extra API latency.
-            if _intent_type == "code":
-                agent_summary.summarize_async(_intent_type, answer, speaker)
-            else:
-                speaker.say(answer)
-            prompt_suggester.suggest_async(_intent_type, answer, speaker)
+            speaker.say(answer)
+            prompt_suggester.suggest_async("", answer, speaker)
             session_notes.extract_async(transcript, answer)
             memory_extractor.extract_async(transcript, answer)
             auto_dream.maybe_consolidate_async(transcript, answer)
@@ -668,7 +647,21 @@ def main():
     # 6. Menu bar
     menubar = AriaMenuBar()
 
-    # 6b. Away summary — speak a greeting based on prior session notes
+    # 6b. Initialize agent with core plugin
+    global _agent
+    _registry = ToolRegistry()
+    _core_plugin = CorePlugin(
+        browser=browser,
+        speaker=speaker,
+        voice_capture=voice_capture,
+        transcriber=transcriber_instance,
+        menubar=menubar,
+        keyterms_prompt=_KEYTERMS_PROMPT,
+    )
+    _core_plugin.register(_registry)
+    _agent = Agent(_registry)
+
+    # 6c. Away summary — speak a greeting based on prior session notes
     away_summary.speak_greeting(speaker)
 
     # 7. Hotkey listener
