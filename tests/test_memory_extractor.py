@@ -1,12 +1,5 @@
 """
 tests/test_memory_extractor.py — Unit tests for memory_extractor.py
-
-Tests:
-  test_extract_finds_name_from_transcript   — extract() returns facts from Groq response
-  test_no_duplicate_facts                  — same fact is not stored twice
-  test_facts_capped_at_50                  — 51st fact displaces the oldest
-  test_extract_async_does_not_block        — extract_async() returns in < 0.1s even with slow Groq
-  test_graceful_on_groq_failure            — Groq exception → [] not raised
 """
 
 from __future__ import annotations
@@ -20,50 +13,32 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# Ensure project root is on the path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from llm.base import LLMResponse
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-def _make_fake_groq_response(content: str):
-    """Build a minimal mock that looks like a groq ChatCompletion response."""
-    choice = MagicMock()
-    choice.message.content = content
-    resp = MagicMock()
-    resp.choices = [choice]
-    return resp
+def _make_llm_response(text: str) -> LLMResponse:
+    return LLMResponse(text=text, tool_calls=[], stop_reason="end_turn",
+                       provider_used="groq", model_used="llama-3.3-70b-versatile")
 
 
 def _make_temp_identity(facts: list[str] | None = None) -> str:
-    """Write a temporary identity.json with given learned_facts and return path."""
     identity = {"name": "Test User", "learned_facts": facts or []}
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False
-    )
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
     json.dump(identity, tmp)
     tmp.close()
     return tmp.name
 
 
-# ---------------------------------------------------------------------------
-# test_extract_finds_name_from_transcript
-# ---------------------------------------------------------------------------
-
 def test_extract_finds_name_from_transcript():
-    """extract() should return new facts parsed from Groq's JSON array response."""
+    """extract() should return new facts parsed from LLM's JSON array response."""
     expected_facts = ["User's name is Alice"]
-    fake_resp = _make_fake_groq_response(json.dumps(expected_facts))
-
     tmp_path = _make_temp_identity()
     try:
-        with patch("memory_extractor._get_client") as mock_get_client, \
+        with patch("llm.llm_client.complete") as mock_complete, \
              patch("memory_extractor._IDENTITY_PATH", tmp_path):
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = fake_resp
-            mock_get_client.return_value = mock_client
+            mock_complete.return_value = _make_llm_response(json.dumps(expected_facts))
 
             import memory_extractor
             result = memory_extractor.extract(
@@ -76,25 +51,17 @@ def test_extract_finds_name_from_transcript():
         os.unlink(tmp_path)
 
 
-# ---------------------------------------------------------------------------
-# test_no_duplicate_facts
-# ---------------------------------------------------------------------------
-
 def test_no_duplicate_facts():
     """Calling extract_async twice with the same fact should only store it once."""
     fact = "User prefers dark mode"
-    fake_resp = _make_fake_groq_response(json.dumps([fact]))
-
     tmp_path = _make_temp_identity()
     done_events = [threading.Event(), threading.Event()]
     call_count = [0]
 
     try:
-        with patch("memory_extractor._get_client") as mock_get_client, \
+        with patch("llm.llm_client.complete") as mock_complete, \
              patch("memory_extractor._IDENTITY_PATH", tmp_path):
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = fake_resp
-            mock_get_client.return_value = mock_client
+            mock_complete.return_value = _make_llm_response(json.dumps([fact]))
 
             import memory_extractor
 
@@ -108,16 +75,9 @@ def test_no_duplicate_facts():
                 call_count[0] += 1
 
             with patch("memory_extractor._save_identity", side_effect=tracking_save):
-                memory_extractor.extract_async(
-                    transcript="I love dark mode.",
-                    answer="Dark mode enabled.",
-                )
+                memory_extractor.extract_async("I love dark mode.", "Dark mode enabled.")
                 done_events[0].wait(timeout=5.0)
-
-                memory_extractor.extract_async(
-                    transcript="I love dark mode.",
-                    answer="Already using dark mode.",
-                )
+                memory_extractor.extract_async("I love dark mode.", "Already using dark mode.")
                 done_events[1].wait(timeout=5.0)
 
         with open(tmp_path) as f:
@@ -130,26 +90,17 @@ def test_no_duplicate_facts():
         os.unlink(tmp_path)
 
 
-# ---------------------------------------------------------------------------
-# test_facts_capped_at_50
-# ---------------------------------------------------------------------------
-
 def test_facts_capped_at_50():
     """When identity already has 50 facts, a new extraction drops the oldest."""
     existing_facts = [f"Fact number {i}" for i in range(50)]
     new_fact = "User drinks coffee every morning"
-
-    fake_resp = _make_fake_groq_response(json.dumps([new_fact]))
     tmp_path = _make_temp_identity(facts=existing_facts)
-
     done_event = threading.Event()
 
     try:
-        with patch("memory_extractor._get_client") as mock_get_client, \
+        with patch("llm.llm_client.complete") as mock_complete, \
              patch("memory_extractor._IDENTITY_PATH", tmp_path):
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = fake_resp
-            mock_get_client.return_value = mock_client
+            mock_complete.return_value = _make_llm_response(json.dumps([new_fact]))
 
             import memory_extractor
 
@@ -160,10 +111,7 @@ def test_facts_capped_at_50():
                 done_event.set()
 
             with patch("memory_extractor._save_identity", side_effect=capturing_save):
-                memory_extractor.extract_async(
-                    transcript="I have coffee every morning.",
-                    answer="Got it!",
-                )
+                memory_extractor.extract_async("I have coffee every morning.", "Got it!")
                 done_event.wait(timeout=5.0)
 
         with open(tmp_path) as f:
@@ -177,19 +125,12 @@ def test_facts_capped_at_50():
         os.unlink(tmp_path)
 
 
-# ---------------------------------------------------------------------------
-# test_extract_async_does_not_block
-# ---------------------------------------------------------------------------
-
 def test_extract_async_does_not_block():
-    """
-    extract_async() must return to the caller in under 0.1s even when the
-    underlying Groq call takes 2 seconds.
-    """
+    """extract_async() must return in under 0.1s even when the LLM call is slow."""
     ready_event = threading.Event()
 
     def slow_extract(*args, **kwargs):
-        ready_event.wait()  # blocks until test releases it
+        ready_event.wait()
         return ["User is patient"]
 
     tmp_path = _make_temp_identity()
@@ -198,35 +139,20 @@ def test_extract_async_does_not_block():
              patch("memory_extractor._IDENTITY_PATH", tmp_path):
             import memory_extractor
             t0 = time.monotonic()
-            memory_extractor.extract_async(
-                transcript="Do something slow",
-                answer="Sure, doing it now.",
-            )
+            memory_extractor.extract_async("Do something slow", "Sure, doing it now.")
             elapsed = time.monotonic() - t0
 
-        # Release the blocked thread so the process doesn't hang
         ready_event.set()
     finally:
-        # Wait briefly for the thread to finish before removing the temp file
         time.sleep(0.1)
         os.unlink(tmp_path)
 
-    assert elapsed < 0.1, (
-        f"extract_async() blocked for {elapsed:.3f}s — expected < 0.1s"
-    )
+    assert elapsed < 0.1, f"extract_async() blocked for {elapsed:.3f}s"
 
-
-# ---------------------------------------------------------------------------
-# test_graceful_on_groq_failure
-# ---------------------------------------------------------------------------
 
 def test_graceful_on_groq_failure():
-    """If Groq raises an exception, extract() returns [] — never re-raises."""
-    with patch("memory_extractor._get_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = RuntimeError("Groq down")
-        mock_get_client.return_value = mock_client
-
+    """If LLM raises an exception, extract() returns [] — never re-raises."""
+    with patch("llm.llm_client.complete", side_effect=RuntimeError("LLM down")):
         import memory_extractor
         result = memory_extractor.extract(
             transcript="What's my name?",

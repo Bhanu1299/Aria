@@ -12,13 +12,9 @@ import json
 import logging
 import os
 
-from groq import Groq
-
-import config
+from llm import llm_client
 
 logger = logging.getLogger(__name__)
-
-_CLIENT: Groq | None = None
 _MAX_PAGE_CHARS = 6000
 
 # ---------------------------------------------------------------------------
@@ -72,18 +68,6 @@ def _build_identity_context(identity: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Groq client
-# ---------------------------------------------------------------------------
-
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set in .env")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -102,8 +86,6 @@ def summarize(page_text: str, query: str, instructions: str = "") -> str:
     if not page_text.strip():
         return "I couldn't load the page to find an answer."
 
-    client = _get_client()
-
     user_content = (
         f"The user asked: {query}\n"
         f"What to extract: {instructions}\n\n"
@@ -111,16 +93,13 @@ def summarize(page_text: str, query: str, instructions: str = "") -> str:
     )
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": _WEB_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.3,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": user_content}],
+            tier="fast",
+            system=_WEB_SYSTEM_PROMPT,
             max_tokens=300,
         )
-        answer = response.choices[0].message.content.strip()
+        answer = resp.text.strip()
         logger.debug("Summarizer answer: %s", answer)
         return answer
 
@@ -142,8 +121,6 @@ def answer_knowledge(query: str) -> str:
     Returns:
         A spoken-word answer string. Never raises.
     """
-    client = _get_client()
-
     # Load identity fresh to pick up any learned_facts written since startup
     fresh_identity = _load_identity()
     fresh_context = _build_identity_context(fresh_identity)
@@ -175,16 +152,13 @@ def answer_knowledge(query: str) -> str:
     )
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": knowledge_system_prompt},
-                {"role": "user", "content": query},
-            ],
-            temperature=0.4,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": query}],
+            tier="fast",
+            system=knowledge_system_prompt,
             max_tokens=300,
         )
-        answer = response.choices[0].message.content.strip()
+        answer = resp.text.strip()
         logger.debug("Knowledge answer: %s", answer)
         return answer
 

@@ -11,14 +11,12 @@ from __future__ import annotations
 import logging
 import threading
 
-from groq import Groq
-import config
+from llm import llm_client
 
 logger = logging.getLogger(__name__)
 
 _TRIGGER_INTENTS = frozenset({"browser_task", "jobs", "web_search"})
 _MIN_ANSWER_WORDS = 20
-_CLIENT: Groq | None = None
 
 _SYSTEM_PROMPT = (
     "You are Aria, a sharp voice assistant. "
@@ -28,15 +26,6 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY not set")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
-
-
 def suggest(intent_type: str, answer: str) -> str:
     """Return a follow-up suggestion string, or '' if none applies. Never raises."""
     if intent_type not in _TRIGGER_INTENTS:
@@ -44,17 +33,13 @@ def suggest(intent_type: str, answer: str) -> str:
     if len(answer.split()) < _MIN_ANSWER_WORDS:
         return ""
     try:
-        client = _get_client()
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": f"You just told the user: {answer}"},
-            ],
-            temperature=0.4,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": f"You just told the user: {answer}"}],
+            tier="fast",
+            system=_SYSTEM_PROMPT,
             max_tokens=60,
         )
-        result = (response.choices[0].message.content or "").strip()
+        result = resp.text.strip()
         return result if result.lower().lstrip("*_ ").startswith("also") else ""
     except Exception as exc:
         logger.warning("prompt_suggester.suggest failed: %s", exc)

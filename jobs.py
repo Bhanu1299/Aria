@@ -26,6 +26,7 @@ from groq import Groq
 import agent_browser
 import computer_use
 import config
+from llm import llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -115,25 +116,18 @@ def _parse_query(query: str) -> tuple[str, str]:
     Returns (role, location). Falls back to (query, "") on error.
     """
     try:
-        client = _get_client()
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are Aria — Bhanu's personal AI. "
-                        "Extract job search intent. Return JSON only — no markdown, no extras. "
-                        "Keys: 'role' (job title/type) and 'location' (city, 'remote', or empty string). "
-                        'Example: {"role": "software engineer", "location": "New York"}'
-                    ),
-                },
-                {"role": "user", "content": query},
-            ],
-            temperature=0.1,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": query}],
+            tier="fast",
+            system=(
+                "You are Aria — Bhanu's personal AI. "
+                "Extract job search intent. Return JSON only — no markdown, no extras. "
+                "Keys: 'role' (job title/type) and 'location' (city, 'remote', or empty string). "
+                'Example: {"role": "software engineer", "location": "New York"}'
+            ),
             max_tokens=60,
         )
-        raw = response.choices[0].message.content.strip()
+        raw = resp.text.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw.strip())
         parsed = json.loads(raw)
