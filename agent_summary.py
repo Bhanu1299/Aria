@@ -10,12 +10,9 @@ from __future__ import annotations
 import logging
 import threading
 
-import anthropic
-import config
+from llm import llm_client
 
 logger = logging.getLogger(__name__)
-
-_CLIENT: anthropic.Anthropic | None = None
 
 _SYSTEM_PROMPT = (
     "You are Aria, a concise voice assistant. "
@@ -25,33 +22,23 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _get_client() -> anthropic.Anthropic:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.ANTHROPIC_API_KEY:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        _CLIENT = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    return _CLIENT
-
-
 def summarize(intent_type: str, raw_answer: str) -> str:
     """
-    Call Claude API synchronously and return a 1-sentence spoken summary.
+    Call LLM synchronously and return a 1-sentence spoken summary.
     Returns raw_answer on any error or if raw_answer is empty.
     """
     if not raw_answer.strip():
         return raw_answer
     try:
-        client = _get_client()
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=60,
-            system=_SYSTEM_PROMPT,
+        resp = llm_client.complete(
             messages=[
                 {"role": "user", "content": f"Intent: {intent_type}\nResult: {raw_answer[:500]}"},
             ],
+            tier="cheap",
+            system=_SYSTEM_PROMPT,
+            max_tokens=60,
         )
-        result = (response.content[0].text or "").strip()
+        result = resp.text.strip()
         return result if result else raw_answer
     except Exception as exc:
         logger.warning("agent_summary.summarize failed: %s", exc)

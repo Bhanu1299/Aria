@@ -22,9 +22,7 @@ import os
 import tempfile
 from datetime import datetime, timezone, timedelta
 
-from groq import Groq
-
-import config
+from llm import llm_client
 import memory
 
 _IDENTITY_PATH = os.path.join(os.path.dirname(__file__), "identity.json")
@@ -32,22 +30,7 @@ _AWAY_GAP_MINUTES = 30
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Groq client (lazy singleton)
-# ---------------------------------------------------------------------------
-
-_CLIENT: Groq | None = None
-
 _FALLBACK = "Ready when you are."
-
-
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set — away summary disabled")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
 
 
 # ---------------------------------------------------------------------------
@@ -90,22 +73,17 @@ def generate(session_notes: str, last_search: str) -> str:
         return _FALLBACK
 
     try:
-        client = _get_client()
         prompt = _USER_TEMPLATE.format(
             session_notes=session_notes.strip() if session_notes else "(none)",
             last_search=last_search.strip() if last_search else "(none)",
         )
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.5,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": prompt}],
+            tier="fast",
+            system=_SYSTEM_PROMPT,
             max_tokens=128,
         )
-        greeting = response.choices[0].message.content or ""
-        greeting = greeting.strip()
+        greeting = resp.text.strip()
         logger.debug("away_summary.generate: %d chars generated", len(greeting))
         return greeting if greeting else _FALLBACK
     except Exception as exc:

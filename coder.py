@@ -22,17 +22,14 @@ import tempfile
 import time
 from typing import Any
 
-import anthropic
-
 import config
+from llm import llm_client
 
 logger = logging.getLogger(__name__)
 
 _IDENTITY_PATH = os.path.join(os.path.dirname(__file__), "identity.json")
 _BASH_TIMEOUT = config.CODER_BASH_TIMEOUT
 _MAX_TOOL_CALLS = config.CODER_MAX_TOOL_CALLS
-
-_CLIENT: anthropic.Anthropic | None = None
 
 # ---------------------------------------------------------------------------
 # Claude tools definition
@@ -364,80 +361,68 @@ def _dispatch_tool(name: str, input_: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Anthropic client
-# ---------------------------------------------------------------------------
-
-def _get_client() -> anthropic.Anthropic:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.ANTHROPIC_API_KEY:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        _CLIENT = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    return _CLIENT
-
-
-# ---------------------------------------------------------------------------
 # Main execution loop
 # ---------------------------------------------------------------------------
 
 def run(command: str, menubar=None) -> str:
     """
-    Execute voice command autonomously using the Claude tool loop.
+    Execute voice command autonomously using the LLM tool loop.
     Returns final spoken summary. Never raises.
     """
     try:
-        client = _get_client()
         messages: list[dict] = [{"role": "user", "content": command}]
         tool_calls = 0
 
         while tool_calls < _MAX_TOOL_CALLS:
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
+            resp = llm_client.complete(
+                messages=messages,
+                tools=_TOOLS,
+                tier="smart",
                 max_tokens=4096,
                 system=_SYSTEM_PROMPT,
-                tools=_TOOLS,
-                messages=messages,
             )
 
-            if response.stop_reason == "end_turn":
-                # Extract final text
-                for block in response.content:
-                    if hasattr(block, "text") and block.text:
-                        return block.text.strip()
+            if resp.stop_reason == "end_turn":
+                return resp.text.strip() or "Done."
+
+            if resp.stop_reason != "tool_use":
                 return "Done."
 
-            if response.stop_reason != "tool_use":
-                return "Done."
+            # Reconstruct assistant turn from LLMResponse
+            assistant_content: list[dict] = []
+            if resp.text:
+                assistant_content.append({"type": "text", "text": resp.text})
+            for tc in resp.tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.input,
+                })
 
-            # Process all tool calls in this response
+            # Process tool calls
             tool_results = []
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
+            for tc in resp.tool_calls:
                 tool_calls += 1
-                tool_name = block.name
-                tool_input = block.input
 
-                # Update menubar with live feedback
                 if menubar is not None:
-                    label = _menubar_label(tool_name, tool_input)
+                    label = _menubar_label(tc.name, tc.input)
                     try:
                         menubar.set_state_label(f"CODING • {label}")
                     except Exception:
                         pass
 
-                logger.debug("coder: tool %s input=%r", tool_name, tool_input)
-                result = _dispatch_tool(tool_name, tool_input)
-                logger.debug("coder: tool %s result=%r", tool_name, result[:200])
+                logger.debug("coder: tool %s input=%r", tc.name, tc.input)
+                result = _dispatch_tool(tc.name, tc.input)
+                logger.debug("coder: tool %s result=%r", tc.name, result[:200])
 
                 tool_results.append({
                     "type": "tool_result",
-                    "tool_use_id": block.id,
+                    "tool_use_id": tc.id,
                     "content": result,
                 })
 
-            # Add assistant response + tool results to conversation
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": tool_results})
 
         return "Done — reached maximum tool call limit."

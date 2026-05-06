@@ -31,6 +31,7 @@ from groq import Groq
 import agent_browser
 import config
 import dom_browser
+from llm import llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -222,18 +223,13 @@ def _dom_decide(
             + "\n".join(lines)
         )
     try:
-        client = _get_client()
-        response = _with_retry(
-            client.chat.completions.create,
-            model=_DOM_TEXT_MODEL,
-            messages=[
-                {"role": "system", "content": _CU_DOM_SYSTEM},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=0.1,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": user_text}],
+            tier="fast",
+            system=_CU_DOM_SYSTEM,
             max_tokens=150,
         )
-        raw = response.choices[0].message.content.strip()
+        raw = resp.text.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw.strip())
         raw = _extract_first_json(raw)
@@ -291,18 +287,13 @@ def _dom_research_decide(
               "If you have all needed data, return 'done' with a complete summary."
         )
     try:
-        client = _get_client()
-        response = _with_retry(
-            client.chat.completions.create,
-            model=_DOM_TEXT_MODEL,
-            messages=[
-                {"role": "system", "content": _CU_DOM_GENERAL_SYSTEM},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=0.1,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": user_text}],
+            tier="fast",
+            system=_CU_DOM_GENERAL_SYSTEM,
             max_tokens=300,
         )
-        raw = response.choices[0].message.content.strip()
+        raw = resp.text.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw.strip())
         raw = _extract_first_json(raw)

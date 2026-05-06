@@ -1,12 +1,5 @@
 """
 tests/test_prompt_suggester.py — Unit tests for prompt_suggester.py
-
-Tests:
-  test_suggest_returns_string_for_browser_task  — mock Groq, browser_task intent, long answer → "Also…"
-  test_suggest_returns_empty_for_short_answer   — < 20 words → ""
-  test_suggest_returns_empty_for_excluded_intent — intent="weather" → ""
-  test_suggest_async_does_not_block             — suggest_async returns quickly
-  test_suggest_graceful_on_groq_failure         — Groq raises → "" not raised
 """
 
 from __future__ import annotations
@@ -19,18 +12,12 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from llm.base import LLMResponse
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-def _make_fake_groq_response(content: str):
-    """Build a minimal mock that looks like a groq ChatCompletion response."""
-    choice = MagicMock()
-    choice.message.content = content
-    resp = MagicMock()
-    resp.choices = [choice]
-    return resp
+def _make_llm_response(text: str) -> LLMResponse:
+    return LLMResponse(text=text, tool_calls=[], stop_reason="end_turn",
+                       provider_used="groq", model_used="llama-3.3-70b-versatile")
 
 
 _LONG_ANSWER = (
@@ -40,92 +27,49 @@ _LONG_ANSWER = (
 )
 
 
-# ---------------------------------------------------------------------------
-# test_suggest_returns_string_for_browser_task
-# ---------------------------------------------------------------------------
-
 def test_suggest_returns_string_for_browser_task():
-    """
-    With a mocked Groq client returning 'Also — want me to apply to any of those?',
-    suggest() must return that non-empty string starting with 'Also'.
-    """
+    """suggest() must return non-empty string starting with 'Also' for valid input."""
     fake_reply = "Also — want me to apply to any of those?"
-    fake_resp = _make_fake_groq_response(fake_reply)
 
-    with patch("prompt_suggester._get_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = fake_resp
-        mock_get_client.return_value = mock_client
+    with patch("llm.llm_client.complete") as mock_complete:
+        mock_complete.return_value = _make_llm_response(fake_reply)
 
         import prompt_suggester
-        result = prompt_suggester.suggest(
-            intent_type="browser_task",
-            answer=_LONG_ANSWER,
-        )
+        result = prompt_suggester.suggest(intent_type="browser_task", answer=_LONG_ANSWER)
 
-    assert isinstance(result, str), "suggest() must return str"
-    assert result != "", "suggest() must return non-empty string for valid input"
-    assert result.lower().startswith("also"), (
-        f"Result must start with 'Also', got: {result!r}"
-    )
+    assert isinstance(result, str)
+    assert result != ""
+    assert result.lower().startswith("also"), f"Result must start with 'Also', got: {result!r}"
 
-
-# ---------------------------------------------------------------------------
-# test_suggest_returns_empty_for_short_answer
-# ---------------------------------------------------------------------------
 
 def test_suggest_returns_empty_for_short_answer():
-    """
-    If answer has fewer than 20 words, suggest() must return '' without
-    calling Groq at all.
-    """
-    short_answer = "I found two jobs."  # well under 20 words
+    """If answer has fewer than 20 words, suggest() must return '' without calling LLM."""
+    short_answer = "I found two jobs."
 
-    with patch("prompt_suggester._get_client") as mock_get_client:
+    with patch("llm.llm_client.complete") as mock_complete:
         import prompt_suggester
-        result = prompt_suggester.suggest(
-            intent_type="browser_task",
-            answer=short_answer,
-        )
-        # Groq should never be contacted for a short answer
-        mock_get_client.assert_not_called()
+        result = prompt_suggester.suggest(intent_type="browser_task", answer=short_answer)
+        mock_complete.assert_not_called()
 
-    assert result == "", f"Expected '' for short answer, got {result!r}"
+    assert result == ""
 
-
-# ---------------------------------------------------------------------------
-# test_suggest_returns_empty_for_excluded_intent
-# ---------------------------------------------------------------------------
 
 def test_suggest_returns_empty_for_excluded_intent():
-    """
-    For intents not in _TRIGGER_INTENTS (e.g. 'weather'), suggest() returns ''
-    regardless of answer length.
-    """
-    with patch("prompt_suggester._get_client") as mock_get_client:
+    """For intents not in _TRIGGER_INTENTS, suggest() returns '' without calling LLM."""
+    with patch("llm.llm_client.complete") as mock_complete:
         import prompt_suggester
-        result = prompt_suggester.suggest(
-            intent_type="weather",
-            answer=_LONG_ANSWER,
-        )
-        mock_get_client.assert_not_called()
+        result = prompt_suggester.suggest(intent_type="weather", answer=_LONG_ANSWER)
+        mock_complete.assert_not_called()
 
-    assert result == "", f"Expected '' for excluded intent, got {result!r}"
+    assert result == ""
 
-
-# ---------------------------------------------------------------------------
-# test_suggest_async_does_not_block
-# ---------------------------------------------------------------------------
 
 def test_suggest_async_does_not_block():
-    """
-    suggest_async() must return to the caller in under 0.5 s even when the
-    underlying suggest() call would take several seconds.
-    """
+    """suggest_async() must return in under 0.5s even when suggest() is slow."""
     block_event = threading.Event()
 
-    def slow_suggest(intent_type: str, answer: str) -> str:
-        block_event.wait()   # block until test releases it
+    def slow_suggest(intent_type, answer):
+        block_event.wait()
         return "Also — slow suggestion."
 
     mock_speaker = MagicMock()
@@ -133,38 +77,17 @@ def test_suggest_async_does_not_block():
     with patch("prompt_suggester.suggest", side_effect=slow_suggest):
         import prompt_suggester
         t0 = time.monotonic()
-        prompt_suggester.suggest_async(
-            intent_type="browser_task",
-            answer=_LONG_ANSWER,
-            speaker=mock_speaker,
-        )
+        prompt_suggester.suggest_async("browser_task", _LONG_ANSWER, mock_speaker)
         elapsed = time.monotonic() - t0
 
-    # Release the blocked thread so the process doesn't hang
     block_event.set()
+    assert elapsed < 0.5
 
-    assert elapsed < 0.5, (
-        f"suggest_async() blocked for {elapsed:.3f}s — expected < 0.5s"
-    )
-
-
-# ---------------------------------------------------------------------------
-# test_suggest_graceful_on_groq_failure
-# ---------------------------------------------------------------------------
 
 def test_suggest_graceful_on_groq_failure():
-    """
-    When Groq raises an exception, suggest() must return '' — never re-raise.
-    """
-    with patch("prompt_suggester._get_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = RuntimeError("Groq down")
-        mock_get_client.return_value = mock_client
-
+    """When LLM raises, suggest() must return '' without re-raising."""
+    with patch("llm.llm_client.complete", side_effect=RuntimeError("LLM down")):
         import prompt_suggester
-        result = prompt_suggester.suggest(
-            intent_type="jobs",
-            answer=_LONG_ANSWER,
-        )
+        result = prompt_suggester.suggest(intent_type="jobs", answer=_LONG_ANSWER)
 
-    assert result == "", f"Expected '' on Groq failure, got {result!r}"
+    assert result == ""

@@ -1,12 +1,5 @@
 """
 tests/test_auto_dream.py — Unit tests for auto_dream.py (Task 10: AutoDream)
-
-Tests:
-  test_consolidate_rewrites_session_notes     — mock Groq, verify clear + store called
-  test_consolidate_deduplicates_facts         — mock Groq returning merged facts, verify identity.json updated
-  test_maybe_consolidate_fires_at_interval    — at count=5, consolidate() is called
-  test_maybe_consolidate_does_not_fire_before_interval — at count=4, consolidate() not called
-  test_consolidate_graceful_on_groq_failure   — when Groq raises, function returns without raising
 """
 
 from __future__ import annotations
@@ -18,36 +11,25 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from llm.base import LLMResponse
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-def _make_fake_groq_response(content: str):
-    """Build a minimal mock that looks like a groq ChatCompletion response."""
-    choice = MagicMock()
-    choice.message.content = content
-    resp = MagicMock()
-    resp.choices = [choice]
-    return resp
+def _make_llm_response(text: str) -> LLMResponse:
+    return LLMResponse(text=text, tool_calls=[], stop_reason="end_turn",
+                       provider_used="groq", model_used="llama-3.3-70b-versatile")
 
 
 def _make_temp_identity(facts: list | None = None) -> str:
-    """Write a temporary identity.json with given learned_facts and return path."""
     identity = {"name": "Test User", "learned_facts": facts or []}
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
     json.dump(identity, tmp)
     tmp.close()
     return tmp.name
 
-
-# ---------------------------------------------------------------------------
-# test_consolidate_rewrites_session_notes
-# ---------------------------------------------------------------------------
 
 def test_consolidate_rewrites_session_notes():
     """consolidate() should call clear_session_notes() then store_session_notes() with new notes."""
@@ -56,19 +38,16 @@ def test_consolidate_rewrites_session_notes():
         "session_notes": new_notes,
         "learned_facts": ["User is a Python developer"],
     })
-    fake_resp = _make_fake_groq_response(groq_payload)
     tmp_path = _make_temp_identity()
 
     try:
-        with patch("auto_dream._get_client") as mock_get_client, \
+        with patch("llm.llm_client.complete") as mock_complete, \
              patch("auto_dream._IDENTITY_PATH", tmp_path), \
              patch("auto_dream.memory.get_session_notes", return_value="old notes"), \
              patch("auto_dream.memory.clear_session_notes") as mock_clear, \
              patch("auto_dream.memory.store_session_notes") as mock_store, \
              patch("auto_dream.memory.reset_command_count"):
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = fake_resp
-            mock_get_client.return_value = mock_client
+            mock_complete.return_value = _make_llm_response(groq_payload)
 
             import auto_dream
             auto_dream.consolidate()
@@ -79,12 +58,8 @@ def test_consolidate_rewrites_session_notes():
         os.unlink(tmp_path)
 
 
-# ---------------------------------------------------------------------------
-# test_consolidate_deduplicates_facts
-# ---------------------------------------------------------------------------
-
 def test_consolidate_deduplicates_facts():
-    """consolidate() should write the deduplicated facts list returned by Groq to identity.json."""
+    """consolidate() should write the deduplicated facts list returned by LLM to identity.json."""
     original_facts = ["User likes Python", "User likes Python", "User is a developer"]
     deduped_facts = ["User likes Python", "User is a developer"]
 
@@ -92,19 +67,16 @@ def test_consolidate_deduplicates_facts():
         "session_notes": "- Consolidated",
         "learned_facts": deduped_facts,
     })
-    fake_resp = _make_fake_groq_response(groq_payload)
     tmp_path = _make_temp_identity(facts=original_facts)
 
     try:
-        with patch("auto_dream._get_client") as mock_get_client, \
+        with patch("llm.llm_client.complete") as mock_complete, \
              patch("auto_dream._IDENTITY_PATH", tmp_path), \
              patch("auto_dream.memory.get_session_notes", return_value="some notes"), \
              patch("auto_dream.memory.clear_session_notes"), \
              patch("auto_dream.memory.store_session_notes"), \
              patch("auto_dream.memory.reset_command_count"):
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = fake_resp
-            mock_get_client.return_value = mock_client
+            mock_complete.return_value = _make_llm_response(groq_payload)
 
             import auto_dream
             auto_dream.consolidate()
@@ -112,16 +84,10 @@ def test_consolidate_deduplicates_facts():
         with open(tmp_path) as f:
             saved = json.load(f)
 
-        assert saved["learned_facts"] == deduped_facts, (
-            f"Expected {deduped_facts}, got {saved['learned_facts']}"
-        )
+        assert saved["learned_facts"] == deduped_facts
     finally:
         os.unlink(tmp_path)
 
-
-# ---------------------------------------------------------------------------
-# test_maybe_consolidate_fires_at_interval
-# ---------------------------------------------------------------------------
 
 def test_maybe_consolidate_fires_at_interval():
     """maybe_consolidate_async() should trigger consolidate() when count reaches 5."""
@@ -135,14 +101,9 @@ def test_maybe_consolidate_fires_at_interval():
         import auto_dream
         auto_dream.maybe_consolidate_async("hello", "world")
 
-    # Give the daemon thread a moment to fire
     fired = done_event.wait(timeout=2.0)
     assert fired, "consolidate() was not called when count == 5"
 
-
-# ---------------------------------------------------------------------------
-# test_maybe_consolidate_does_not_fire_before_interval
-# ---------------------------------------------------------------------------
 
 def test_maybe_consolidate_does_not_fire_before_interval():
     """maybe_consolidate_async() should NOT trigger consolidate() when count is 4."""
@@ -156,28 +117,18 @@ def test_maybe_consolidate_does_not_fire_before_interval():
         import auto_dream
         auto_dream.maybe_consolidate_async("hello", "world")
 
-    # Wait briefly to ensure no background thread fires
     time.sleep(0.15)
-    assert not called, f"consolidate() should not have been called at count=4, but was called {len(called)} time(s)"
+    assert not called
 
-
-# ---------------------------------------------------------------------------
-# test_consolidate_graceful_on_groq_failure
-# ---------------------------------------------------------------------------
 
 def test_consolidate_graceful_on_groq_failure():
-    """consolidate() must not raise even when Groq throws an exception."""
-    with patch("auto_dream._get_client") as mock_get_client, \
+    """consolidate() must not raise even when LLM throws an exception."""
+    with patch("llm.llm_client.complete", side_effect=RuntimeError("LLM is down")), \
          patch("auto_dream.memory.get_session_notes", return_value="some notes"):
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = RuntimeError("Groq is down")
-        mock_get_client.return_value = mock_client
-
         import auto_dream
-        # Should not raise
         try:
             auto_dream.consolidate()
         except Exception as exc:
             raise AssertionError(
-                f"consolidate() raised {type(exc).__name__}: {exc} — expected graceful handling"
+                f"consolidate() raised {type(exc).__name__}: {exc}"
             ) from exc

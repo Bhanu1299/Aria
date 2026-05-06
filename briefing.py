@@ -18,13 +18,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import requests
-from groq import Groq
-
-import config
+from llm import llm_client
 
 logger = logging.getLogger(__name__)
-
-_CLIENT: Groq | None = None
 
 
 def _time_of_day() -> str:
@@ -38,13 +34,6 @@ def _time_of_day() -> str:
     return "night"
 
 
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set in .env")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
 
 
 # ---------------------------------------------------------------------------
@@ -294,25 +283,21 @@ def build_briefing() -> str:
     except Exception as exc:
         logger.error("[briefing] ThreadPoolExecutor error: %s", exc)
 
-    # Assemble via Groq
+    # Assemble via LLM
     try:
-        client = _get_client()
         prompt = _BRIEFING_PROMPT.format(**results, time_of_day=_time_of_day())
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "Give me my briefing."},
-            ],
-            temperature=0.5,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": "Give me my briefing."}],
+            tier="fast",
+            system=prompt,
             max_tokens=500,
         )
-        answer = response.choices[0].message.content.strip()
+        answer = resp.text.strip()
         logger.debug("[briefing] Assembled briefing: %s", answer[:100])
         return answer
 
     except Exception as exc:
-        logger.error("[briefing] Groq assembly failed: %s", exc)
+        logger.error("[briefing] LLM assembly failed: %s", exc)
         # Raw fallback — speak the data directly without Groq
         parts = []
         if results["weather"] != "Weather unavailable":

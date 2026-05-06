@@ -25,26 +25,9 @@ import logging
 import os
 import threading
 
-from groq import Groq
-
-import config
+from llm import llm_client
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Groq client (lazy singleton)
-# ---------------------------------------------------------------------------
-
-_CLIENT: Groq | None = None
-
-
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set — memory extractor disabled")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
 
 
 # ---------------------------------------------------------------------------
@@ -137,21 +120,17 @@ def extract(transcript: str, answer: str) -> list[str]:
     if not transcript or not answer:
         return []
     try:
-        client = _get_client()
         prompt = _USER_TEMPLATE.format(
             transcript=transcript.strip(),
             answer=answer.strip(),
         )
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
+        resp = llm_client.complete(
+            messages=[{"role": "user", "content": prompt}],
+            tier="fast",
+            system=_SYSTEM_PROMPT,
             max_tokens=512,
         )
-        raw = response.choices[0].message.content or ""
+        raw = resp.text
         raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         logger.debug("memory_extractor.extract raw response: %s", raw[:200])
 

@@ -15,15 +15,13 @@ import os
 import tempfile
 import threading
 
-from groq import Groq
-import config
+from llm import llm_client
 import memory
 
 logger = logging.getLogger(__name__)
 
 _CONSOLIDATE_EVERY = 5
 _IDENTITY_PATH = os.path.join(os.path.dirname(__file__), "identity.json")
-_CLIENT: Groq | None = None
 
 _SYSTEM_PROMPT = (
     "You are a memory consolidation assistant for a voice agent called Aria. "
@@ -32,15 +30,6 @@ _SYSTEM_PROMPT = (
     "'learned_facts' (deduplicated array of durable user facts, max 50, newest kept). "
     "Return ONLY valid JSON. No markdown."
 )
-
-
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY not set")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
 
 
 def _load_identity() -> dict:
@@ -72,20 +61,18 @@ def consolidate() -> None:
         if not notes and not facts:
             return
 
-        client = _get_client()
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        resp = llm_client.complete(
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": (
                     f"Session notes:\n{notes}\n\n"
                     f"Known facts:\n{json.dumps(facts)}"
                 )},
             ],
-            temperature=0.2,
+            tier="fast",
+            system=_SYSTEM_PROMPT,
             max_tokens=600,
         )
-        raw = (response.choices[0].message.content or "").strip()
+        raw = resp.text.strip()
         raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         result = json.loads(raw)
 
