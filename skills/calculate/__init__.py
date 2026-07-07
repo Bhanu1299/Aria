@@ -12,13 +12,14 @@ import ast
 import operator
 import re
 
+# NOTE: triggers are substring-matched against the whole transcript — keep them
+# explicit. Bare "what is"/"whats" hijacked every general question and even
+# "whatsapp" commands.
 TRIGGERS = [
     "calculate",
     "compute",
     "how much is",
     "what is the result of",
-    "what is",
-    "whats",
 ]
 
 _OPS = {
