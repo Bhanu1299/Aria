@@ -311,3 +311,47 @@ class TestSystemPrompt:
     def test_prompt_stays_lean(self):
         # every token here is paid on EVERY utterance — keep it under ~600 words
         assert len(self._prompt().split()) < 600
+
+
+class TestToolTracking:
+    """Agent records which tools ran and whether they succeeded — feeds flight_recorder."""
+
+    def test_last_run_tools_records_success(self):
+        reg = _make_registry(_make_tool("web_search"))
+        agent = Agent(reg)
+        with patch("llm.llm_client.complete") as mock_complete:
+            mock_complete.side_effect = [
+                _tool_response("web_search", "t1", {"query": "x"}),
+                _ok_response("Found it."),
+            ]
+            agent.run("search something")
+        assert agent.last_run_tools == [("web_search", True)]
+
+    def test_last_run_tools_records_failure(self):
+        bad = ToolDescriptor(
+            name="broken", description="d",
+            input_schema={"type": "object", "properties": {}},
+            execute=lambda p: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        reg = _make_registry(bad)
+        agent = Agent(reg)
+        with patch("llm.llm_client.complete") as mock_complete:
+            mock_complete.side_effect = [
+                _tool_response("broken", "t1", {}),
+                _ok_response("Sorry."),
+            ]
+            agent.run("do the thing")
+        assert agent.last_run_tools == [("broken", False)]
+
+    def test_last_run_tools_resets_each_run(self):
+        reg = _make_registry(_make_tool("web_search"))
+        agent = Agent(reg)
+        with patch("llm.llm_client.complete") as mock_complete:
+            mock_complete.side_effect = [
+                _tool_response("web_search", "t1", {"query": "x"}),
+                _ok_response("Found."),
+                _ok_response("Just chatting."),
+            ]
+            agent.run("search")
+            agent.run("hello")
+        assert agent.last_run_tools == []

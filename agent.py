@@ -74,6 +74,7 @@ class Agent:
     def __init__(self, registry: ToolRegistry) -> None:
         self.registry = registry
         self._history: list[dict] = []   # cross-turn session history
+        self.last_run_tools: list[tuple] = []  # [(tool_name, succeeded)] for flight_recorder
 
     def run(self, text: str) -> str:
         """Run the tool loop for a user utterance. Returns final spoken response. Never raises."""
@@ -85,6 +86,7 @@ class Agent:
 
     def _run(self, text: str) -> str:
         from compact import should_compact_messages, compact_messages
+        self.last_run_tools = []
         if should_compact_messages(self._history):
             self._history = compact_messages(self._history)
 
@@ -143,12 +145,15 @@ class Agent:
                 if descriptor is None:
                     result = f"Unknown tool: {tc.name}"
                     logger.warning("Unknown tool called: %r", tc.name)
+                    self.last_run_tools.append((tc.name, False))
                 else:
                     try:
                         result = descriptor.execute(tc.input)
+                        self.last_run_tools.append((tc.name, True))
                     except Exception as exc:
                         result = f"I ran into an issue with {tc.name}: {exc}"
                         logger.error("Tool %r failed: %s", tc.name, exc)
+                        self.last_run_tools.append((tc.name, False))
 
                 tool_results.append({
                     "type": "tool_result",
