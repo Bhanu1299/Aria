@@ -99,6 +99,10 @@ from sleep_guard import SleepGuard
 from tool import ToolRegistry
 from agent import Agent
 from plugins.core import CorePlugin
+from plugins.memory import MemoryPlugin
+from plugins.messaging import MessagingPlugin
+from plugins.productivity import ProductivityPlugin
+from plugins.media import MediaPlugin
 
 # Build domain vocab hint prompt once at module load — passed to every transcribe() call
 _KEYTERMS_PROMPT = voice_keyterms.build_prompt()
@@ -659,7 +663,12 @@ def main():
         keyterms_prompt=_KEYTERMS_PROMPT,
     )
     _core_plugin.register(_registry)
+    MemoryPlugin().register(_registry)
+    MessagingPlugin().register(_registry)
+    MediaPlugin().register(_registry)
+    # Agent must exist before ProductivityPlugin — cron jobs run prompts through it
     _agent = Agent(_registry)
+    ProductivityPlugin(agent=_agent, speaker=speaker).register(_registry)
 
     # 6c. Away summary — speak a greeting based on prior session notes
     away_summary.speak_greeting(speaker)
