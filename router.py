@@ -95,12 +95,30 @@ _APPLY_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Screen explain pre-check — "show me where / point out" draws on the screen.
+# Must be tested BEFORE _SCREEN_QA_RE: phrases like "point out the error on my
+# screen" match both, and the drawing intent is the more specific one.
+_SCREEN_EXPLAIN_RE = re.compile(
+    r"(?:"
+    r"\bshow\s+me\s+where\b"
+    r"|\bpoint\s+(?:out|at|to)\b"
+    r"|\bcircle\s+(?:the|it|that|where)\b"
+    r"|\bdraw\s+(?:on|over)\s+(?:my|the)\s+screen\b"
+    r"|\bwhere\s+(?:is|are)\b.+\bon\s+(?:my|the)\s+screen\b"
+    r")",
+    re.IGNORECASE,
+)
+
 # Screen QA pre-check — "what's on my screen" questions skip the classifier
 _SCREEN_QA_RE = re.compile(
     r"(?:"
     r"\b(?:on|at|read|check|see|look\s+at|about)\s+(?:my|the)\s+screen\b"
     r"|\bwhat\s+am\s+i\s+looking\s+at\b"
-    r"|\bwhat\s+does\s+(?:this|that|it)\s+say\b"
+    r"|\bwhat\s+does\s+(?:this|that|it)\s+(?:say|mean)\b"
+    r"|\bwhat(?:'s|\s+is)\s+highlighted\b"
+    r"|\b(?:explain|read|summarize|translate|describe)\s+(?:me\s+)?(?:the\s+)?(?:highlighted|selected|selection)\b"
+    r"|\bexplain\s+(?:me\s+)?(?:this|that|what)\b"
+    r"|\bsummarize\s+(?:this|that)\b"
     r")",
     re.IGNORECASE,
 )
@@ -399,6 +417,15 @@ def route(command: str) -> dict:
             "contact": "",
             "site_name": "",
             "_skill_fn": skill_fn,
+        }
+
+    # Screen explain pre-check — draw on screen + speak, no LLM needed to route
+    if _SCREEN_EXPLAIN_RE.search(command):
+        logger.info("screen_explain pre-check matched: %r", command)
+        return {
+            "type": "screen_explain",
+            "query": command.strip(),
+            "url": "", "instructions": "", "app_name": "", "contact": "", "site_name": "",
         }
 
     # Screen QA pre-check — answer questions about the current screen, no LLM needed
