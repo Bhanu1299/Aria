@@ -14,9 +14,8 @@ Two backends (auto-selected at startup):
     Porcupine is ~1% CPU, purpose-built, reliable — same architecture as Siri.
 
   BACKEND B — openwakeword fallback
-    Uses alexa model as phonetic proxy for "Aria" (best available match).
-    Threshold 0.35 (lower than training threshold because the phrase doesn't match exactly).
-    Will false-trigger occasionally; replace with Porcupine for reliability.
+    Uses custom-trained aria.onnx model (~/.aria/aria.onnx).
+    Threshold 0.7 (tune in range 0.6–0.8 based on real-world false positive rate).
     Requires: openwakeword, pyaudio (in requirements.txt)
 
 Siri-like behavior (both backends):
@@ -49,8 +48,8 @@ _CHUNK_SIZE = 512          # 32ms @ 16kHz — works for both backends
 _COOLDOWN_SECS = 5.0
 
 # openwakeword fallback
-_OWW_MODEL = "alexa"       # best phonetic proxy for "Aria" (vowel-heavy, 3 syllables)
-_OWW_THRESHOLD = 0.35      # intentionally low — proxy model, not exact phrase
+_OWW_MODEL = "/Users/bhanuteja/.aria/aria.onnx"
+_OWW_THRESHOLD = 0.7  # tune after real-world testing (range 0.6–0.8)
 
 # VAD
 _VAD_SPEECH_RMS = 400
@@ -248,8 +247,15 @@ class WakeWordListener:
         except Exception:
             pass  # already cached
 
+        import os
+        model_to_load = _OWW_MODEL
+        if model_to_load != "alexa" and not os.path.exists(model_to_load):
+            print(f"[Aria] Custom model not found at {model_to_load} — falling back to alexa proxy.")
+            print("[Aria] Run training/record_samples.py + train_model.py + export_model.py to build your model.")
+            model_to_load = "alexa"
+
         try:
-            oww = Model(wakeword_models=[_OWW_MODEL], inference_framework="onnx")
+            oww = Model(wakeword_models=[model_to_load], inference_framework="onnx")
         except Exception as exc:
             print(f"[Aria] Wake word disabled — model load failed: {exc}")
             return
@@ -265,9 +271,8 @@ class WakeWordListener:
                 frames_per_buffer=_CHUNK_SIZE,
             )
             print(
-                f"[Aria] Wake word active (openwakeword proxy '{_OWW_MODEL}', "
-                f"threshold={_OWW_THRESHOLD}). "
-                "For reliable 'Hey Aria' detection, set up Porcupine — see wake_word.py header."
+                f"[Aria] Wake word active (openwakeword '{model_to_load}', "
+                f"threshold={_OWW_THRESHOLD})."
             )
             last_triggered = 0.0
 
