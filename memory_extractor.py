@@ -24,8 +24,11 @@ import json
 import logging
 import os
 import threading
+import time
+import uuid
 
 from llm import llm_client
+import memory as _memory_module
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +154,7 @@ def extract(transcript: str, answer: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _worker(transcript: str, answer: str) -> None:
-    """Target for the daemon thread: extract facts, merge, and persist to identity.json."""
+    """Target for the daemon thread: extract facts, merge, persist to identity.json + ChromaDB."""
     try:
         new_facts = extract(transcript, answer)
         if not new_facts:
@@ -163,6 +166,18 @@ def _worker(transcript: str, answer: str) -> None:
         merged = _merge_facts(existing, new_facts)
         identity["learned_facts"] = merged
         _save_identity(identity)
+
+        # Dual-write new facts into SQLite + ChromaDB via memory.store_fact
+        ts = time.time()
+        for fact_text in new_facts:
+            fact_id = str(uuid.uuid4())
+            _memory_module.store_fact(fact_id, fact_text, {
+                "source": "conversation",
+                "session_ids": [],
+                "timestamp": ts,
+                "recall_count": 0,
+            })
+
         logger.debug(
             "memory_extractor: stored %d new facts (%d total)",
             len(new_facts),

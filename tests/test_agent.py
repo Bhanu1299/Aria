@@ -211,3 +211,66 @@ def test_run_never_raises():
 
     assert isinstance(result, str)
     assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Persistent history tests (Phase 5D)
+# ---------------------------------------------------------------------------
+
+def test_history_empty_at_start():
+    """A fresh Agent has no history."""
+    reg = _make_registry()
+    agent = Agent(reg)
+    assert agent._history == []
+
+
+def test_history_accumulates_across_calls():
+    """After two successful calls, history has two user+assistant pairs."""
+    reg = _make_registry()
+    agent = Agent(reg)
+
+    with patch("llm.llm_client.complete") as mock:
+        mock.return_value = _ok_response("First answer.")
+        agent.run("First question")
+
+        mock.return_value = _ok_response("Second answer.")
+        agent.run("Second question")
+
+    assert len(agent._history) == 4
+    assert agent._history[0] == {"role": "user", "content": "First question"}
+    assert agent._history[1] == {"role": "assistant", "content": "First answer."}
+    assert agent._history[2] == {"role": "user", "content": "Second question"}
+    assert agent._history[3] == {"role": "assistant", "content": "Second answer."}
+
+
+def test_second_call_receives_history_in_messages():
+    """On the second call, the agent prepends history to messages sent to LLM."""
+    reg = _make_registry()
+    agent = Agent(reg)
+
+    calls_messages = []
+
+    def capture(*args, **kwargs):
+        calls_messages.append(kwargs.get("messages", []))
+        return _ok_response(f"Answer {len(calls_messages)}")
+
+    with patch("llm.llm_client.complete", side_effect=capture):
+        agent.run("Turn one")
+        agent.run("Turn two")
+
+    # Second call's messages should start with the first turn's history
+    second_call_msgs = calls_messages[1]
+    assert second_call_msgs[0] == {"role": "user", "content": "Turn one"}
+    assert second_call_msgs[1] == {"role": "assistant", "content": "Answer 1"}
+    assert second_call_msgs[2] == {"role": "user", "content": "Turn two"}
+
+
+def test_history_not_appended_on_error():
+    """When run() fails completely (LLM error), history is not corrupted."""
+    reg = _make_registry()
+    agent = Agent(reg)
+
+    with patch("llm.llm_client.complete", side_effect=RuntimeError("crash")):
+        agent.run("This will fail")
+
+    assert agent._history == []
