@@ -251,3 +251,80 @@ def reset_command_count() -> None:
     with _lock:
         session[_COMMAND_COUNT_KEY] = 0
         _save(_COMMAND_COUNT_KEY, 0, expires_hours=None)
+
+
+# ---------------------------------------------------------------------------
+# Fact store (vector memory dual-write)
+# ---------------------------------------------------------------------------
+
+def store_fact(fact_id: str, text: str, metadata: dict | None = None) -> None:
+    """
+    Persist a durable fact to SQLite and embed+upsert into ChromaDB.
+    metadata keys: source, session_ids (list), timestamp (float), recall_count (int).
+    Never raises — failures are logged.
+    """
+    import time as _time
+    import json as _json
+
+    meta = metadata or {}
+    source = meta.get("source", "conversation")
+    session_ids = _json.dumps(meta.get("session_ids", []))
+    timestamp = meta.get("timestamp", _time.time())
+    recall_count = meta.get("recall_count", 0)
+
+    conn = None
+    try:
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO facts (id, text, source, session_ids, timestamp, recall_count) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (fact_id, text, source, session_ids, timestamp, recall_count),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.error("memory.store_fact SQLite failed: %s", exc)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    # Embed + upsert into ChromaDB (best-effort)
+    try:
+        from plugins.memory.vector_store import ChromaStore
+        store = ChromaStore.get()
+        chroma_meta = {
+            "source": source,
+            "session_ids": session_ids,
+            "timestamp": float(timestamp),
+            "recall_count": int(recall_count),
+        }
+        store.upsert(fact_id, text, chroma_meta)
+    except Exception as exc:
+        logger.warning("memory.store_fact ChromaDB failed: %s", exc)
+
+
+def get_all_facts() -> list:
+    """Return all facts from SQLite as list of dicts."""
+    import json as _json
+    conn = None
+    try:
+        conn = db.get_connection()
+        rows = conn.execute(
+            "SELECT id, text, source, session_ids, timestamp, recall_count FROM facts"
+        ).fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "id": row["id"],
+                "text": row["text"],
+                "source": row["source"],
+                "session_ids": _json.loads(row["session_ids"] or "[]"),
+                "timestamp": row["timestamp"],
+                "recall_count": row["recall_count"],
+            })
+        return result
+    except Exception as exc:
+        logger.error("memory.get_all_facts failed: %s", exc)
+        return []
+    finally:
+        if conn is not None:
+            conn.close()

@@ -14,6 +14,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 
 from llm import llm_client
 import memory
@@ -91,10 +92,61 @@ def consolidate() -> None:
             _save_identity(identity)
 
         memory.reset_command_count()
+        _promote_top_facts(identity)
         logger.debug("auto_dream.consolidate: complete")
 
     except Exception as exc:
         logger.warning("auto_dream.consolidate failed: %s", exc)
+
+
+def _promote_top_facts(identity: dict) -> None:
+    """
+    Score all ChromaDB facts: recall_count*0.4 + recency*0.3 + session_spread*0.3.
+    Top 5 qualifying facts (recall_count>=3, unique_sessions>=2) are promoted to
+    identity.json["promoted_facts"] as permanent memory.
+    """
+    try:
+        from plugins.memory.vector_store import ChromaStore
+        store = ChromaStore.get()
+        all_facts = store.get_all()
+        if not all_facts:
+            return
+
+        now = time.time()
+        scored = []
+        for f in all_facts:
+            meta = f.get("metadata", {})
+            recall = int(meta.get("recall_count", 0))
+            sessions_raw = meta.get("session_ids", "[]")
+            try:
+                sessions = json.loads(sessions_raw) if isinstance(sessions_raw, str) else sessions_raw
+            except Exception:
+                sessions = []
+            unique_sessions = len(sessions) if isinstance(sessions, list) else 0
+
+            if recall < 3 or unique_sessions < 2:
+                continue
+
+            ts = float(meta.get("timestamp", 0))
+            age_days = (now - ts) / 86400
+            recency = max(0.0, 1.0 - age_days / 30)
+            session_spread = min(1.0, unique_sessions / 5)
+            score = recall * 0.4 + recency * 0.3 + session_spread * 0.3
+            scored.append((score, f["text"]))
+
+        if not scored:
+            return
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        today = __import__("datetime").date.today().isoformat()
+        promoted = [{"fact": text, "promoted_at": today} for _, text in scored[:5]]
+
+        identity["promoted_facts"] = promoted
+        _save_identity(identity)
+        logger.debug("auto_dream: promoted %d facts to identity.json", len(promoted))
+
+    except Exception as exc:
+        logger.warning("auto_dream._promote_top_facts failed: %s", exc)
 
 
 def maybe_consolidate_async(transcript: str, answer: str) -> None:

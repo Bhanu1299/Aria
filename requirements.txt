@@ -16,3 +16,6 @@ openwakeword
 pyaudio
 pvporcupine
 anthropic
+croniter
+chromadb
+sentence-transformers
