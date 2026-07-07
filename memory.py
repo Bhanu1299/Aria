@@ -171,24 +171,6 @@ def store_cached_jobs(query: str, results: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Last plan (24-hour TTL — for restart recovery)
-# ---------------------------------------------------------------------------
-
-
-def store_last_plan(plan_dict: dict) -> None:
-    """Persist the current plan context dict. 24-hour TTL."""
-    with _lock:
-        session["last_plan"] = plan_dict
-    _save("last_plan", plan_dict, expires_hours=_SESSION_TTL_HOURS)
-
-
-def get_last_plan() -> dict | None:
-    """Return the last stored plan dict, or None if not set / expired."""
-    with _lock:
-        return session.get("last_plan")
-
-
-# ---------------------------------------------------------------------------
 # Session notes (no expiry — persists across restarts)
 # ---------------------------------------------------------------------------
 
