@@ -274,3 +274,40 @@ def test_history_not_appended_on_error():
         agent.run("This will fail")
 
     assert agent._history == []
+
+
+class TestSystemPrompt:
+    """The system prompt is Aria's brain — verify its load-bearing sections."""
+
+    def _prompt(self, memory_context=""):
+        import agent
+        return agent._build_system_prompt(memory_context)
+
+    def test_contains_identity_and_date(self):
+        from datetime import date
+        p = self._prompt()
+        assert "Aria" in p
+        assert date.today().isoformat() in p
+
+    def test_contains_voice_formatting_rules(self):
+        p = self._prompt()
+        assert "read aloud" in p or "spoken" in p.lower()
+        assert "markdown" in p.lower()
+
+    def test_contains_tool_choice_guidance(self):
+        p = self._prompt()
+        assert "chain" in p.lower()          # multi-tool chaining
+        assert "clarif" in p.lower()         # asks clarifying questions
+        assert "guess" in p.lower() or "uncertain" in p.lower() or "sure" in p.lower()
+
+    def test_contains_failure_recovery_norms(self):
+        p = self._prompt()
+        assert "fail" in p.lower() or "error" in p.lower()
+
+    def test_memory_context_is_appended(self):
+        p = self._prompt("Known fact: user prefers dark mode")
+        assert "user prefers dark mode" in p
+
+    def test_prompt_stays_lean(self):
+        # every token here is paid on EVERY utterance — keep it under ~600 words
+        assert len(self._prompt().split()) < 600
