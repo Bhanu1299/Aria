@@ -533,6 +533,12 @@ def _handle_intent(intent: dict, original_question: str) -> str:
         import screen_qa
         return screen_qa.answer(intent["query"])
 
+    # --- Screen explain: speak the answer AND draw boxes on the screen ---
+    if intent_type == "screen_explain":
+        print(f"[Aria] Screen explain: {intent['query']!r}")
+        import screen_qa
+        return screen_qa.explain_visual(intent["query"])
+
     # --- Browser task: general-purpose browser loop (Groq-first, Claude fallback) ---
     if intent_type == "browser_task":
         goal = intent.get("browser_goal") or intent.get("query", original_question)
