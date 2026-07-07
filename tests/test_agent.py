@@ -304,6 +304,12 @@ class TestSystemPrompt:
         p = self._prompt()
         assert "fail" in p.lower() or "error" in p.lower()
 
+    def test_contains_multistep_methodology(self):
+        # weaker models need explicit plan-then-verify discipline
+        p = self._prompt()
+        assert "before the first tool call" in p.lower()
+        assert "before telling" in p.lower() or "before saying" in p.lower()
+
     def test_memory_context_is_appended(self):
         p = self._prompt("Known fact: user prefers dark mode")
         assert "user prefers dark mode" in p
