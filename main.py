@@ -104,6 +104,8 @@ from plugins.messaging import MessagingPlugin
 from plugins.productivity import ProductivityPlugin
 from plugins.media import MediaPlugin
 from plugins.screen import ScreenPlugin
+from plugins.health import HealthPlugin
+import flight_recorder
 
 # Build domain vocab hint prompt once at module load — passed to every transcribe() call
 _KEYTERMS_PROMPT = voice_keyterms.build_prompt()
@@ -200,6 +202,7 @@ def handle_command(transcript: str) -> None:
         menubar.set_state("THINKING")
 
         # Pre-check: ordinal job follow-ups ("tell me more about the second job")
+        _t0 = time.time()
         followup = _check_jobs_followup(transcript)
         if followup is not None:
             print(f"[Aria] Jobs follow-up: {followup!r}")
@@ -208,6 +211,10 @@ def handle_command(transcript: str) -> None:
             print(f"[Aria] Agent running: {transcript!r}")
             answer = _agent.run(transcript)
 
+        flight_recorder.record(
+            transcript, answer, time.time() - _t0,
+            tools=getattr(_agent, "last_run_tools", []),
+        )
         print(f"[Aria] Answer: {answer[:80]!r}")
         if answer:
             speaker.say(answer)
@@ -225,6 +232,7 @@ def handle_command(transcript: str) -> None:
 
     except Exception as e:
         print(f"[Aria] Error during processing: {e}")
+        flight_recorder.record(transcript, "", 0.0, error=str(e))
         try:
             speaker.say("Something went wrong, please try again.")
         except Exception as say_err:
@@ -680,6 +688,7 @@ def main():
     MessagingPlugin().register(_registry)
     MediaPlugin().register(_registry)
     ScreenPlugin().register(_registry)
+    HealthPlugin().register(_registry)
     # Agent must exist before ProductivityPlugin — cron jobs run prompts through it
     _agent = Agent(_registry)
     ProductivityPlugin(agent=_agent, speaker=speaker).register(_registry)
