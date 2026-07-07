@@ -95,6 +95,16 @@ _APPLY_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Screen QA pre-check — "what's on my screen" questions skip the classifier
+_SCREEN_QA_RE = re.compile(
+    r"(?:"
+    r"\b(?:on|at|read|check|see|look\s+at|about)\s+(?:my|the)\s+screen\b"
+    r"|\bwhat\s+am\s+i\s+looking\s+at\b"
+    r"|\bwhat\s+does\s+(?:this|that|it)\s+say\b"
+    r")",
+    re.IGNORECASE,
+)
+
 # Browser task pre-check — obvious research commands skip the classifier
 _BROWSER_TASK_RE = re.compile(
     r"\b(?:"
@@ -389,6 +399,15 @@ def route(command: str) -> dict:
             "contact": "",
             "site_name": "",
             "_skill_fn": skill_fn,
+        }
+
+    # Screen QA pre-check — answer questions about the current screen, no LLM needed
+    if _SCREEN_QA_RE.search(command):
+        logger.info("screen_qa pre-check matched: %r", command)
+        return {
+            "type": "screen_qa",
+            "query": command.strip(),
+            "url": "", "instructions": "", "app_name": "", "contact": "", "site_name": "",
         }
 
     # Browser task pre-check — obvious research commands skip the classifier
