@@ -37,6 +37,17 @@ CREATE TABLE IF NOT EXISTS memory (
 )
 """
 
+_CREATE_FACTS = """
+CREATE TABLE IF NOT EXISTS facts (
+    id           TEXT    PRIMARY KEY,
+    text         TEXT    NOT NULL,
+    source       TEXT    NOT NULL DEFAULT 'conversation',
+    session_ids  TEXT    NOT NULL DEFAULT '[]',
+    timestamp    REAL    NOT NULL,
+    recall_count INTEGER NOT NULL DEFAULT 0
+)
+"""
+
 
 def get_connection() -> sqlite3.Connection:
     """
@@ -50,5 +61,6 @@ def get_connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute(_CREATE_APPLICATIONS)
     conn.execute(_CREATE_MEMORY)
+    conn.execute(_CREATE_FACTS)
     conn.commit()
     return conn
