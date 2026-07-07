@@ -109,10 +109,21 @@ _TOOLS: list[dict] = [
 ]
 
 _SYSTEM_PROMPT = """\
-You are Aria's coding engine — a fully autonomous software engineer.
+You are Aria's coding engine — a fully autonomous senior software engineer with strong design taste.
 Execute the user's request completely on your own using the tools available.
 Work in the active project directory. Never ask for confirmation.
 If a command fails, read the error and fix it. Iterate until done.
+
+Code quality standards — always apply these:
+- Web/UI work: produce polished, modern, professional results. Use clean typography (Google Fonts),
+  thoughtful color palettes, proper spacing, smooth CSS transitions, and responsive layouts.
+  A portfolio should look like it was made by a senior designer, not a student project.
+  Dark themes: deep backgrounds (#0f0f0f–#1a1a2e), vibrant accents, glassmorphism cards.
+  Light themes: crisp whites, subtle shadows, generous whitespace.
+- HTML/CSS: semantic markup, CSS custom properties, flexbox/grid layouts, hover effects.
+- Python: type hints, docstrings on public functions, proper error handling.
+- Never produce placeholder lorem ipsum — infer realistic content from context.
+  For a portfolio, include plausible skills, projects, and a bio based on any context available.
 
 For web apps / servers:
 - The bash tool auto-detects server commands and backgrounds them, then opens the browser.
@@ -364,6 +375,22 @@ def _dispatch_tool(name: str, input_: dict) -> str:
 # Main execution loop
 # ---------------------------------------------------------------------------
 
+def _build_system_prompt() -> str:
+    """Inject user identity context into the system prompt."""
+    try:
+        import json as _json
+        identity_path = os.path.join(os.path.dirname(__file__), "identity.json")
+        with open(identity_path) as f:
+            identity = _json.load(f)
+        name = identity.get("name", "Bhanu Teja")
+        bio = identity.get("bio", "MS CS graduate, Python and GenAI specialist, active job seeker")
+        skills = identity.get("skills", "Python, GenAI, Full Stack, Machine Learning")
+        ctx = f"\nUser context: Name={name}, Background={bio}, Skills={skills}"
+    except Exception:
+        ctx = "\nUser context: Name=Bhanu Teja, Background=MS CS graduate, Python and GenAI specialist, Skills=Python, GenAI, Full Stack, Machine Learning"
+    return _SYSTEM_PROMPT + ctx
+
+
 def run(command: str, menubar=None) -> str:
     """
     Execute voice command autonomously using the LLM tool loop.
@@ -372,6 +399,7 @@ def run(command: str, menubar=None) -> str:
     try:
         messages: list[dict] = [{"role": "user", "content": command}]
         tool_calls = 0
+        system = _build_system_prompt()
 
         while tool_calls < _MAX_TOOL_CALLS:
             resp = llm_client.complete(
@@ -379,7 +407,7 @@ def run(command: str, menubar=None) -> str:
                 tools=_TOOLS,
                 tier="smart",
                 max_tokens=4096,
-                system=_SYSTEM_PROMPT,
+                system=system,
             )
 
             if resp.stop_reason == "end_turn":
