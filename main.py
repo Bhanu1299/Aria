@@ -527,6 +527,12 @@ def _handle_intent(intent: dict, original_question: str) -> str:
                 f"at {job['company']}. The browser is open so you can finish manually."
             )
 
+    # --- Screen QA: answer questions about what's on the user's screen ---
+    if intent_type == "screen_qa":
+        print(f"[Aria] Screen QA: {intent['query']!r}")
+        import screen_qa
+        return screen_qa.answer(intent["query"])
+
     # --- Browser task: general-purpose browser loop (Groq-first, Claude fallback) ---
     if intent_type == "browser_task":
         goal = intent.get("browser_goal") or intent.get("query", original_question)
