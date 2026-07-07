@@ -97,6 +97,7 @@ class CorePlugin(_plugin_base.PluginBase):
 
         def execute(params: dict) -> str:
             import config
+            import websearch
             from summarizer import summarize
             query = params["query"]
             location = params.get("location", "")
@@ -106,6 +107,14 @@ class CorePlugin(_plugin_base.PluginBase):
                 loc = config.CURRENT_LOCATION
                 if loc and loc != "Unknown Location":
                     query = f"{query} {loc}"
+
+            # Primary: DuckDuckGo HTML — one HTTP call, no browser, hard to block
+            snippets = websearch.snippets_text(query)
+            if snippets:
+                return summarize(page_text=snippets, query=query,
+                                 instructions=f"Answer from these search results: {query}")
+
+            # Fallback: Google SERP scrape through the background browser
             url = f"https://www.google.com/search?q={quote_plus(query)}"
             if browser is None:
                 return "Web search unavailable — browser not initialized."
