@@ -103,6 +103,7 @@ from plugins.memory import MemoryPlugin
 from plugins.messaging import MessagingPlugin
 from plugins.productivity import ProductivityPlugin
 from plugins.media import MediaPlugin
+from plugins.screen import ScreenPlugin
 
 # Build domain vocab hint prompt once at module load — passed to every transcribe() call
 _KEYTERMS_PROMPT = voice_keyterms.build_prompt()
@@ -678,6 +679,7 @@ def main():
     MemoryPlugin().register(_registry)
     MessagingPlugin().register(_registry)
     MediaPlugin().register(_registry)
+    ScreenPlugin().register(_registry)
     # Agent must exist before ProductivityPlugin — cron jobs run prompts through it
     _agent = Agent(_registry)
     ProductivityPlugin(agent=_agent, speaker=speaker).register(_registry)
