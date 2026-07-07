@@ -61,7 +61,7 @@ class CorePlugin(_plugin_base.PluginBase):
         registry.register(self._web_direct_tool())
         registry.register(self._navigate_tool())
         registry.register(self._app_tool())
-        registry.register(self._media_tool())
+        # media_tool retired — superseded by plugins.media.MediaPlugin
         registry.register(self._app_control_tool())
         registry.register(self._briefing_tool())
         registry.register(self._jobs_tool())
