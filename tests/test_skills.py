@@ -70,3 +70,24 @@ class TestCalculate:
         result = self._handle("calculate 10 divided by 2")
         assert "5" in result
         assert "5.0" not in result  # should not show trailing .0
+
+
+class TestCalculateTriggerScope:
+    """Calculate must not hijack general questions or WhatsApp commands."""
+
+    def _match(self, transcript):
+        from skills import skill_loader
+        skill_loader.load_skills()
+        return skill_loader.match_skill(transcript)
+
+    def test_generic_what_is_question_does_not_match(self):
+        assert self._match("what is the capital of France") is None
+
+    def test_whatsapp_command_does_not_match(self):
+        assert self._match("send a whatsapp message to mom") is None
+
+    def test_screen_question_does_not_match(self):
+        assert self._match("What is on my screen right now") is None
+
+    def test_explicit_calculate_still_matches(self):
+        assert self._match("calculate 5 times 8") is not None
