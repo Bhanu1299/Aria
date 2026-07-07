@@ -7,8 +7,12 @@ mid-sentence by calling stop() (e.g. when the user presses the hotkey again).
 
 from __future__ import annotations
 
+import random
 import subprocess
 import threading
+
+_ACK_DELAY_SECS = 3.5
+_ACK_LINES = ("One moment.", "Working on it.", "Just a second.")
 
 
 class Speaker:
@@ -59,6 +63,48 @@ class Speaker:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+
+class ThinkingAck:
+    """
+    Speaks a brief acknowledgment if work is still running after a delay,
+    so long agent runs never leave the user in dead silence.
+
+    Usage:
+        ack = ThinkingAck(speaker); ack.start()
+        try: answer = agent.run(...)
+        finally: ack.cancel()
+
+    cancel() blocks until any in-flight acknowledgment finishes speaking,
+    which guarantees the real answer is never cut off by the ack.
+    """
+
+    def __init__(self, speaker: Speaker, delay: float = _ACK_DELAY_SECS) -> None:
+        self._speaker = speaker
+        self._done = False
+        self._lock = threading.Lock()
+        self._timer = threading.Timer(delay, self._fire)
+        self._timer.daemon = True
+
+    def start(self) -> None:
+        try:
+            self._timer.start()
+        except Exception as exc:
+            print(f"[SPEAKER] ThinkingAck start failed: {exc}")
+
+    def _fire(self) -> None:
+        with self._lock:
+            if self._done:
+                return
+            try:
+                self._speaker.say(random.choice(_ACK_LINES))
+            except Exception as exc:
+                print(f"[SPEAKER] ThinkingAck speak failed: {exc}")
+
+    def cancel(self) -> None:
+        self._timer.cancel()
+        with self._lock:
+            self._done = True
 
 
 # Backwards-compatible module-level function used by older code/tests
