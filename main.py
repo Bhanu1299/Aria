@@ -78,6 +78,7 @@ import prompt_suggester
 import prevent_sleep
 import tips
 import conversation
+import listening_indicator
 from sleep_guard import SleepGuard
 from tool import ToolRegistry
 from agent import Agent
@@ -148,6 +149,7 @@ def on_press():
     # Mark processing NOW so wake word can't fire while we're recording
     _processing.set()
     menubar.set_state("LISTENING")
+    listening_indicator.show("Listening...")
     voice_capture.start_recording(auto_stop=True, on_auto_stop=on_release)
     _recording_active.set()  # set AFTER start_recording() returns — prevents on_release racing in
 
@@ -272,6 +274,7 @@ def _process_release():
     detect it is set and skip its own set() — but will still run the pipeline
     and clear it at the end. We clear it here only on early error.
     """
+    listening_indicator.hide()
     try:
         # Call get_audio_array() BEFORE stop_recording() (stop clears _chunks)
         audio_array = voice_capture.get_audio_array()
@@ -452,6 +455,7 @@ def main():
         handle_command_fn=handle_command,
         processing_event=_processing,
         transcriber=transcriber_instance,
+        menubar=menubar,
     )
     wake_word_listener.start()
 
