@@ -1,0 +1,135 @@
+{
+  "_comment": "Canonical daily voice-test set for Aria. Read questions aloud, then run: venv/bin/python daily_check.py report. 'match' keywords are checked against flight-log transcripts (all must appear, case-insensitive) — keep them short and transcription-tolerant. 'core' questions are the ~3-minute daily set; the rest are the weekly sweep. After editing, regenerate the markdown sheet: venv/bin/python daily_check.py list --md > tests/daily_questions.md",
+  "categories": [
+    {
+      "id": "knowledge",
+      "name": "Knowledge (direct LLM answer)",
+      "questions": [
+        {"q": "Who wrote The Great Gatsby?", "match": ["great gatsby"], "expect": "Says F. Scott Fitzgerald in one sentence, no tools needed.", "core": true},
+        {"q": "What's the capital of Australia?", "match": ["capital", "australia"], "expect": "Says Canberra.", "core": false}
+      ]
+    },
+    {
+      "id": "web_search",
+      "name": "Web search (current info)",
+      "questions": [
+        {"q": "What's the weather right now?", "match": ["weather"], "expect": "Uses web search, speaks current conditions for Buffalo.", "core": true},
+        {"q": "Search the web for the latest Python version", "match": ["latest", "python"], "expect": "Speaks the current release number, not a stale one from memory.", "core": false}
+      ]
+    },
+    {
+      "id": "conversation",
+      "name": "Conversation mode (follow-up, no hotkey)",
+      "questions": [
+        {"q": "(right after the weather answer, into the open mic) What about tomorrow?", "match": ["about tomorrow"], "expect": "Mic pop plays after the previous answer; follow-up is understood WITHOUT hotkey or wake word and answers for tomorrow.", "core": true},
+        {"q": "(into the open mic) Thanks", "match": ["thanks"], "expect": "Aria says 'Anytime.' and the conversation window closes.", "core": false}
+      ]
+    },
+    {
+      "id": "app",
+      "name": "App launching",
+      "questions": [
+        {"q": "Open Notes", "match": ["open", "notes"], "expect": "Notes opens WITHOUT stealing focus from the current app; Aria confirms.", "core": true}
+      ]
+    },
+    {
+      "id": "navigate",
+      "name": "Browser navigation",
+      "questions": [
+        {"q": "Open github.com", "match": ["github"], "expect": "GitHub opens in the default browser; Aria says 'Opening GitHub'.", "core": false}
+      ]
+    },
+    {
+      "id": "app_control",
+      "name": "Mac system control",
+      "questions": [
+        {"q": "Turn the brightness up", "match": ["brightness"], "expect": "Screen brightness visibly increases; Aria confirms.", "core": false}
+      ]
+    },
+    {
+      "id": "media",
+      "name": "Media playback",
+      "questions": [
+        {"q": "Play some jazz", "match": ["play", "jazz"], "expect": "Music starts (Apple Music/Spotify/YouTube per router); Aria names what it's playing.", "core": true},
+        {"q": "Pause", "match": ["pause"], "expect": "Playback pauses. Single-word command must be accepted.", "core": true},
+        {"q": "What song is playing?", "match": ["song", "playing"], "expect": "Names the current track, or says nothing is playing.", "core": false}
+      ]
+    },
+    {
+      "id": "screen",
+      "name": "Screen intelligence",
+      "questions": [
+        {"q": "What's on my screen right now?", "match": ["screen"], "expect": "Describes the actual visible window contents — never guesses. Needs Screen Recording permission.", "core": true},
+        {"q": "Show me where the Apple menu is", "match": ["show", "where"], "expect": "Draws a box near the top-left Apple menu and says where it is. Known weak link: ~80% coordinate accuracy.", "core": false}
+      ]
+    },
+    {
+      "id": "messaging",
+      "name": "Messaging (read + confirm-cancel)",
+      "questions": [
+        {"q": "Read my latest text messages", "match": ["text", "messages"], "expect": "Summarizes recent iMessages, does not dump raw data.", "core": true},
+        {"q": "Text mom saying I'll call tonight — then answer NO at the confirmation", "match": ["saying"], "expect": "Aria states the message and asks to confirm BEFORE sending; saying no must abort with nothing sent.", "core": false}
+      ]
+    },
+    {
+      "id": "memory",
+      "name": "Memory (store + recall)",
+      "questions": [
+        {"q": "Remember that my favorite coffee is cold brew", "match": ["remember", "coffee"], "expect": "Acknowledges saving it.", "core": true},
+        {"q": "What's my favorite coffee?", "match": ["what", "coffee"], "expect": "Says cold brew — recalled from vector memory, works even next session.", "core": true}
+      ]
+    },
+    {
+      "id": "productivity",
+      "name": "Email / calendar / reminders",
+      "questions": [
+        {"q": "Check my email", "match": ["email"], "expect": "Summarizes recent inbox (needs Gmail setup); graceful message if not configured.", "core": true},
+        {"q": "What's on my calendar today?", "match": ["calendar"], "expect": "Reads today's events or says the day is clear.", "core": false},
+        {"q": "Remind me to stretch in two hours", "match": ["remind", "stretch"], "expect": "Confirms the reminder; it should actually fire later via cron.", "core": false}
+      ]
+    },
+    {
+      "id": "jobs",
+      "name": "Job search",
+      "questions": [
+        {"q": "Search for machine learning engineer jobs", "match": ["jobs"], "expect": "Speaks top results with company names; 'tell me more about the second job' should then work.", "core": false}
+      ]
+    },
+    {
+      "id": "briefing",
+      "name": "Morning briefing",
+      "questions": [
+        {"q": "Give me my briefing", "match": ["briefing"], "expect": "Weather + calendar + email + news in one spoken summary.", "core": false}
+      ]
+    },
+    {
+      "id": "browser_task",
+      "name": "Multi-step browser research",
+      "questions": [
+        {"q": "Compare the price of AirPods Pro on Amazon and Best Buy", "match": ["compare", "airpods"], "expect": "Runs the background browser loop, speaks progress, returns both prices. Browser must not steal focus.", "core": false}
+      ]
+    },
+    {
+      "id": "coder",
+      "name": "Code execution",
+      "questions": [
+        {"q": "Write a Python script that prints the first ten prime numbers and run it", "match": ["prime", "numbers"], "expect": "Writes, runs, and speaks the result.", "core": false}
+      ]
+    },
+    {
+      "id": "health",
+      "name": "Self-report",
+      "questions": [
+        {"q": "How have you been performing this week?", "match": ["performing"], "expect": "Reads the flight-recorder stats: command count, failure count, worst tool.", "core": true}
+      ]
+    },
+    {
+      "id": "robustness",
+      "name": "Robustness / graceful failure",
+      "questions": [
+        {"q": "(hold the hotkey and say nothing)", "match": ["__silence__"], "expect": "Says 'I didn't catch that' — never crashes. (Not log-matched; verify by ear.)", "core": false},
+        {"q": "Flurble the wombat sideways", "match": ["wombat"], "expect": "Asks for clarification or admits it can't — never pretends it did something.", "core": false}
+      ]
+    }
+  ]
+}
