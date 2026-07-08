@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import RateLimitError, AuthError
+from aria.llm.base import RateLimitError, AuthError
 
 
 def _make_anthropic_response(text="hello", stop_reason="end_turn", tool_blocks=None):
@@ -33,9 +33,9 @@ def _make_anthropic_response(text="hello", stop_reason="end_turn", tool_blocks=N
 
 
 def _make_provider():
-    with patch("llm.providers.anthropic.config") as mock_cfg:
+    with patch("aria.llm.providers.anthropic.config") as mock_cfg:
         mock_cfg.ANTHROPIC_API_KEY = "test-key"
-        from llm.providers.anthropic import AnthropicProvider
+        from aria.llm.providers.anthropic import AnthropicProvider
         p = AnthropicProvider("claude-haiku-4-5-20251001")
         mock_client = MagicMock()
         p._client = mock_client

@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import LLMResponse, ToolCall, RateLimitError, AuthError
-from llm.client import LLMClient, ProviderChain
+from aria.llm.base import LLMResponse, ToolCall, RateLimitError, AuthError
+from aria.llm.client import LLMClient, ProviderChain
 
 
 def _ok_response(provider="anthropic", model="claude-haiku-4-5-20251001"):

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import RateLimitError, AuthError
+from aria.llm.base import RateLimitError, AuthError
 
 
 def _make_groq_response(text="hello", tool_calls=None):
@@ -32,9 +32,9 @@ def _make_groq_response(text="hello", tool_calls=None):
 
 
 def _make_provider():
-    with patch("llm.providers.groq.config") as mock_cfg:
+    with patch("aria.llm.providers.groq.config") as mock_cfg:
         mock_cfg.GROQ_API_KEY = "test-key"
-        from llm.providers.groq import GroqProvider
+        from aria.llm.providers.groq import GroqProvider
         p = GroqProvider("llama-3.3-70b-versatile")
         mock_client = MagicMock()
         p._client = mock_client

@@ -48,7 +48,7 @@ def _fresh_guard(monkeypatch, mock_proc=None, platform="darwin"):
 
     with patch("sys.platform", platform), \
          patch("subprocess.Popen", mock_popen_cls):
-        import sleep_guard as sg
+        import aria.system.sleep_guard as sg
         # Also patch sys.platform inside the loaded module
         monkeypatch.setattr(sg, "_PLATFORM", platform)
         guard = sg.SleepGuard()
@@ -72,7 +72,7 @@ class TestAcquireStartsCaffeinate:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
             guard.acquire()
@@ -91,7 +91,7 @@ class TestAcquireStartsCaffeinate:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
             guard.acquire()
@@ -108,7 +108,7 @@ class TestAcquireStartsCaffeinate:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
             guard.acquire()
@@ -130,7 +130,7 @@ class TestReleaseKillsProcess:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
             guard.acquire()
@@ -147,7 +147,7 @@ class TestReleaseKillsProcess:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
             guard.acquire()
@@ -164,7 +164,7 @@ class TestReleaseKillsProcess:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
 
@@ -185,7 +185,7 @@ class TestNestedAcquire:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
 
@@ -216,7 +216,7 @@ class TestNestedAcquire:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
 
@@ -238,7 +238,7 @@ class TestNoopOnNonMacos:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "linux")
             guard = sg.SleepGuard()
             guard.acquire()
@@ -255,7 +255,7 @@ class TestNoopOnNonMacos:
                 del sys.modules[key]
 
         with patch("subprocess.Popen", mock_popen):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "linux")
             guard = sg.SleepGuard()
             guard.acquire()
@@ -279,7 +279,7 @@ class TestRestartTimer:
 
         with patch("subprocess.Popen", mock_popen), \
              patch("threading.Timer", mock_timer_cls):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
             guard.acquire()
@@ -302,7 +302,7 @@ class TestRestartTimer:
 
         with patch("subprocess.Popen", mock_popen), \
              patch("threading.Timer", mock_timer_cls):
-            import sleep_guard as sg
+            import aria.system.sleep_guard as sg
             monkeypatch.setattr(sg, "_PLATFORM", "darwin")
             guard = sg.SleepGuard()
             guard.acquire()

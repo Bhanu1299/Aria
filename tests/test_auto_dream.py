@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import LLMResponse
+from aria.llm.base import LLMResponse
 
 
 def _make_llm_response(text: str) -> LLMResponse:
@@ -41,15 +41,15 @@ def test_consolidate_rewrites_session_notes():
     tmp_path = _make_temp_identity()
 
     try:
-        with patch("llm.llm_client.complete") as mock_complete, \
-             patch("auto_dream._IDENTITY_PATH", tmp_path), \
-             patch("auto_dream.memory.get_session_notes", return_value="old notes"), \
-             patch("auto_dream.memory.clear_session_notes") as mock_clear, \
-             patch("auto_dream.memory.store_session_notes") as mock_store, \
-             patch("auto_dream.memory.reset_command_count"):
+        with patch("aria.llm.llm_client.complete") as mock_complete, \
+             patch("aria.state.auto_dream._IDENTITY_PATH", tmp_path), \
+             patch("aria.state.auto_dream.memory.get_session_notes", return_value="old notes"), \
+             patch("aria.state.auto_dream.memory.clear_session_notes") as mock_clear, \
+             patch("aria.state.auto_dream.memory.store_session_notes") as mock_store, \
+             patch("aria.state.auto_dream.memory.reset_command_count"):
             mock_complete.return_value = _make_llm_response(groq_payload)
 
-            import auto_dream
+            import aria.state.auto_dream as auto_dream
             auto_dream.consolidate()
 
         mock_clear.assert_called_once()
@@ -70,15 +70,15 @@ def test_consolidate_deduplicates_facts():
     tmp_path = _make_temp_identity(facts=original_facts)
 
     try:
-        with patch("llm.llm_client.complete") as mock_complete, \
-             patch("auto_dream._IDENTITY_PATH", tmp_path), \
-             patch("auto_dream.memory.get_session_notes", return_value="some notes"), \
-             patch("auto_dream.memory.clear_session_notes"), \
-             patch("auto_dream.memory.store_session_notes"), \
-             patch("auto_dream.memory.reset_command_count"):
+        with patch("aria.llm.llm_client.complete") as mock_complete, \
+             patch("aria.state.auto_dream._IDENTITY_PATH", tmp_path), \
+             patch("aria.state.auto_dream.memory.get_session_notes", return_value="some notes"), \
+             patch("aria.state.auto_dream.memory.clear_session_notes"), \
+             patch("aria.state.auto_dream.memory.store_session_notes"), \
+             patch("aria.state.auto_dream.memory.reset_command_count"):
             mock_complete.return_value = _make_llm_response(groq_payload)
 
-            import auto_dream
+            import aria.state.auto_dream as auto_dream
             auto_dream.consolidate()
 
         with open(tmp_path) as f:
@@ -96,9 +96,9 @@ def test_maybe_consolidate_fires_at_interval():
     def fake_consolidate():
         done_event.set()
 
-    with patch("auto_dream.memory.increment_command_count", return_value=5), \
-         patch("auto_dream.consolidate", side_effect=fake_consolidate):
-        import auto_dream
+    with patch("aria.state.auto_dream.memory.increment_command_count", return_value=5), \
+         patch("aria.state.auto_dream.consolidate", side_effect=fake_consolidate):
+        import aria.state.auto_dream as auto_dream
         auto_dream.maybe_consolidate_async("hello", "world")
 
     fired = done_event.wait(timeout=2.0)
@@ -112,9 +112,9 @@ def test_maybe_consolidate_does_not_fire_before_interval():
     def fake_consolidate():
         called.append(True)
 
-    with patch("auto_dream.memory.increment_command_count", return_value=4), \
-         patch("auto_dream.consolidate", side_effect=fake_consolidate):
-        import auto_dream
+    with patch("aria.state.auto_dream.memory.increment_command_count", return_value=4), \
+         patch("aria.state.auto_dream.consolidate", side_effect=fake_consolidate):
+        import aria.state.auto_dream as auto_dream
         auto_dream.maybe_consolidate_async("hello", "world")
 
     time.sleep(0.15)
@@ -123,9 +123,9 @@ def test_maybe_consolidate_does_not_fire_before_interval():
 
 def test_consolidate_graceful_on_groq_failure():
     """consolidate() must not raise even when LLM throws an exception."""
-    with patch("llm.llm_client.complete", side_effect=RuntimeError("LLM is down")), \
-         patch("auto_dream.memory.get_session_notes", return_value="some notes"):
-        import auto_dream
+    with patch("aria.llm.llm_client.complete", side_effect=RuntimeError("LLM is down")), \
+         patch("aria.state.auto_dream.memory.get_session_notes", return_value="some notes"):
+        import aria.state.auto_dream as auto_dream
         try:
             auto_dream.consolidate()
         except Exception as exc:

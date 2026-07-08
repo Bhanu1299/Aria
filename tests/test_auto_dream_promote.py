@@ -37,8 +37,8 @@ def test_promote_writes_top_facts_to_identity():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         identity = {}
-        with patch("plugins.memory.vector_store.ChromaStore.get", return_value=store):
-            import auto_dream
+        with patch("aria.plugins.memory.vector_store.ChromaStore.get", return_value=store):
+            import aria.state.auto_dream as auto_dream
             auto_dream._promote_top_facts(identity)
 
     assert "promoted_facts" in identity
@@ -56,8 +56,8 @@ def test_promote_skips_low_recall_facts():
     store.get_all.return_value = facts
 
     identity = {}
-    with patch("plugins.memory.vector_store.ChromaStore.get", return_value=store):
-        import auto_dream
+    with patch("aria.plugins.memory.vector_store.ChromaStore.get", return_value=store):
+        import aria.state.auto_dream as auto_dream
         auto_dream._promote_top_facts(identity)
 
     assert identity.get("promoted_facts", []) == []
@@ -72,8 +72,8 @@ def test_promote_caps_at_5():
     store.get_all.return_value = facts
 
     identity = {}
-    with patch("plugins.memory.vector_store.ChromaStore.get", return_value=store):
-        import auto_dream
+    with patch("aria.plugins.memory.vector_store.ChromaStore.get", return_value=store):
+        import aria.state.auto_dream as auto_dream
         auto_dream._promote_top_facts(identity)
 
     assert len(identity.get("promoted_facts", [])) <= 5
@@ -84,8 +84,8 @@ def test_promote_does_nothing_when_no_facts():
     store.get_all.return_value = []
 
     identity = {}
-    with patch("plugins.memory.vector_store.ChromaStore.get", return_value=store):
-        import auto_dream
+    with patch("aria.plugins.memory.vector_store.ChromaStore.get", return_value=store):
+        import aria.state.auto_dream as auto_dream
         auto_dream._promote_top_facts(identity)
 
     assert "promoted_facts" not in identity
@@ -96,6 +96,6 @@ def test_promote_never_raises():
     store.get_all.side_effect = Exception("db error")
 
     identity = {}
-    with patch("plugins.memory.vector_store.ChromaStore.get", return_value=store):
-        import auto_dream
+    with patch("aria.plugins.memory.vector_store.ChromaStore.get", return_value=store):
+        import aria.state.auto_dream as auto_dream
         auto_dream._promote_top_facts(identity)  # should not raise

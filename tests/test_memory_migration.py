@@ -20,14 +20,13 @@ def test_migration_skipped_when_marker_exists():
     with tempfile.TemporaryDirectory() as tmpdir:
         marker = Path(tmpdir) / ".migrated"
         marker.write_text("ok")
-        with patch("plugins.memory.MIGRATION_MARKER" if False else "plugins.memory._MIGRATION_MARKER",
-                   marker, create=True):
-            from plugins.memory import MemoryPlugin
+        with patch("aria.plugins.memory._MIGRATION_MARKER", marker, create=True):
+            from aria.plugins.memory import MemoryPlugin
             plugin = MemoryPlugin()
             # If migration marker present, _migrate does nothing
             store = _make_store()
-            with patch("plugins.memory._MIGRATION_MARKER", marker), \
-                 patch("plugins.memory.vector_store.ChromaStore.get", return_value=store):
+            with patch("aria.plugins.memory._MIGRATION_MARKER", marker), \
+                 patch("aria.plugins.memory.vector_store.ChromaStore.get", return_value=store):
                 plugin._migrate()
             store._collection.upsert.assert_not_called()
 
@@ -40,10 +39,10 @@ def test_migration_runs_when_no_marker():
         identity_file.write_text(json.dumps(identity))
 
         store = _make_store()
-        with patch("plugins.memory._MIGRATION_MARKER", marker), \
-             patch("plugins.memory.MemoryPlugin._migrate",
+        with patch("aria.plugins.memory._MIGRATION_MARKER", marker), \
+             patch("aria.plugins.memory.MemoryPlugin._migrate",
                    lambda self: _run_migrate_with_paths(self, marker, identity_file, store)):
-            from plugins.memory import MemoryPlugin
+            from aria.plugins.memory import MemoryPlugin
             plugin = MemoryPlugin()
             plugin._migrate()
         assert marker.exists()
@@ -61,7 +60,7 @@ def _run_migrate_with_paths(plugin, marker, identity_path, store):
     except Exception:
         identity = {}
     facts = identity.get("learned_facts", [])
-    from plugins.memory.embedder import Embedder
+    from aria.plugins.memory.embedder import Embedder
     embedder = MagicMock()
     embedder.embed_batch.return_value = [[0.1] * 384, [0.1] * 384]
     ts = time.time()
@@ -87,10 +86,10 @@ def test_migration_handles_empty_facts():
         identity_file = Path(tmpdir) / "identity.json"
         identity_file.write_text(json.dumps(identity))
         store = _make_store()
-        with patch("plugins.memory._MIGRATION_MARKER", marker), \
-             patch("plugins.memory.MemoryPlugin._migrate",
+        with patch("aria.plugins.memory._MIGRATION_MARKER", marker), \
+             patch("aria.plugins.memory.MemoryPlugin._migrate",
                    lambda self: _run_migrate_with_paths(self, marker, identity_file, store)):
-            from plugins.memory import MemoryPlugin
+            from aria.plugins.memory import MemoryPlugin
             MemoryPlugin()._migrate()
         assert marker.exists()
         store._collection.upsert.assert_not_called()

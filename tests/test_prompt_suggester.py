@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import LLMResponse
+from aria.llm.base import LLMResponse
 
 
 def _make_llm_response(text: str) -> LLMResponse:
@@ -31,10 +31,10 @@ def test_suggest_returns_string_for_browser_task():
     """suggest() must return non-empty string starting with 'Also' for valid input."""
     fake_reply = "Also — want me to apply to any of those?"
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.return_value = _make_llm_response(fake_reply)
 
-        import prompt_suggester
+        import aria.features.prompt_suggester as prompt_suggester
         result = prompt_suggester.suggest(intent_type="browser_task", answer=_LONG_ANSWER)
 
     assert isinstance(result, str)
@@ -46,8 +46,8 @@ def test_suggest_returns_empty_for_short_answer():
     """If answer has fewer than 20 words, suggest() must return '' without calling LLM."""
     short_answer = "I found two jobs."
 
-    with patch("llm.llm_client.complete") as mock_complete:
-        import prompt_suggester
+    with patch("aria.llm.llm_client.complete") as mock_complete:
+        import aria.features.prompt_suggester as prompt_suggester
         result = prompt_suggester.suggest(intent_type="browser_task", answer=short_answer)
         mock_complete.assert_not_called()
 
@@ -56,8 +56,8 @@ def test_suggest_returns_empty_for_short_answer():
 
 def test_suggest_returns_empty_for_excluded_intent():
     """For intents not in _TRIGGER_INTENTS, suggest() returns '' without calling LLM."""
-    with patch("llm.llm_client.complete") as mock_complete:
-        import prompt_suggester
+    with patch("aria.llm.llm_client.complete") as mock_complete:
+        import aria.features.prompt_suggester as prompt_suggester
         result = prompt_suggester.suggest(intent_type="weather", answer=_LONG_ANSWER)
         mock_complete.assert_not_called()
 
@@ -74,8 +74,8 @@ def test_suggest_async_does_not_block():
 
     mock_speaker = MagicMock()
 
-    with patch("prompt_suggester.suggest", side_effect=slow_suggest):
-        import prompt_suggester
+    with patch("aria.features.prompt_suggester.suggest", side_effect=slow_suggest):
+        import aria.features.prompt_suggester as prompt_suggester
         t0 = time.monotonic()
         prompt_suggester.suggest_async("browser_task", _LONG_ANSWER, mock_speaker)
         elapsed = time.monotonic() - t0
@@ -86,8 +86,8 @@ def test_suggest_async_does_not_block():
 
 def test_suggest_graceful_on_groq_failure():
     """When LLM raises, suggest() must return '' without re-raising."""
-    with patch("llm.llm_client.complete", side_effect=RuntimeError("LLM down")):
-        import prompt_suggester
+    with patch("aria.llm.llm_client.complete", side_effect=RuntimeError("LLM down")):
+        import aria.features.prompt_suggester as prompt_suggester
         result = prompt_suggester.suggest(intent_type="jobs", answer=_LONG_ANSWER)
 
     assert result == ""

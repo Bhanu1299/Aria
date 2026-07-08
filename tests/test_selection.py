@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import selection
+import aria.screen.selection as selection
 
 
 def test_returns_ax_selected_text_when_available():

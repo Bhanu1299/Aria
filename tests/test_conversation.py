@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-import conversation
-from speaker import ThinkingAck
+import aria.voice.conversation as conversation
+from aria.voice.speaker import ThinkingAck
 
 
 # ---------------------------------------------------------------------------

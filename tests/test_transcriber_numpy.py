@@ -41,9 +41,9 @@ def _make_transcriber_with_mock_model(mock_model: MagicMock):
     sys.modules["faster_whisper"].WhisperModel = MagicMock(return_value=mock_model)  # type: ignore[attr-defined]
 
     # Force-reload transcriber so it picks up the module-level numpy import etc.
-    import transcriber as _transcriber_mod
+    import aria.voice.transcriber as _transcriber_mod
     importlib.reload(_transcriber_mod)
-    from transcriber import Transcriber
+    from aria.voice.transcriber import Transcriber
 
     t = Transcriber()
     return t
@@ -103,7 +103,7 @@ class TestTranscriberNumpy(unittest.TestCase):
     # 3. get_audio_array returns float32 normalized to [-1, 1]
     # ------------------------------------------------------------------
     def test_get_audio_array_returns_normalized_float32(self):
-        from voice_capture import VoiceCapture
+        from aria.voice.voice_capture import VoiceCapture
 
         vc = VoiceCapture()
         # Inject some int16 chunks directly (bypasses sounddevice)
@@ -129,7 +129,7 @@ class TestTranscriberNumpy(unittest.TestCase):
     # 4. get_audio_array returns None when _chunks is empty
     # ------------------------------------------------------------------
     def test_get_audio_array_returns_none_when_no_chunks(self):
-        from voice_capture import VoiceCapture
+        from aria.voice.voice_capture import VoiceCapture
 
         vc = VoiceCapture()
         # _chunks starts as [] — don't add anything

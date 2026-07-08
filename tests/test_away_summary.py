@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import LLMResponse
+from aria.llm.base import LLMResponse
 
 
 def _make_llm_response(text: str) -> LLMResponse:
@@ -22,10 +22,10 @@ def test_greeting_uses_session_notes():
     """generate() must call LLM when session_notes is non-empty and return the result."""
     fake_greeting = "Welcome back. Last session you were looking at Python roles at Stripe."
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.return_value = _make_llm_response(fake_greeting)
 
-        import away_summary
+        import aria.state.away_summary as away_summary
         result = away_summary.generate(
             session_notes="- Searched Python engineer roles\n- Looked at Stripe posting",
             last_search="Python engineer San Francisco",
@@ -37,8 +37,8 @@ def test_greeting_uses_session_notes():
 
 def test_greeting_falls_back_to_ready_when_no_history():
     """generate('', '') must return 'Ready when you are.' without calling LLM."""
-    with patch("llm.llm_client.complete") as mock_complete:
-        import away_summary
+    with patch("aria.llm.llm_client.complete") as mock_complete:
+        import aria.state.away_summary as away_summary
         result = away_summary.generate(session_notes="", last_search="")
 
     assert result == "Ready when you are."
@@ -53,12 +53,12 @@ def test_speak_greeting_calls_speaker():
 
     mock_speaker = MagicMock()
 
-    with patch("llm.llm_client.complete") as mock_complete, \
-         patch("away_summary.memory.get_session_notes", return_value=fake_notes), \
-         patch("away_summary.memory.get_last_search", return_value=fake_search):
+    with patch("aria.llm.llm_client.complete") as mock_complete, \
+         patch("aria.state.away_summary.memory.get_session_notes", return_value=fake_notes), \
+         patch("aria.state.away_summary.memory.get_last_search", return_value=fake_search):
         mock_complete.return_value = _make_llm_response(fake_greeting)
 
-        import away_summary
+        import aria.state.away_summary as away_summary
         away_summary.speak_greeting(mock_speaker)
 
     mock_speaker.say.assert_called_once_with(fake_greeting.strip())

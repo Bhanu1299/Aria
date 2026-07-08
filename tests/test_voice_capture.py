@@ -6,7 +6,7 @@ import soundfile as sf
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from voice_capture import VoiceCapture
+from aria.voice.voice_capture import VoiceCapture
 
 RECORD_SECONDS = 3
 

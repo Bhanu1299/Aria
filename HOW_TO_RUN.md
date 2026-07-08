@@ -148,7 +148,7 @@ Fix: hold the hotkey, wait half a second, then speak clearly. Check your mic is 
 ```bash
 venv/bin/python daily_check.py wake
 ```
-If near-misses outnumber detections, the report suggests a lower threshold (edit `_CUSTOM_THRESHOLD` / `_OWW_THRESHOLD` in `wake_word.py`). If the engine shows NOT RUNNING, check the startup console for a `[Aria] Wake word` line — missing deps or model fall back or disable it, and the hotkey always works regardless.
+If near-misses outnumber detections, the report suggests a lower threshold (edit `_CUSTOM_THRESHOLD` / `_OWW_THRESHOLD` in `aria/voice/wake_word.py`). If the engine shows NOT RUNNING, check the startup console for a `[Aria] Wake word` line — missing deps or model fall back or disable it, and the hotkey always works regardless.
 
 **6. Screen questions fail**
 → Screen Recording permission missing (see Permissions above). Screen tools need it; everything else runs without it.

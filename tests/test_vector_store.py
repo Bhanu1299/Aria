@@ -32,12 +32,12 @@ def _make_embedder():
 
 def _make_store():
     """Create a ChromaStore with all external deps mocked."""
-    from plugins.memory.vector_store import ChromaStore
+    from aria.plugins.memory.vector_store import ChromaStore
     ChromaStore._instance = None
     client, collection = _make_chroma_mocks()
     embedder = _make_embedder()
     with patch("chromadb.PersistentClient", return_value=client), \
-         patch("plugins.memory.embedder.Embedder.get", return_value=embedder), \
+         patch("aria.plugins.memory.embedder.Embedder.get", return_value=embedder), \
          patch("pathlib.Path.mkdir"):
         store = ChromaStore()
         store._client = client

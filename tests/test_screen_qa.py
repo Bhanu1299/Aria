@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import screen_qa
+import aria.screen.screen_qa as screen_qa
 
 
 def _fake_vision_client(reply_text: str) -> MagicMock:

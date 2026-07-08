@@ -70,8 +70,8 @@ _config = _stub_module(
 sys.modules.setdefault("config", _config)
 
 # Now import the module under test
-import computer_use  # noqa: E402
-from computer_use import _with_retry  # noqa: E402
+import aria.web.computer_use as computer_use  # noqa: E402
+from aria.web.computer_use import _with_retry  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

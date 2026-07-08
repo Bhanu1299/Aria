@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import flight_recorder
+import aria.observability.flight_recorder as flight_recorder
 
 
 @pytest.fixture(autouse=True)

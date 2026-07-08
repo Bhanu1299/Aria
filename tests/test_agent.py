@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import LLMResponse, ToolCall
-from tool import ToolDescriptor, ToolRegistry
-from agent import Agent
+from aria.llm.base import LLMResponse, ToolCall
+from aria.core.tool import ToolDescriptor, ToolRegistry
+from aria.core.agent import Agent
 
 
 def _ok_response(text: str = "Done.") -> LLMResponse:
@@ -52,7 +52,7 @@ def test_simple_text_response():
     reg = _make_registry()
     agent = Agent(reg)
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.return_value = _ok_response("The sky is blue.")
         result = agent.run("What color is the sky?")
 
@@ -70,7 +70,7 @@ def test_single_tool_call_and_final_response():
         _ok_response("Here are the latest Python news."),
     ]
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.side_effect = responses
         result = agent.run("What's in the Python news?")
 
@@ -92,7 +92,7 @@ def test_tool_result_appended_to_messages():
             return _tool_response("web_search", "tc1", {"query": "python"})
         return _ok_response("Python 3.13 released.")
 
-    with patch("llm.llm_client.complete", side_effect=capture_and_respond):
+    with patch("aria.llm.llm_client.complete", side_effect=capture_and_respond):
         agent.run("Python news")
 
     assert len(calls_received) == 2
@@ -119,7 +119,7 @@ def test_multi_step_chain():
         _ok_response("Found 3 ML jobs. San Francisco is expensive."),
     ]
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.side_effect = responses
         result = agent.run("Find ML jobs and what's the cost of living?")
 
@@ -146,7 +146,7 @@ def test_tool_error_continues_loop():
         _ok_response("I had an issue but recovered."),
     ]
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.side_effect = responses
         result = agent.run("Do the broken thing")
 
@@ -165,7 +165,7 @@ def test_unknown_tool_returns_error_result():
         _ok_response("I tried something but it wasn't available."),
     ]
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.side_effect = responses
         result = agent.run("Do the ghost thing")
 
@@ -179,7 +179,7 @@ def test_max_tool_calls_returns_partial():
     agent = Agent(reg)
 
     # Always return a tool call — force hitting the limit
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.return_value = _tool_response("loop_tool", "tc1", {})
         result = agent.run("Loop forever")
 
@@ -191,7 +191,7 @@ def test_empty_text_on_end_turn_returns_rephrase():
     reg = _make_registry()
     agent = Agent(reg)
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.return_value = LLMResponse(
             text="", tool_calls=[], stop_reason="end_turn",
             provider_used="anthropic", model_used="claude-sonnet-4-6"
@@ -206,7 +206,7 @@ def test_run_never_raises():
     reg = _make_registry()
     agent = Agent(reg)
 
-    with patch("llm.llm_client.complete", side_effect=RuntimeError("catastrophic failure")):
+    with patch("aria.llm.llm_client.complete", side_effect=RuntimeError("catastrophic failure")):
         result = agent.run("anything")
 
     assert isinstance(result, str)
@@ -229,7 +229,7 @@ def test_history_accumulates_across_calls():
     reg = _make_registry()
     agent = Agent(reg)
 
-    with patch("llm.llm_client.complete") as mock:
+    with patch("aria.llm.llm_client.complete") as mock:
         mock.return_value = _ok_response("First answer.")
         agent.run("First question")
 
@@ -254,7 +254,7 @@ def test_second_call_receives_history_in_messages():
         calls_messages.append(kwargs.get("messages", []))
         return _ok_response(f"Answer {len(calls_messages)}")
 
-    with patch("llm.llm_client.complete", side_effect=capture):
+    with patch("aria.llm.llm_client.complete", side_effect=capture):
         agent.run("Turn one")
         agent.run("Turn two")
 
@@ -270,7 +270,7 @@ def test_history_not_appended_on_error():
     reg = _make_registry()
     agent = Agent(reg)
 
-    with patch("llm.llm_client.complete", side_effect=RuntimeError("crash")):
+    with patch("aria.llm.llm_client.complete", side_effect=RuntimeError("crash")):
         agent.run("This will fail")
 
     assert agent._history == []
@@ -280,7 +280,7 @@ class TestSystemPrompt:
     """The system prompt is Aria's brain — verify its load-bearing sections."""
 
     def _prompt(self, memory_context=""):
-        import agent
+        import aria.core.agent as agent
         return agent._build_system_prompt(memory_context)
 
     def test_contains_identity_and_date(self):
@@ -325,7 +325,7 @@ class TestToolTracking:
     def test_last_run_tools_records_success(self):
         reg = _make_registry(_make_tool("web_search"))
         agent = Agent(reg)
-        with patch("llm.llm_client.complete") as mock_complete:
+        with patch("aria.llm.llm_client.complete") as mock_complete:
             mock_complete.side_effect = [
                 _tool_response("web_search", "t1", {"query": "x"}),
                 _ok_response("Found it."),
@@ -341,7 +341,7 @@ class TestToolTracking:
         )
         reg = _make_registry(bad)
         agent = Agent(reg)
-        with patch("llm.llm_client.complete") as mock_complete:
+        with patch("aria.llm.llm_client.complete") as mock_complete:
             mock_complete.side_effect = [
                 _tool_response("broken", "t1", {}),
                 _ok_response("Sorry."),
@@ -352,7 +352,7 @@ class TestToolTracking:
     def test_last_run_tools_resets_each_run(self):
         reg = _make_registry(_make_tool("web_search"))
         agent = Agent(reg)
-        with patch("llm.llm_client.complete") as mock_complete:
+        with patch("aria.llm.llm_client.complete") as mock_complete:
             mock_complete.side_effect = [
                 _tool_response("web_search", "t1", {"query": "x"}),
                 _ok_response("Found."),

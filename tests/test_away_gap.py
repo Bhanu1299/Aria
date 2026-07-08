@@ -34,35 +34,35 @@ class TestAwayGap(unittest.TestCase):
             json.dump(data, f)
 
     def test_speaks_recap_after_30_min_gap(self):
-        import away_summary
+        import aria.state.away_summary as away_summary
         old_ts = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
         self._write_identity(_make_identity(old_ts, "Found 3 Python jobs on LinkedIn."))
         speaker = MagicMock()
-        with patch("away_summary._IDENTITY_PATH", self.path):
+        with patch("aria.state.away_summary._IDENTITY_PATH", self.path):
             away_summary.check_and_speak(speaker)
         speaker.say.assert_called_once()
 
     def test_no_recap_within_30_min(self):
-        import away_summary
+        import aria.state.away_summary as away_summary
         recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
         self._write_identity(_make_identity(recent_ts, "Found jobs."))
         speaker = MagicMock()
-        with patch("away_summary._IDENTITY_PATH", self.path):
+        with patch("aria.state.away_summary._IDENTITY_PATH", self.path):
             away_summary.check_and_speak(speaker)
         speaker.say.assert_not_called()
 
     def test_no_recap_when_no_last_active(self):
-        import away_summary
+        import aria.state.away_summary as away_summary
         self._write_identity(_make_identity(None))
         speaker = MagicMock()
-        with patch("away_summary._IDENTITY_PATH", self.path):
+        with patch("aria.state.away_summary._IDENTITY_PATH", self.path):
             away_summary.check_and_speak(speaker)
         speaker.say.assert_not_called()
 
     def test_update_last_active_writes_timestamp(self):
-        import away_summary
+        import aria.state.away_summary as away_summary
         self._write_identity({"name": "Test"})
-        with patch("away_summary._IDENTITY_PATH", self.path):
+        with patch("aria.state.away_summary._IDENTITY_PATH", self.path):
             away_summary.update_last_active("Searched for jobs.")
         with open(self.path) as f:
             data = json.load(f)
@@ -71,9 +71,9 @@ class TestAwayGap(unittest.TestCase):
         self.assertEqual(data["last_task_summary"], "Searched for jobs.")
 
     def test_check_and_speak_never_raises_on_bad_file(self):
-        import away_summary
+        import aria.state.away_summary as away_summary
         speaker = MagicMock()
-        with patch("away_summary._IDENTITY_PATH", "/nonexistent/path.json"):
+        with patch("aria.state.away_summary._IDENTITY_PATH", "/nonexistent/path.json"):
             try:
                 away_summary.check_and_speak(speaker)
             except Exception as e:

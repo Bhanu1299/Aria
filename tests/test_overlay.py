@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import overlay
+import aria.ui.overlay as overlay
 
 
 def test_scale_normalized_regions_maps_0_1000_to_screen_points():

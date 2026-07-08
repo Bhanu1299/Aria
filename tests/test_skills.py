@@ -5,15 +5,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 class TestApplyStatus:
     def test_no_applications(self, monkeypatch):
-        import skills.apply_status as skill
-        import tracker
+        import aria.skills.apply_status as skill
+        import aria.features.tracker as tracker
         monkeypatch.setattr(tracker, "get_applications", lambda: [])
         result = skill.handle("what jobs have I applied to")
         assert "haven't applied" in result
 
     def test_with_applications(self, monkeypatch):
-        import skills.apply_status as skill
-        import tracker
+        import aria.skills.apply_status as skill
+        import aria.features.tracker as tracker
         monkeypatch.setattr(tracker, "get_applications", lambda: [
             {"role": "SWE", "company": "Acme", "applied_at": "2026-04-01 10:00:00", "platform": "LinkedIn", "url": ""},
             {"role": "Backend Engineer", "company": "Globex", "applied_at": "2026-03-28 09:00:00", "platform": "Indeed", "url": ""},
@@ -24,8 +24,8 @@ class TestApplyStatus:
         assert "2" in result  # total count
 
     def test_caps_at_five(self, monkeypatch):
-        import skills.apply_status as skill
-        import tracker
+        import aria.skills.apply_status as skill
+        import aria.features.tracker as tracker
         apps = [
             {"role": f"Role {i}", "company": f"Co {i}", "applied_at": "2026-04-01", "platform": "", "url": ""}
             for i in range(10)
@@ -39,7 +39,7 @@ class TestApplyStatus:
 
 class TestCalculate:
     def _handle(self, cmd):
-        import skills.calculate as skill
+        import aria.skills.calculate as skill
         return skill.handle(cmd)
 
     def test_multiplication(self):
@@ -76,7 +76,7 @@ class TestCalculateTriggerScope:
     """Calculate must not hijack general questions or WhatsApp commands."""
 
     def _match(self, transcript):
-        from skills import skill_loader
+        from aria.skills import skill_loader
         skill_loader.load_skills()
         return skill_loader.match_skill(transcript)
 

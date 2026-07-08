@@ -23,7 +23,7 @@ import os
 # the script is invoked (e.g. `python tests/test_browser.py` from repo root).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from browser import BrowserExecutor  # noqa: E402
+from aria.web.browser import BrowserExecutor  # noqa: E402
 
 
 def run_test() -> None:

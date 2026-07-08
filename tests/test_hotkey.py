@@ -19,7 +19,7 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from hotkey import HotkeyListener  # noqa: E402
+from aria.voice.hotkey import HotkeyListener  # noqa: E402
 
 
 def main() -> None:

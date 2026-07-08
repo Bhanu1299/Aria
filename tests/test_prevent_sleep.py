@@ -19,7 +19,7 @@ class TestPreventSleep(unittest.TestCase):
              patch("subprocess.Popen") as mock_popen:
             mock_proc = MagicMock()
             mock_popen.return_value = mock_proc
-            import prevent_sleep
+            import aria.system.prevent_sleep as prevent_sleep
             prevent_sleep.start()
             mock_popen.assert_called_once()
             args = mock_popen.call_args[0][0]
@@ -32,7 +32,7 @@ class TestPreventSleep(unittest.TestCase):
              patch("subprocess.Popen") as mock_popen:
             mock_proc = MagicMock()
             mock_popen.return_value = mock_proc
-            import prevent_sleep
+            import aria.system.prevent_sleep as prevent_sleep
             prevent_sleep.start()
             prevent_sleep.stop()
             mock_proc.kill.assert_called_once()
@@ -42,7 +42,7 @@ class TestPreventSleep(unittest.TestCase):
              patch("subprocess.Popen") as mock_popen:
             mock_proc = MagicMock()
             mock_popen.return_value = mock_proc
-            import prevent_sleep
+            import aria.system.prevent_sleep as prevent_sleep
             prevent_sleep.start()
             prevent_sleep.start()
             prevent_sleep.stop()
@@ -53,13 +53,13 @@ class TestPreventSleep(unittest.TestCase):
     def test_no_op_on_non_macos(self):
         with patch("sys.platform", "linux"), \
              patch("subprocess.Popen") as mock_popen:
-            import prevent_sleep
+            import aria.system.prevent_sleep as prevent_sleep
             prevent_sleep.start()
             prevent_sleep.stop()
             mock_popen.assert_not_called()
 
     def test_stop_without_start_does_not_crash(self):
-        import prevent_sleep
+        import aria.system.prevent_sleep as prevent_sleep
         try:
             prevent_sleep.stop()
         except Exception as e:

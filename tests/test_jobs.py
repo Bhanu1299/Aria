@@ -9,13 +9,13 @@ import json
 # ── format_spoken_results ────────────────────────────────────────────────────
 
 def test_format_spoken_results_empty():
-    import jobs
+    import aria.features.jobs as jobs
     result = jobs.format_spoken_results([])
     assert result == "I couldn't find any job listings. Try rephrasing your search."
 
 
 def test_format_spoken_results_single():
-    import jobs
+    import aria.features.jobs as jobs
     r = jobs.format_spoken_results([
         {"index": 1, "title": "Software Engineer", "company": "Stripe",
          "location": "New York, NY", "posted": "2 days ago", "platform": "LinkedIn"}
@@ -27,7 +27,7 @@ def test_format_spoken_results_single():
 
 
 def test_format_spoken_results_five():
-    import jobs
+    import aria.features.jobs as jobs
     results = [
         {"index": i + 1, "title": f"Job {i+1}", "company": f"Co {i+1}",
          "location": "Remote", "posted": "today", "platform": "LinkedIn"}
@@ -40,7 +40,7 @@ def test_format_spoken_results_five():
 
 
 def test_format_spoken_results_missing_location_and_posted():
-    import jobs
+    import aria.features.jobs as jobs
     r = jobs.format_spoken_results([
         {"index": 1, "title": "SWE", "company": "Acme",
          "location": "", "posted": "", "platform": "LinkedIn"}
@@ -53,7 +53,7 @@ def test_format_spoken_results_missing_location_and_posted():
 # ── _parse_query ─────────────────────────────────────────────────────────────
 
 def test_parse_query_success():
-    import jobs
+    import aria.features.jobs as jobs
     mock_response = MagicMock()
     mock_response.choices[0].message.content = '{"role": "software engineer", "location": "New York"}'
 
@@ -66,7 +66,7 @@ def test_parse_query_success():
 
 
 def test_parse_query_groq_failure_falls_back_to_raw_query():
-    import jobs
+    import aria.features.jobs as jobs
     with patch.object(jobs, "_get_client", side_effect=RuntimeError("API down")):
         role, location = jobs._parse_query("find backend jobs remote")
 
@@ -75,7 +75,7 @@ def test_parse_query_groq_failure_falls_back_to_raw_query():
 
 
 def test_parse_query_bad_json_falls_back():
-    import jobs
+    import aria.features.jobs as jobs
     mock_response = MagicMock()
     mock_response.choices[0].message.content = "not json"
 
@@ -90,7 +90,7 @@ def test_parse_query_bad_json_falls_back():
 # ── search_jobs deduplication ─────────────────────────────────────────────────
 
 def test_search_jobs_deduplicates():
-    import jobs
+    import aria.features.jobs as jobs
     duplicated = [
         {"title": "SWE", "company": "Stripe", "location": "NYC",
          "posted": "today", "url": "https://li.com/1", "platform": "LinkedIn"},
@@ -113,7 +113,7 @@ def test_search_jobs_deduplicates():
 
 
 def test_search_jobs_returns_empty_when_all_sources_fail():
-    import jobs
+    import aria.features.jobs as jobs
     with patch.object(jobs, "_parse_query", return_value=("SWE", "NYC")), \
          patch.object(jobs, "_get_search_url", return_value=None):
         results = jobs.search_jobs("find me SWE jobs")
@@ -124,7 +124,7 @@ def test_search_jobs_returns_empty_when_all_sources_fail():
 # ── _vision_ask error handling ───────────────────────────────────────────────
 
 def test_vision_ask_returns_empty_string_on_groq_failure():
-    import jobs
+    import aria.features.jobs as jobs
     with patch.object(jobs, "_get_client", side_effect=RuntimeError("API down")):
         result = jobs._vision_ask("fake_b64", "extract something")
 

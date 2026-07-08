@@ -25,7 +25,7 @@ def _run_fail(stderr: str = "error"):
 
 
 def test_pause_returns_paused():
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
     client = MusicAppClient()
     with patch("subprocess.run", return_value=_run_ok()):
@@ -34,7 +34,7 @@ def test_pause_returns_paused():
 
 
 def test_skip_returns_skipped():
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
     client = MusicAppClient()
     with patch("subprocess.run", return_value=_run_ok()):
@@ -43,7 +43,7 @@ def test_skip_returns_skipped():
 
 
 def test_previous_returns_going_back():
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
     client = MusicAppClient()
     with patch("subprocess.run", return_value=_run_ok()):
@@ -52,7 +52,7 @@ def test_previous_returns_going_back():
 
 
 def test_set_volume_returns_level():
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
     client = MusicAppClient()
     with patch("subprocess.run", return_value=_run_ok()):
@@ -61,7 +61,7 @@ def test_set_volume_returns_level():
 
 
 def test_set_volume_clamps():
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
     client = MusicAppClient()
     with patch("subprocess.run", return_value=_run_ok()):
@@ -70,7 +70,7 @@ def test_set_volume_clamps():
 
 
 def test_now_playing_returns_dict():
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
     client = MusicAppClient()
     with patch("subprocess.run", return_value=_run_ok("Alright|||Kendrick Lamar|||To Pimp A Butterfly")):
@@ -81,7 +81,7 @@ def test_now_playing_returns_dict():
 
 
 def test_now_playing_returns_nothing_when_stopped():
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
     client = MusicAppClient()
     with patch("subprocess.run", return_value=_run_ok("nothing")):
@@ -90,7 +90,7 @@ def test_now_playing_returns_nothing_when_stopped():
 
 
 def test_play_with_query_searches_library():
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
     client = MusicAppClient()
     responses = [
@@ -105,7 +105,7 @@ def test_play_with_query_searches_library():
 
 def test_timeout_returns_not_responding():
     import subprocess
-    from plugins.media.music_app import MusicAppClient, _TIMEOUT_MSG
+    from aria.plugins.media.music_app import MusicAppClient, _TIMEOUT_MSG
     MusicAppClient._instance = None
     client = MusicAppClient()
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("osascript", 8)):
