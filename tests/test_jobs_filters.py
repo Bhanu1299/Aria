@@ -3,7 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from jobs import _parse_salary_filter, _parse_filters
+from aria.features.jobs import _parse_salary_filter, _parse_filters
 
 
 def test_salary_100k():

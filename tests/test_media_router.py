@@ -9,15 +9,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def test_auto_selects_spotify_when_configured():
-    from plugins.media.router import MediaRouter
-    from plugins.media.spotify import SpotifyClient
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.router import MediaRouter
+    from aria.plugins.media.spotify import SpotifyClient
+    from aria.plugins.media.music_app import MusicAppClient
     SpotifyClient._instance = None
     MusicAppClient._instance = None
 
     mock_spotify = MagicMock()
-    with patch("plugins.media.spotify.SpotifyClient.is_configured", return_value=True), \
-         patch("plugins.media.spotify.SpotifyClient.get", return_value=mock_spotify), \
+    with patch("aria.plugins.media.spotify.SpotifyClient.is_configured", return_value=True), \
+         patch("aria.plugins.media.spotify.SpotifyClient.get", return_value=mock_spotify), \
          patch.dict("os.environ", {"MUSIC_BACKEND": "auto"}):
         router = MediaRouter()
         backend = router.get_backend()
@@ -25,15 +25,15 @@ def test_auto_selects_spotify_when_configured():
 
 
 def test_auto_falls_back_to_music_app_when_spotify_not_configured():
-    from plugins.media.router import MediaRouter
-    from plugins.media.spotify import SpotifyClient
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.router import MediaRouter
+    from aria.plugins.media.spotify import SpotifyClient
+    from aria.plugins.media.music_app import MusicAppClient
     SpotifyClient._instance = None
     MusicAppClient._instance = None
 
     mock_music = MagicMock()
-    with patch("plugins.media.spotify.SpotifyClient.is_configured", return_value=False), \
-         patch("plugins.media.music_app.MusicAppClient.get", return_value=mock_music), \
+    with patch("aria.plugins.media.spotify.SpotifyClient.is_configured", return_value=False), \
+         patch("aria.plugins.media.music_app.MusicAppClient.get", return_value=mock_music), \
          patch.dict("os.environ", {"MUSIC_BACKEND": "auto"}):
         router = MediaRouter()
         backend = router.get_backend()
@@ -41,12 +41,12 @@ def test_auto_falls_back_to_music_app_when_spotify_not_configured():
 
 
 def test_explicit_spotify_ignores_auto():
-    from plugins.media.router import MediaRouter
-    from plugins.media.spotify import SpotifyClient
+    from aria.plugins.media.router import MediaRouter
+    from aria.plugins.media.spotify import SpotifyClient
     SpotifyClient._instance = None
 
     mock_spotify = MagicMock()
-    with patch("plugins.media.spotify.SpotifyClient.get", return_value=mock_spotify), \
+    with patch("aria.plugins.media.spotify.SpotifyClient.get", return_value=mock_spotify), \
          patch.dict("os.environ", {"MUSIC_BACKEND": "spotify"}):
         router = MediaRouter()
         backend = router.get_backend()
@@ -54,12 +54,12 @@ def test_explicit_spotify_ignores_auto():
 
 
 def test_explicit_music_app_ignores_spotify():
-    from plugins.media.router import MediaRouter
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media.router import MediaRouter
+    from aria.plugins.media.music_app import MusicAppClient
     MusicAppClient._instance = None
 
     mock_music = MagicMock()
-    with patch("plugins.media.music_app.MusicAppClient.get", return_value=mock_music), \
+    with patch("aria.plugins.media.music_app.MusicAppClient.get", return_value=mock_music), \
          patch.dict("os.environ", {"MUSIC_BACKEND": "music_app"}):
         router = MediaRouter()
         backend = router.get_backend()
@@ -67,17 +67,17 @@ def test_explicit_music_app_ignores_spotify():
 
 
 def test_media_plugin_registers_all_tools():
-    from plugins.media import MediaPlugin
-    from tool import ToolRegistry
-    from plugins.media.router import MediaRouter
-    from plugins.media.music_app import MusicAppClient
+    from aria.plugins.media import MediaPlugin
+    from aria.core.tool import ToolRegistry
+    from aria.plugins.media.router import MediaRouter
+    from aria.plugins.media.music_app import MusicAppClient
 
     MusicAppClient._instance = None
     mock_music = MagicMock()
     mock_music.play.return_value = "Resuming."
 
-    with patch("plugins.media.spotify.SpotifyClient.is_configured", return_value=False), \
-         patch("plugins.media.music_app.MusicAppClient.get", return_value=mock_music), \
+    with patch("aria.plugins.media.spotify.SpotifyClient.is_configured", return_value=False), \
+         patch("aria.plugins.media.music_app.MusicAppClient.get", return_value=mock_music), \
          patch.dict("os.environ", {"MUSIC_BACKEND": "auto"}):
         registry = ToolRegistry()
         MediaPlugin().register(registry)

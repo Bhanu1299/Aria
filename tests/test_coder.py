@@ -49,14 +49,14 @@ class TestCoderTools(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_tool_file_write_creates_file(self):
-        import coder
+        import aria.features.coder as coder
         path = os.path.join(self.tmpdir, "hello.py")
         coder._tool_file_write(path, "print('hello')")
         with open(path) as f:
             self.assertEqual(f.read(), "print('hello')")
 
     def test_tool_file_read_returns_content(self):
-        import coder
+        import aria.features.coder as coder
         path = os.path.join(self.tmpdir, "read_me.txt")
         with open(path, "w") as f:
             f.write("content here")
@@ -64,12 +64,12 @@ class TestCoderTools(unittest.TestCase):
         self.assertEqual(result, "content here")
 
     def test_tool_file_read_missing_returns_error(self):
-        import coder
+        import aria.features.coder as coder
         result = coder._tool_file_read("/nonexistent/file.py")
         self.assertIn("Error", result)
 
     def test_tool_file_edit_replaces_string(self):
-        import coder
+        import aria.features.coder as coder
         path = os.path.join(self.tmpdir, "edit_me.py")
         with open(path, "w") as f:
             f.write("def foo():\n    pass\n")
@@ -80,7 +80,7 @@ class TestCoderTools(unittest.TestCase):
         self.assertNotIn("pass", content)
 
     def test_tool_file_edit_returns_error_if_old_str_missing(self):
-        import coder
+        import aria.features.coder as coder
         path = os.path.join(self.tmpdir, "no_match.py")
         with open(path, "w") as f:
             f.write("hello world")
@@ -88,7 +88,7 @@ class TestCoderTools(unittest.TestCase):
         self.assertIn("Error", result)
 
     def test_tool_glob_finds_files(self):
-        import coder
+        import aria.features.coder as coder
         open(os.path.join(self.tmpdir, "a.py"), "w").close()
         open(os.path.join(self.tmpdir, "b.py"), "w").close()
         result = coder._tool_glob(os.path.join(self.tmpdir, "*.py"))
@@ -96,18 +96,18 @@ class TestCoderTools(unittest.TestCase):
         self.assertIn("b.py", result)
 
     def test_tool_bash_runs_command(self):
-        import coder
+        import aria.features.coder as coder
         result = coder._tool_bash("echo hello", cwd=self.tmpdir)
         self.assertIn("hello", result)
 
     def test_tool_bash_captures_stderr(self):
-        import coder
+        import aria.features.coder as coder
         result = coder._tool_bash("cat /nonexistent_file_xyz", cwd=self.tmpdir)
         self.assertGreater(len(result), 0)
 
     def test_tool_bash_timeout_returns_error(self):
-        import coder
-        with patch("coder._BASH_TIMEOUT", 1):
+        import aria.features.coder as coder
+        with patch("aria.features.coder._BASH_TIMEOUT", 1):
             result = coder._tool_bash("sleep 5", cwd=self.tmpdir)
         self.assertIn("timeout", result.lower())
 
@@ -125,33 +125,33 @@ class TestCoderProjectManagement(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_new_project_creates_directory(self):
-        import coder
-        with patch("coder._IDENTITY_PATH", self.identity_path), \
-             patch("coder.config.PROJECTS_HOME", self.tmpdir):
+        import aria.features.coder as coder
+        with patch("aria.features.coder._IDENTITY_PATH", self.identity_path), \
+             patch("aria.features.coder.config.PROJECTS_HOME", self.tmpdir):
             coder.new_project("my-app")
         self.assertTrue(os.path.isdir(os.path.join(self.tmpdir, "my-app")))
 
     def test_new_project_updates_active_project(self):
-        import coder
-        with patch("coder._IDENTITY_PATH", self.identity_path), \
-             patch("coder.config.PROJECTS_HOME", self.tmpdir):
+        import aria.features.coder as coder
+        with patch("aria.features.coder._IDENTITY_PATH", self.identity_path), \
+             patch("aria.features.coder.config.PROJECTS_HOME", self.tmpdir):
             coder.new_project("my-app")
         with open(self.identity_path) as f:
             data = json.load(f)
         self.assertIn("my-app", data["active_project"])
 
     def test_get_active_project_returns_projects_home_when_empty(self):
-        import coder
-        with patch("coder._IDENTITY_PATH", self.identity_path), \
-             patch("coder.config.PROJECTS_HOME", self.tmpdir):
+        import aria.features.coder as coder
+        with patch("aria.features.coder._IDENTITY_PATH", self.identity_path), \
+             patch("aria.features.coder.config.PROJECTS_HOME", self.tmpdir):
             result = coder.get_active_project()
         self.assertEqual(result, self.tmpdir)
 
     def test_switch_project_updates_identity(self):
-        import coder
+        import aria.features.coder as coder
         os.makedirs(os.path.join(self.tmpdir, "other-app"))
-        with patch("coder._IDENTITY_PATH", self.identity_path), \
-             patch("coder.config.PROJECTS_HOME", self.tmpdir):
+        with patch("aria.features.coder._IDENTITY_PATH", self.identity_path), \
+             patch("aria.features.coder.config.PROJECTS_HOME", self.tmpdir):
             coder.switch_project("other-app")
         with open(self.identity_path) as f:
             data = json.load(f)

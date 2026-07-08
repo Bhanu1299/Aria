@@ -115,7 +115,7 @@ python main.py --login gmail      # also: google, linkedin
 
 ## Extending
 
-Drop a folder into `plugins/` with a `PluginBase` subclass — Aria discovers
+Drop a folder into `aria/plugins/` with a `PluginBase` subclass — Aria discovers
 and loads it at startup. No core edits. The 20-line example is in
 [ARCHITECTURE.md → Plugins](ARCHITECTURE.md#plugins-drop-a-folder-in-get-capabilities).
 

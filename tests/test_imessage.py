@@ -36,34 +36,34 @@ def _make_db(tmpdir: str) -> str:
 
 
 def test_resolve_contact_phone_passthrough():
-    from plugins.messaging.imessage import iMessageClient
+    from aria.plugins.messaging.imessage import iMessageClient
     client = iMessageClient()
     assert client.resolve_contact("+15551234567") == "+15551234567"
 
 
 def test_resolve_contact_email_passthrough():
-    from plugins.messaging.imessage import iMessageClient
+    from aria.plugins.messaging.imessage import iMessageClient
     client = iMessageClient()
     assert client.resolve_contact("user@example.com") == "user@example.com"
 
 
 def test_resolve_contact_fuzzy_match():
-    from plugins.messaging.imessage import iMessageClient, _CHAT_DB
+    from aria.plugins.messaging.imessage import iMessageClient, _CHAT_DB
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = _make_db(tmpdir)
         client = iMessageClient()
-        with patch("plugins.messaging.imessage._CHAT_DB", db_path):
+        with patch("aria.plugins.messaging.imessage._CHAT_DB", db_path):
             # "+15551234567" won't fuzzy match "mom", but let's test with direct value
             result = client.resolve_contact("+15551234567")
     assert result == "+15551234567"
 
 
 def test_read_returns_messages():
-    from plugins.messaging.imessage import iMessageClient
+    from aria.plugins.messaging.imessage import iMessageClient
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = _make_db(tmpdir)
         client = iMessageClient()
-        with patch("plugins.messaging.imessage._CHAT_DB", db_path):
+        with patch("aria.plugins.messaging.imessage._CHAT_DB", db_path):
             result = client.read("+15551234567", limit=5)
     assert isinstance(result, list)
     assert len(result) == 2
@@ -72,20 +72,20 @@ def test_read_returns_messages():
 
 
 def test_read_returns_error_on_no_messages():
-    from plugins.messaging.imessage import iMessageClient
+    from aria.plugins.messaging.imessage import iMessageClient
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = _make_db(tmpdir)
         client = iMessageClient()
-        with patch("plugins.messaging.imessage._CHAT_DB", db_path):
+        with patch("aria.plugins.messaging.imessage._CHAT_DB", db_path):
             result = client.read("+19999999999", limit=5)
     assert isinstance(result, str)
     assert "No messages found" in result or "couldn't find" in result
 
 
 def test_read_returns_permission_msg_on_missing_db():
-    from plugins.messaging.imessage import iMessageClient, _PERMISSION_MSG
+    from aria.plugins.messaging.imessage import iMessageClient, _PERMISSION_MSG
     client = iMessageClient()
-    with patch("plugins.messaging.imessage._CHAT_DB", "/nonexistent/chat.db"):
+    with patch("aria.plugins.messaging.imessage._CHAT_DB", "/nonexistent/chat.db"):
         result = client.read("mom", limit=5)
     assert isinstance(result, str)
     # Should explain permission issue
@@ -93,7 +93,7 @@ def test_read_returns_permission_msg_on_missing_db():
 
 
 def test_send_calls_osascript():
-    from plugins.messaging.imessage import iMessageClient
+    from aria.plugins.messaging.imessage import iMessageClient
     client = iMessageClient()
     mock_result = MagicMock()
     mock_result.returncode = 0
@@ -108,7 +108,7 @@ def test_send_calls_osascript():
 
 
 def test_send_returns_error_on_osascript_failure():
-    from plugins.messaging.imessage import iMessageClient
+    from aria.plugins.messaging.imessage import iMessageClient
     client = iMessageClient()
     mock_result = MagicMock()
     mock_result.returncode = 1
@@ -120,11 +120,11 @@ def test_send_returns_error_on_osascript_failure():
 
 
 def test_get_contacts_returns_list():
-    from plugins.messaging.imessage import iMessageClient
+    from aria.plugins.messaging.imessage import iMessageClient
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = _make_db(tmpdir)
         client = iMessageClient()
-        with patch("plugins.messaging.imessage._CHAT_DB", db_path):
+        with patch("aria.plugins.messaging.imessage._CHAT_DB", db_path):
             result = client.get_contacts()
     assert isinstance(result, list)
     assert len(result) == 2

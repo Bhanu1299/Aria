@@ -11,17 +11,17 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolated_memory(monkeypatch, tmp_path):
     """Patch db.DB_PATH and reload memory module fresh for each test."""
-    import db
+    import aria.state.db as db
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "test_aria.db"))
     # Force memory to reload so _load_from_db() runs against the temp DB
-    import memory
+    import aria.state.memory as memory
     importlib.reload(memory)
     yield
     importlib.reload(memory)  # clean up after test
 
 
 def test_store_and_retrieve_jobs():
-    import memory
+    import aria.state.memory as memory
     jobs = [{"title": "SWE", "company": "Acme", "url": "https://example.com"}]
     memory.store_jobs(jobs)
     assert memory.get_job_by_index(1)["title"] == "SWE"
@@ -29,18 +29,18 @@ def test_store_and_retrieve_jobs():
 
 
 def test_store_last_search_and_get():
-    import memory
+    import aria.state.memory as memory
     memory.store_last_search("SWE jobs in New York")
     assert memory.get_last_search() == "SWE jobs in New York"
 
 
 def test_persistent_memory_survives_reload(tmp_path, monkeypatch):
     """Simulate a restart: store, reload module, confirm value is still there."""
-    import db
+    import aria.state.db as db
     db_file = str(tmp_path / "persist_test.db")
     monkeypatch.setattr(db, "DB_PATH", db_file)
 
-    import memory
+    import aria.state.memory as memory
     importlib.reload(memory)
     memory.store_last_search("backend engineer remote")
 
@@ -51,11 +51,11 @@ def test_persistent_memory_survives_reload(tmp_path, monkeypatch):
 
 def test_jobs_expire_after_24h(tmp_path, monkeypatch):
     """Jobs written with past expiry should not load on restart."""
-    import db
+    import aria.state.db as db
     db_file = str(tmp_path / "expire_test.db")
     monkeypatch.setattr(db, "DB_PATH", db_file)
 
-    import memory
+    import aria.state.memory as memory
     importlib.reload(memory)
 
     # Manually write an expired job row
@@ -74,7 +74,7 @@ def test_jobs_expire_after_24h(tmp_path, monkeypatch):
 
 def test_thread_safety():
     """Multiple threads writing simultaneously must not corrupt the session dict."""
-    import memory
+    import aria.state.memory as memory
     errors = []
 
     def writer(i):

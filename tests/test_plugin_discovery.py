@@ -1,8 +1,8 @@
 """Tests for the plugin auto-discovery system (plugins.discover)."""
 from __future__ import annotations
 
-import plugins
-from plugin import PluginBase, PluginContext
+import aria.plugins as plugins
+from aria.core.plugin import PluginBase, PluginContext
 
 
 def test_discover_finds_all_builtin_plugins():
@@ -28,7 +28,7 @@ def test_discover_returns_only_pluginbase_subclasses():
 
 
 def test_core_plugin_from_context_receives_services():
-    from plugins.core import CorePlugin
+    from aria.plugins.core import CorePlugin
     sentinel = object()
     ctx = PluginContext(browser=sentinel, keyterms_prompt="hint")
     p = CorePlugin.from_context(ctx)
@@ -37,7 +37,7 @@ def test_core_plugin_from_context_receives_services():
 
 
 def test_productivity_plugin_from_context_receives_agent():
-    from plugins.productivity import ProductivityPlugin
+    from aria.plugins.productivity import ProductivityPlugin
     agent = object()
     ctx = PluginContext(agent=agent)
     p = ProductivityPlugin.from_context(ctx)
@@ -46,7 +46,7 @@ def test_productivity_plugin_from_context_receives_agent():
 
 
 def test_default_from_context_builds_noarg_plugins():
-    from plugins.health import HealthPlugin
+    from aria.plugins.health import HealthPlugin
     p = HealthPlugin.from_context(PluginContext())
     assert isinstance(p, HealthPlugin)
 

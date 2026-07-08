@@ -3,8 +3,8 @@ import time
 
 sys.path.insert(0, "/Users/bhanuteja/Documents/trae_projects/Aria")
 
-from transcriber import Transcriber, load_model
-from voice_capture import VoiceCapture
+from aria.voice.transcriber import Transcriber, load_model
+from aria.voice.voice_capture import VoiceCapture
 
 print("[TEST] transcriber.py")
 print("First run may download ~140MB Whisper model...")

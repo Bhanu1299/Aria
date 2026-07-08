@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import LLMResponse
+from aria.llm.base import LLMResponse
 
 
 def _make_llm_response(text: str) -> LLMResponse:
@@ -36,11 +36,11 @@ def test_extract_finds_name_from_transcript():
     expected_facts = ["User's name is Alice"]
     tmp_path = _make_temp_identity()
     try:
-        with patch("llm.llm_client.complete") as mock_complete, \
-             patch("memory_extractor._IDENTITY_PATH", tmp_path):
+        with patch("aria.llm.llm_client.complete") as mock_complete, \
+             patch("aria.state.memory_extractor._IDENTITY_PATH", tmp_path):
             mock_complete.return_value = _make_llm_response(json.dumps(expected_facts))
 
-            import memory_extractor
+            import aria.state.memory_extractor as memory_extractor
             result = memory_extractor.extract(
                 transcript="Hi, I'm Alice.",
                 answer="Nice to meet you, Alice!",
@@ -59,11 +59,11 @@ def test_no_duplicate_facts():
     call_count = [0]
 
     try:
-        with patch("llm.llm_client.complete") as mock_complete, \
-             patch("memory_extractor._IDENTITY_PATH", tmp_path):
+        with patch("aria.llm.llm_client.complete") as mock_complete, \
+             patch("aria.state.memory_extractor._IDENTITY_PATH", tmp_path):
             mock_complete.return_value = _make_llm_response(json.dumps([fact]))
 
-            import memory_extractor
+            import aria.state.memory_extractor as memory_extractor
 
             original_save = memory_extractor._save_identity
 
@@ -74,7 +74,7 @@ def test_no_duplicate_facts():
                     done_events[idx].set()
                 call_count[0] += 1
 
-            with patch("memory_extractor._save_identity", side_effect=tracking_save):
+            with patch("aria.state.memory_extractor._save_identity", side_effect=tracking_save):
                 memory_extractor.extract_async("I love dark mode.", "Dark mode enabled.")
                 done_events[0].wait(timeout=5.0)
                 memory_extractor.extract_async("I love dark mode.", "Already using dark mode.")
@@ -98,11 +98,11 @@ def test_facts_capped_at_50():
     done_event = threading.Event()
 
     try:
-        with patch("llm.llm_client.complete") as mock_complete, \
-             patch("memory_extractor._IDENTITY_PATH", tmp_path):
+        with patch("aria.llm.llm_client.complete") as mock_complete, \
+             patch("aria.state.memory_extractor._IDENTITY_PATH", tmp_path):
             mock_complete.return_value = _make_llm_response(json.dumps([new_fact]))
 
-            import memory_extractor
+            import aria.state.memory_extractor as memory_extractor
 
             original_save = memory_extractor._save_identity
 
@@ -110,7 +110,7 @@ def test_facts_capped_at_50():
                 original_save(identity)
                 done_event.set()
 
-            with patch("memory_extractor._save_identity", side_effect=capturing_save):
+            with patch("aria.state.memory_extractor._save_identity", side_effect=capturing_save):
                 memory_extractor.extract_async("I have coffee every morning.", "Got it!")
                 done_event.wait(timeout=5.0)
 
@@ -135,9 +135,9 @@ def test_extract_async_does_not_block():
 
     tmp_path = _make_temp_identity()
     try:
-        with patch("memory_extractor.extract", side_effect=slow_extract), \
-             patch("memory_extractor._IDENTITY_PATH", tmp_path):
-            import memory_extractor
+        with patch("aria.state.memory_extractor.extract", side_effect=slow_extract), \
+             patch("aria.state.memory_extractor._IDENTITY_PATH", tmp_path):
+            import aria.state.memory_extractor as memory_extractor
             t0 = time.monotonic()
             memory_extractor.extract_async("Do something slow", "Sure, doing it now.")
             elapsed = time.monotonic() - t0
@@ -152,8 +152,8 @@ def test_extract_async_does_not_block():
 
 def test_graceful_on_groq_failure():
     """If LLM raises an exception, extract() returns [] — never re-raises."""
-    with patch("llm.llm_client.complete", side_effect=RuntimeError("LLM down")):
-        import memory_extractor
+    with patch("aria.llm.llm_client.complete", side_effect=RuntimeError("LLM down")):
+        import aria.state.memory_extractor as memory_extractor
         result = memory_extractor.extract(
             transcript="What's my name?",
             answer="You are Bhanu.",

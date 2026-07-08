@@ -13,7 +13,7 @@ _PREMIUM = "Playback control requires Spotify Premium."
 
 
 def _client_with_sp(mock_sp, configured=True):
-    from plugins.media.spotify import SpotifyClient
+    from aria.plugins.media.spotify import SpotifyClient
     SpotifyClient._instance = None
     client = SpotifyClient.__new__(SpotifyClient)
     client._sp = mock_sp
@@ -27,7 +27,7 @@ def _make_sp():
 
 
 def test_play_returns_not_setup_when_unconfigured():
-    from plugins.media.spotify import SpotifyClient
+    from aria.plugins.media.spotify import SpotifyClient
     SpotifyClient._instance = None
     client = SpotifyClient.__new__(SpotifyClient)
     client._sp = None

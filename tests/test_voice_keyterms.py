@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class TestBuildPromptStaticTerms(unittest.TestCase):
     def test_build_prompt_includes_static_terms(self) -> None:
-        import voice_keyterms
+        import aria.voice.voice_keyterms as voice_keyterms
 
         prompt = voice_keyterms.build_prompt()
         self.assertIn("LinkedIn", prompt)
@@ -23,7 +23,7 @@ class TestBuildPromptStaticTerms(unittest.TestCase):
 
 class TestBuildPromptIdentitySkills(unittest.TestCase):
     def test_build_prompt_includes_identity_skills(self) -> None:
-        import voice_keyterms
+        import aria.voice.voice_keyterms as voice_keyterms
 
         fake_identity = {"skills": ["FastAPI", "Redis"]}
         with patch.object(voice_keyterms, "_load_identity", return_value=fake_identity):
@@ -35,7 +35,7 @@ class TestBuildPromptIdentitySkills(unittest.TestCase):
 
 class TestBuildPromptMissingIdentity(unittest.TestCase):
     def test_build_prompt_handles_missing_identity(self) -> None:
-        import voice_keyterms
+        import aria.voice.voice_keyterms as voice_keyterms
 
         # Simulate a missing / corrupt identity.json by raising on open
         with patch("builtins.open", side_effect=FileNotFoundError("no file")):
@@ -64,7 +64,7 @@ class TestTranscriberPassesInitialPrompt(unittest.TestCase):
             # Re-import to pick up the stubbed module
             if "transcriber" in sys.modules:
                 del sys.modules["transcriber"]
-            from transcriber import Transcriber
+            from aria.voice.transcriber import Transcriber
 
             t = Transcriber()
             t.transcribe("/tmp/fake.wav", initial_prompt="LinkedIn Python Playwright")

@@ -11,7 +11,7 @@ _NOT_SETUP = "Google isn't connected yet. Run: python -m aria.setup gmail"
 
 
 def _configured(mock_svc):
-    from plugins.productivity.gcal import CalendarClient
+    from aria.plugins.productivity.gcal import CalendarClient
     client = CalendarClient.__new__(CalendarClient)
     client._service = mock_svc
     client._tz = "America/New_York"
@@ -19,7 +19,7 @@ def _configured(mock_svc):
 
 
 def _unconfigured():
-    from plugins.productivity.gcal import CalendarClient
+    from aria.plugins.productivity.gcal import CalendarClient
     client = CalendarClient.__new__(CalendarClient)
     client._service = None
     client._tz = "UTC"
@@ -102,19 +102,19 @@ def test_delete_event_returns_deleted():
 
 
 def test_parse_time_today():
-    from plugins.productivity.gcal import _parse_time
+    from aria.plugins.productivity.gcal import _parse_time
     result = _parse_time("today")
     assert "T" in result
 
 
 def test_parse_time_passthrough_iso():
-    from plugins.productivity.gcal import _parse_time
+    from aria.plugins.productivity.gcal import _parse_time
     iso = "2026-05-07T14:00:00Z"
     assert _parse_time(iso) == iso
 
 
 def test_system_timezone_returns_string():
-    from plugins.productivity.gcal import _system_timezone
+    from aria.plugins.productivity.gcal import _system_timezone
     tz = _system_timezone()
     assert isinstance(tz, str)
     assert len(tz) > 0

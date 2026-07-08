@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm.base import LLMResponse
+from aria.llm.base import LLMResponse
 
 
 def _make_llm_response(text: str) -> LLMResponse:
@@ -23,10 +23,10 @@ def test_compress_returns_shorter_string():
     long_notes = "- User asked about Python jobs\n" * 100
     compressed = "- User asked about Python jobs\n- Aria returned results"
 
-    with patch("llm.llm_client.complete") as mock_complete:
+    with patch("aria.llm.llm_client.complete") as mock_complete:
         mock_complete.return_value = _make_llm_response(compressed)
 
-        import compact
+        import aria.core.compact as compact
         result = compact.compress(long_notes)
 
     assert isinstance(result, str)
@@ -38,8 +38,8 @@ def test_compress_graceful_on_groq_failure():
     """When LLM raises, compress() returns the original notes unchanged."""
     original_notes = "- User asked about Python jobs\n" * 100
 
-    with patch("llm.llm_client.complete", side_effect=RuntimeError("LLM error")):
-        import compact
+    with patch("aria.llm.llm_client.complete", side_effect=RuntimeError("LLM error")):
+        import aria.core.compact as compact
         result = compact.compress(original_notes)
 
     assert result == original_notes
@@ -47,11 +47,11 @@ def test_compress_graceful_on_groq_failure():
 
 def test_store_session_notes_compacts_when_over_threshold():
     """needs_compaction() returns True when notes exceed 3000 chars."""
-    import compact
+    import aria.core.compact as compact
     assert compact.needs_compaction("x" * 3001)
 
 
 def test_store_session_notes_does_not_compact_when_under_threshold():
     """needs_compaction() returns False for notes under 3000 chars."""
-    import compact
+    import aria.core.compact as compact
     assert not compact.needs_compaction("x" * 100)

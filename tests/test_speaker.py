@@ -3,7 +3,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from speaker import Speaker, speak
+from aria.voice.speaker import Speaker, speak
 
 print("[TEST] speaker.py")
 
