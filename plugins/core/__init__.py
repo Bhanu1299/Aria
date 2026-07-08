@@ -55,6 +55,17 @@ class CorePlugin(_plugin_base.PluginBase):
         self._menubar = menubar
         self._keyterms_prompt = keyterms_prompt
 
+    @classmethod
+    def from_context(cls, ctx) -> "CorePlugin":
+        return cls(
+            browser=ctx.browser,
+            speaker=ctx.speaker,
+            voice_capture=ctx.voice_capture,
+            transcriber=ctx.transcriber,
+            menubar=ctx.menubar,
+            keyterms_prompt=ctx.keyterms_prompt,
+        )
+
     def register(self, registry: ToolRegistry) -> None:
         registry.register(self._knowledge_tool())
         registry.register(self._web_search_tool())

@@ -25,9 +25,15 @@ def _bool_prop(desc: str) -> dict:
 
 class ProductivityPlugin(_plugin_base.PluginBase):
 
+    requires_agent = True  # cron jobs run their prompts through the live Agent
+
     def __init__(self, agent=None, speaker=None) -> None:
         self._agent = agent
         self._speaker = speaker
+
+    @classmethod
+    def from_context(cls, ctx) -> "ProductivityPlugin":
+        return cls(agent=ctx.agent, speaker=ctx.speaker)
 
     def register(self, registry: ToolRegistry) -> None:
         from plugins.productivity.gmail import GmailClient

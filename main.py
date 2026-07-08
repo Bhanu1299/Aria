@@ -82,13 +82,8 @@ import listening_indicator
 from sleep_guard import SleepGuard
 from tool import ToolRegistry
 from agent import Agent
-from plugins.core import CorePlugin
-from plugins.memory import MemoryPlugin
-from plugins.messaging import MessagingPlugin
-from plugins.productivity import ProductivityPlugin
-from plugins.media import MediaPlugin
-from plugins.screen import ScreenPlugin
-from plugins.health import HealthPlugin
+from plugin import PluginContext
+import plugins as plugin_packs
 import flight_recorder
 
 # Build domain vocab hint prompt once at module load — passed to every transcribe() call
@@ -422,10 +417,12 @@ def main():
     # 6. Menu bar
     menubar = AriaMenuBar()
 
-    # 6b. Initialize agent with core plugin
+    # 6b. Discover and load plugins (two phases around Agent creation).
+    # Drop a PluginBase subclass into plugins/<name>/ and it loads here —
+    # no core edits. A failing plugin is skipped, never fatal.
     global _agent
     _registry = ToolRegistry()
-    _core_plugin = CorePlugin(
+    ctx = PluginContext(
         browser=browser,
         speaker=speaker,
         voice_capture=voice_capture,
@@ -433,15 +430,20 @@ def main():
         menubar=menubar,
         keyterms_prompt=_KEYTERMS_PROMPT,
     )
-    _core_plugin.register(_registry)
-    MemoryPlugin().register(_registry)
-    MessagingPlugin().register(_registry)
-    MediaPlugin().register(_registry)
-    ScreenPlugin().register(_registry)
-    HealthPlugin().register(_registry)
-    # Agent must exist before ProductivityPlugin — cron jobs run prompts through it
+    plugin_classes = plugin_packs.discover()
+
+    def _load_plugins(classes) -> None:
+        for cls in classes:
+            try:
+                cls.from_context(ctx).register(_registry)
+                print(f"[Aria] Plugin loaded: {cls.__name__}")
+            except Exception as exc:
+                print(f"[Aria] Plugin {cls.__name__} failed to load — skipped: {exc}")
+
+    _load_plugins([c for c in plugin_classes if not c.requires_agent])
     _agent = Agent(_registry)
-    ProductivityPlugin(agent=_agent, speaker=speaker).register(_registry)
+    ctx.agent = _agent  # phase 2: plugins that run prompts through the Agent
+    _load_plugins([c for c in plugin_classes if c.requires_agent])
 
     # 6c. Away summary — speak a greeting based on prior session notes
     away_summary.speak_greeting(speaker)
