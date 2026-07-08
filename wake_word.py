@@ -37,6 +37,9 @@ from typing import Callable
 
 import numpy as np
 
+import listening_indicator
+import wake_stats
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -58,7 +61,25 @@ _VAD_MAX_SECS = 10.0
 _PRE_SPEECH_TIMEOUT = 3.0
 
 _WAV_PATH = "/tmp/aria_wake_recording.wav"
-_DING_SOUND = "/System/Library/Sounds/Tink.aiff"
+
+# Activation chime — Glass is the most Siri-like and far more audible than
+# Tink. Override with ARIA_WAKE_SOUND=/path/to/sound.aiff (or Tink etc.).
+_DEFAULT_DING = "/System/Library/Sounds/Glass.aiff"
+_FALLBACK_DING = "/System/Library/Sounds/Tink.aiff"
+_DING_SOUND = os.environ.get("ARIA_WAKE_SOUND", "").strip() or _DEFAULT_DING
+if not os.path.exists(_DING_SOUND):
+    _DING_SOUND = _FALLBACK_DING
+# Played when the wake word fired but no speech followed — so silence after
+# the chime is never a mystery.
+_NO_SPEECH_SOUND = "/System/Library/Sounds/Basso.aiff"
+
+# Scores >= this (but below the trigger threshold) are logged as near-misses
+# so the threshold can be tuned from real data via `daily_check.py wake`.
+_NEAR_MISS_FLOOR = 0.40
+
+# Restart backoff when a backend crashes or its mic stream dies.
+_RESTART_BACKOFF_START = 5.0
+_RESTART_BACKOFF_MAX = 60.0
 
 # Porcupine config
 _PORCUPINE_MODEL_PATH = os.path.expanduser("~/.aria/hey_aria.ppn")
@@ -92,12 +113,15 @@ class WakeWordListener:
         handle_command_fn: Callable[[str], None],
         processing_event: threading.Event | None = None,
         transcriber=None,
+        menubar=None,
     ) -> None:
         self._handle_command = handle_command_fn
         self._processing = processing_event
         self._transcriber = transcriber
+        self._menubar = menubar
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._backend_name = "none"
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -150,7 +174,8 @@ class WakeWordListener:
     # Porcupine backend
     # ------------------------------------------------------------------
 
-    def _run_porcupine(self) -> None:
+    def _run_porcupine(self) -> bool:
+        """Returns True if restartable (crash/stream death), False if disabled."""
         import pvporcupine
         import pyaudio as _pa
 
@@ -172,8 +197,7 @@ class WakeWordListener:
             )
         except Exception as exc:
             print(f"[Aria] Porcupine init failed: {exc} — falling back to openwakeword")
-            self._run_openwakeword()
-            return
+            return self._run_openwakeword()
 
         pa = _pa.PyAudio()
         stream = None
@@ -186,9 +210,11 @@ class WakeWordListener:
                 frames_per_buffer=porcupine.frame_length,
             )
             print(f"[Aria] Wake word active (Porcupine, 'Hey Aria').")
+            self._backend_name = "porcupine"
             last_triggered = 0.0
 
             while not self._stop_event.is_set():
+                wake_stats.heartbeat("porcupine")
                 try:
                     pcm = stream.read(porcupine.frame_length, exception_on_overflow=False)
                 except OSError as exc:
@@ -208,6 +234,7 @@ class WakeWordListener:
                     continue
 
                 print("[Aria] Wake word detected: Hey Aria (Porcupine)")
+                wake_stats.log_event("detection", "porcupine")
                 self._on_wake(stream, porcupine.sample_rate, porcupine.frame_length)
                 last_triggered = time.time()  # cooldown starts AFTER full pipeline completes
 
@@ -228,19 +255,21 @@ class WakeWordListener:
                 pa.terminate()
             except Exception:
                 pass
+        return True
 
     # ------------------------------------------------------------------
     # openwakeword fallback backend
     # ------------------------------------------------------------------
 
-    def _run_openwakeword(self) -> None:
+    def _run_openwakeword(self) -> bool:
+        """Returns True if restartable (crash/stream death), False if disabled."""
         try:
             import openwakeword
             from openwakeword.model import Model
             import pyaudio as _pa
         except ImportError as exc:
             print(f"[Aria] Wake word disabled — openwakeword/pyaudio not installed: {exc}")
-            return
+            return False
 
         try:
             openwakeword.utils.download_models()
@@ -258,7 +287,7 @@ class WakeWordListener:
             oww = Model(wakeword_models=[model_to_load], inference_framework="onnx")
         except Exception as exc:
             print(f"[Aria] Wake word disabled — model load failed: {exc}")
-            return
+            return False
 
         pa = _pa.PyAudio()
         stream = None
@@ -274,9 +303,12 @@ class WakeWordListener:
                 f"[Aria] Wake word active (openwakeword '{model_to_load}', "
                 f"threshold={_OWW_THRESHOLD})."
             )
+            self._backend_name = "openwakeword"
             last_triggered = 0.0
+            last_near_miss = 0.0
 
             while not self._stop_event.is_set():
+                wake_stats.heartbeat("openwakeword")
                 try:
                     chunk = stream.read(_CHUNK_SIZE, exception_on_overflow=False)
                 except OSError as exc:
@@ -295,19 +327,28 @@ class WakeWordListener:
                 oww.predict(audio_np)
 
                 triggered = False
+                best_score = 0.0
                 for model_name, scores in oww.prediction_buffer.items():
+                    if scores:
+                        best_score = max(best_score, float(scores[-1]))
                     if scores and scores[-1] >= _OWW_THRESHOLD:
                         triggered = True
                         print(f"[Aria] Wake word proxy triggered: {model_name} score={scores[-1]:.2f}")
                         break
 
                 if not triggered:
+                    # An almost-trigger: log once per 3s burst so the
+                    # threshold can be tuned from real usage.
+                    if best_score >= _NEAR_MISS_FLOOR and now - last_near_miss > 3.0:
+                        last_near_miss = now
+                        wake_stats.log_event("near_miss", "openwakeword", best_score)
                     continue
 
                 # Reset scores to prevent double-trigger
                 for model_name in oww.prediction_buffer:
                     oww.prediction_buffer[model_name] = []
 
+                wake_stats.log_event("detection", "openwakeword", best_score)
                 last_triggered = time.time()
                 self._on_wake(stream, _SAMPLE_RATE, _CHUNK_SIZE)
 
@@ -324,21 +365,24 @@ class WakeWordListener:
                 pa.terminate()
             except Exception:
                 pass
+        return True
 
     # ------------------------------------------------------------------
     # Custom ONNX backend
     # ------------------------------------------------------------------
 
-    def _run_custom_onnx(self) -> None:
-        """Sliding-window MFCC inference using the custom-trained aria.onnx model."""
+    def _run_custom_onnx(self) -> bool:
+        """Sliding-window MFCC inference using the custom-trained aria.onnx model.
+
+        Returns True if restartable (crash/stream death), False if disabled.
+        """
         try:
             import onnxruntime as ort
             import librosa
             import pyaudio as _pa
         except ImportError as exc:
             print(f"[Aria] Custom model disabled — missing dep: {exc}")
-            self._run_openwakeword()
-            return
+            return self._run_openwakeword()
 
         try:
             session = ort.InferenceSession(_CUSTOM_MODEL_PATH)
@@ -346,8 +390,7 @@ class WakeWordListener:
             label_name = session.get_outputs()[1].name
         except Exception as exc:
             print(f"[Aria] Custom model load failed: {exc} — falling back to openwakeword")
-            self._run_openwakeword()
-            return
+            return self._run_openwakeword()
 
         pa = _pa.PyAudio()
         stream = None
@@ -362,8 +405,11 @@ class WakeWordListener:
                 frames_per_buffer=_CHUNK_SIZE,
             )
             print(f"[Aria] Wake word active (custom ONNX model, threshold={_CUSTOM_THRESHOLD}).")
+            self._backend_name = "custom_onnx"
+            last_near_miss = 0.0
 
             while not self._stop_event.is_set():
+                wake_stats.heartbeat("custom_onnx")
                 try:
                     chunk = stream.read(_CHUNK_SIZE, exception_on_overflow=False)
                 except OSError as exc:
@@ -397,8 +443,12 @@ class WakeWordListener:
 
                 if score >= _CUSTOM_THRESHOLD:
                     print(f"[Aria] Wake word detected (custom model, score={score:.2f})")
+                    wake_stats.log_event("detection", "custom_onnx", score)
                     self._on_wake(stream, _SAMPLE_RATE, _CHUNK_SIZE)
                     last_triggered = time.time()
+                elif score >= _NEAR_MISS_FLOOR and now - last_near_miss > 3.0:
+                    last_near_miss = now
+                    wake_stats.log_event("near_miss", "custom_onnx", score)
 
         except Exception as exc:
             logger.error("Custom ONNX listener crashed: %s", exc)
@@ -413,29 +463,53 @@ class WakeWordListener:
                 pa.terminate()
             except Exception:
                 pass
+        return True
 
     # ------------------------------------------------------------------
     # Shared: post-wake recording + dispatch
     # ------------------------------------------------------------------
 
+    def _set_menubar(self, state: str) -> None:
+        if self._menubar is None:
+            return
+        try:
+            self._menubar.set_state(state)
+        except Exception:
+            pass
+
     def _on_wake(self, stream, sample_rate: int, chunk_size: int) -> None:
         """Called immediately after any backend detects the wake word."""
-        self._play_ding()
+        self._play_sound(_DING_SOUND)
+        self._set_menubar("LISTENING")
+        listening_indicator.show("Listening...")
+
         wav_path = self._record_until_silence(stream, sample_rate, chunk_size)
+        listening_indicator.hide()
+
         if wav_path is None:
-            return  # no speech after wake word — go back to listening
+            # Wake word fired but no speech followed — make that audible so
+            # the user knows Aria woke up and then gave up.
+            wake_stats.log_event("no_speech", self._backend_name)
+            self._play_sound(_NO_SPEECH_SOUND)
+            self._set_menubar("IDLE")
+            return
 
         if self._transcriber is None:
             logger.error("Wake word: no transcriber — cannot process command")
+            self._set_menubar("IDLE")
             return
 
         try:
             transcript = self._transcriber.transcribe(wav_path)
         except Exception as exc:
             logger.error("Wake word transcription failed: %s", exc)
+            self._set_menubar("IDLE")
             return
 
         if not transcript or not transcript.strip():
+            wake_stats.log_event("no_speech", self._backend_name)
+            self._play_sound(_NO_SPEECH_SOUND)
+            self._set_menubar("IDLE")
             return
 
         try:
@@ -443,11 +517,11 @@ class WakeWordListener:
         except Exception as exc:
             logger.error("Wake word handle_command failed: %s", exc)
 
-    def _play_ding(self) -> None:
-        if os.path.exists(_DING_SOUND):
+    def _play_sound(self, path: str) -> None:
+        if os.path.exists(path):
             threading.Thread(
                 target=lambda: subprocess.run(
-                    ["afplay", _DING_SOUND],
+                    ["afplay", path],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 ),
@@ -514,12 +588,32 @@ class WakeWordListener:
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
-        if self._can_use_porcupine():
-            print("[Aria] Wake word backend: Porcupine (custom 'Hey Aria' model)")
-            self._run_porcupine()
-        elif self._can_use_custom_model():
-            print("[Aria] Wake word backend: custom ONNX model (~/.aria/aria.onnx)")
-            self._run_custom_onnx()
-        else:
-            print("[Aria] Wake word backend: openwakeword fallback (proxy model)")
-            self._run_openwakeword()
+        """Backend supervisor: restart on crash with backoff, never die silently."""
+        backoff = _RESTART_BACKOFF_START
+        while not self._stop_event.is_set():
+            try:
+                if self._can_use_porcupine():
+                    print("[Aria] Wake word backend: Porcupine (custom 'Hey Aria' model)")
+                    restartable = self._run_porcupine()
+                elif self._can_use_custom_model():
+                    print("[Aria] Wake word backend: custom ONNX model (~/.aria/aria.onnx)")
+                    restartable = self._run_custom_onnx()
+                else:
+                    print("[Aria] Wake word backend: openwakeword fallback (proxy model)")
+                    restartable = self._run_openwakeword()
+            except Exception as exc:
+                logger.error("Wake word backend crashed: %s", exc)
+                restartable = True
+
+            if self._stop_event.is_set():
+                return
+            if not restartable:
+                print("[Aria] Wake word permanently disabled (missing deps or model). "
+                      "Hotkey still works.")
+                return
+
+            print(f"[Aria] Wake word listener exited — restarting in {backoff:.0f}s")
+            wake_stats.log_event("restart", self._backend_name)
+            if self._stop_event.wait(backoff):
+                return
+            backoff = min(backoff * 2, _RESTART_BACKOFF_MAX)

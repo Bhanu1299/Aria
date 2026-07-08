@@ -26,6 +26,8 @@ from typing import Callable, Optional
 import numpy as np
 import sounddevice as sd
 
+import listening_indicator
+
 SAMPLE_RATE = 16000
 _CHUNK = 512                     # 32 ms @ 16 kHz per read
 
@@ -175,7 +177,9 @@ def hold(
             if menubar is not None:
                 menubar.set_state("LISTENING")
             _play_cue()
+            listening_indicator.show("Listening...")
             audio = _listen_followup()
+            listening_indicator.hide()
             if audio is None:
                 return  # silence — conversation over
 
@@ -204,6 +208,7 @@ def hold(
     except Exception as exc:
         print(f"[Aria] Conversation mode error: {exc}")
     finally:
+        listening_indicator.hide()
         if menubar is not None:
             try:
                 menubar.set_state("IDLE")

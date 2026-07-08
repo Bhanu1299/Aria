@@ -15,6 +15,8 @@ FAIL if it failed, and "not asked" if nothing matched today.
 Commands:
   list   [--core] [--md]        print the question sheet (--md = markdown)
   report [--days N] [--core] [--log PATH]   pass/fail table + failure detail
+  wake   [--days N]             wake word health: alive?, detections,
+                                near-misses, threshold suggestion
 
 Regenerate the markdown sheet after editing the JSON:
   venv/bin/python daily_check.py list --md > tests/daily_questions.md
@@ -172,6 +174,43 @@ def print_report(rows: list, entries: list, days: int) -> int:
     return 1 if failed else 0
 
 
+def print_wake_report(days: float) -> int:
+    """Wake word health from ~/.aria/wake_log.jsonl. Returns exit code."""
+    import wake_stats
+
+    s = wake_stats.summary(days)
+    print(f"Wake Word Health — last {days:g} day(s)")
+    print()
+
+    if s["total_entries"] == 0:
+        print("  No wake log entries. Either Aria hasn't run since this logging")
+        print("  was added, or the wake listener never started. Start Aria and")
+        print("  check the console for a '[Aria] Wake word active' line.")
+        return 1
+
+    ago = s["alive_secs_ago"]
+    if ago is not None and ago < 180:
+        print(f"  Engine: ALIVE ({s['backend']}, last signal {ago:.0f}s ago)")
+    else:
+        mins = (ago or 0) / 60
+        print(f"  Engine: NOT RUNNING (last signal {mins:.0f} min ago, "
+              f"backend was {s['backend']})")
+
+    print(f"  Detections: {s['detections']}")
+    print(f"  Woke but heard no speech: {s['no_speech']}")
+    print(f"  Near-misses (said it, score too low?): {s['near_misses']}")
+    print(f"  Listener restarts (crashes recovered): {s['restarts']}")
+
+    if s["near_miss_scores"]:
+        lo, hi = s["near_miss_scores"][0], s["near_miss_scores"][-1]
+        print(f"  Near-miss scores ranged {lo:.2f}-{hi:.2f}")
+    if s["suggested_threshold"] is not None:
+        print(f"\n  Suggestion: near-misses outnumber detections — consider "
+              f"lowering the threshold to ~{s['suggested_threshold']:.2f} "
+              f"(wake_word.py: _CUSTOM_THRESHOLD / _OWW_THRESHOLD).")
+    return 0
+
+
 def print_list(categories: list, core_only: bool, as_md: bool) -> None:
     if as_md:
         print("# Aria — Daily Voice Test Questions")
@@ -234,7 +273,18 @@ def main(argv: Optional[list] = None) -> int:
     p_rep.add_argument("--core", action="store_true", help="core daily set only")
     p_rep.add_argument("--log", default=None, help="alternate flight log path (for testing)")
 
+    p_wake = sub.add_parser("wake", help="wake word health report")
+    p_wake.add_argument("--days", type=float, default=1, help="lookback window (default 1)")
+    p_wake.add_argument("--log", default=None, help="alternate wake log path (for testing)")
+
     args = parser.parse_args(argv)
+
+    if args.cmd == "wake":
+        if args.log:
+            import wake_stats
+            wake_stats._LOG_PATH = args.log
+        return print_wake_report(days=args.days)
+
     categories = load_categories()
     if not categories:
         return 2
