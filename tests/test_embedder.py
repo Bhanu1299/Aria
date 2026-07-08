@@ -20,7 +20,7 @@ def _make_mock_model():
 
 def test_embed_returns_list_of_floats():
     with patch("sentence_transformers.SentenceTransformer", return_value=_make_mock_model()):
-        from plugins.memory.embedder import Embedder
+        from aria.plugins.memory.embedder import Embedder
         Embedder._instance = None
         emb = Embedder.get()
         result = emb.embed("hello world")
@@ -31,7 +31,7 @@ def test_embed_returns_list_of_floats():
 
 def test_embed_batch_returns_list_of_lists():
     with patch("sentence_transformers.SentenceTransformer", return_value=_make_mock_model()):
-        from plugins.memory.embedder import Embedder
+        from aria.plugins.memory.embedder import Embedder
         Embedder._instance = None
         emb = Embedder.get()
         result = emb.embed_batch(["hello", "world"])
@@ -42,7 +42,7 @@ def test_embed_batch_returns_list_of_lists():
 
 def test_singleton_returns_same_instance():
     with patch("sentence_transformers.SentenceTransformer", return_value=_make_mock_model()):
-        from plugins.memory.embedder import Embedder
+        from aria.plugins.memory.embedder import Embedder
         Embedder._instance = None
         a = Embedder.get()
         b = Embedder.get()

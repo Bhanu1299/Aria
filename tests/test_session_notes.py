@@ -44,12 +44,12 @@ def test_extract_returns_string():
     fake_notes = "- User asked about Python jobs\n- Aria found 3 listings"
     fake_resp = _make_fake_groq_response(fake_notes)
 
-    with patch("session_notes._get_client") as mock_get_client:
+    with patch("aria.state.session_notes._get_client") as mock_get_client:
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = fake_resp
         mock_get_client.return_value = mock_client
 
-        import session_notes
+        import aria.state.session_notes as session_notes
         result = session_notes.extract(
             transcript="Find me Python jobs",
             answer="I found 3 Python jobs on LinkedIn.",
@@ -65,12 +65,12 @@ def test_extract_returns_string():
 
 def test_extract_handles_groq_failure_gracefully():
     """If Groq raises an exception, extract() returns '' — never re-raises."""
-    with patch("session_notes._get_client") as mock_get_client:
+    with patch("aria.state.session_notes._get_client") as mock_get_client:
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = RuntimeError("Groq down")
         mock_get_client.return_value = mock_client
 
-        import session_notes
+        import aria.state.session_notes as session_notes
         result = session_notes.extract(
             transcript="What is the weather?",
             answer="It is sunny.",
@@ -94,8 +94,8 @@ def test_extract_async_does_not_block():
         ready_event.wait()  # blocks until test releases it
         return "- slow result"
 
-    with patch("session_notes.extract", side_effect=slow_extract):
-        import session_notes
+    with patch("aria.state.session_notes.extract", side_effect=slow_extract):
+        import aria.state.session_notes as session_notes
         t0 = time.monotonic()
         session_notes.extract_async(
             transcript="Do something slow",
@@ -133,17 +133,17 @@ def test_notes_stored_in_memory():
 
     def patched_worker(transcript: str, answer: str) -> None:
         """Replicate _worker but set done_event so the test can wait."""
-        import session_notes as sn
+        import aria.state.session_notes as sn
         notes = capturing_extract(transcript, answer)
         if notes:
-            import memory as mem
+            import aria.state.memory as mem
             mem.store_session_notes(notes)
         done_event.set()
 
-    with patch("session_notes.extract", side_effect=capturing_extract), \
-         patch("session_notes._worker", side_effect=patched_worker):
-        import memory
-        import session_notes
+    with patch("aria.state.session_notes.extract", side_effect=capturing_extract), \
+         patch("aria.state.session_notes._worker", side_effect=patched_worker):
+        import aria.state.memory as memory
+        import aria.state.session_notes as session_notes
 
         # Clear any pre-existing notes
         memory.clear_session_notes()

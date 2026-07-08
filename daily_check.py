@@ -176,7 +176,7 @@ def print_report(rows: list, entries: list, days: int) -> int:
 
 def print_wake_report(days: float) -> int:
     """Wake word health from ~/.aria/wake_log.jsonl. Returns exit code."""
-    import wake_stats
+    import aria.observability.wake_stats as wake_stats
 
     s = wake_stats.summary(days)
     print(f"Wake Word Health — last {days:g} day(s)")
@@ -281,7 +281,7 @@ def main(argv: Optional[list] = None) -> int:
 
     if args.cmd == "wake":
         if args.log:
-            import wake_stats
+            import aria.observability.wake_stats as wake_stats
             wake_stats._LOG_PATH = args.log
         return print_wake_report(days=args.days)
 
@@ -294,7 +294,7 @@ def main(argv: Optional[list] = None) -> int:
         return 0
 
     if args.cmd == "report":
-        import flight_recorder
+        import aria.observability.flight_recorder as flight_recorder
         if args.log:
             flight_recorder._LOG_PATH = args.log
         entries = flight_recorder.read_recent(days=args.days)

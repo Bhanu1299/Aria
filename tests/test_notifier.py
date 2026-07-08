@@ -23,9 +23,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def test_send_notification_calls_osascript():
     """send_notification() must call subprocess.run with osascript, title, and body."""
-    import notifier
+    import aria.ui.notifier as notifier
 
-    with patch("notifier.subprocess.run") as mock_run:
+    with patch("aria.ui.notifier.subprocess.run") as mock_run:
         notifier.send_notification(title="Test Title", body="Test body text")
 
     mock_run.assert_called_once()
@@ -44,9 +44,9 @@ def test_send_notification_calls_osascript():
 
 def test_send_notification_handles_osascript_failure():
     """send_notification() must not raise even if subprocess.run raises."""
-    import notifier
+    import aria.ui.notifier as notifier
 
-    with patch("notifier.subprocess.run", side_effect=OSError("osascript not found")):
+    with patch("aria.ui.notifier.subprocess.run", side_effect=OSError("osascript not found")):
         # Must not raise
         notifier.send_notification(title="Aria", body="something happened")
 
@@ -57,9 +57,9 @@ def test_send_notification_handles_osascript_failure():
 
 def test_notify_after_long_task():
     """notify_if_slow() must call send_notification when elapsed > 15.0 seconds."""
-    import notifier
+    import aria.ui.notifier as notifier
 
-    with patch("notifier.send_notification") as mock_notify:
+    with patch("aria.ui.notifier.send_notification") as mock_notify:
         notifier.notify_if_slow(
             elapsed=20.5,
             goal="find flights to NYC",
@@ -81,9 +81,9 @@ def test_notify_after_long_task():
 
 def test_no_notify_after_short_task():
     """notify_if_slow() must NOT call send_notification when elapsed <= 15.0 seconds."""
-    import notifier
+    import aria.ui.notifier as notifier
 
-    with patch("notifier.send_notification") as mock_notify:
+    with patch("aria.ui.notifier.send_notification") as mock_notify:
         notifier.notify_if_slow(
             elapsed=14.9,
             goal="quick search",
@@ -93,7 +93,7 @@ def test_no_notify_after_short_task():
     mock_notify.assert_not_called()
 
     # Also test exactly at threshold (15.0 should trigger)
-    with patch("notifier.send_notification") as mock_notify_exact:
+    with patch("aria.ui.notifier.send_notification") as mock_notify_exact:
         notifier.notify_if_slow(
             elapsed=15.0,
             goal="exact threshold",
@@ -109,9 +109,9 @@ def test_no_notify_after_short_task():
 
 def test_send_notification_escapes_quotes() -> None:
     """send_notification() must escape double-quotes so AppleScript syntax is not broken."""
-    import notifier
+    import aria.ui.notifier as notifier
 
-    with patch("notifier.subprocess.run") as mock_run:
+    with patch("aria.ui.notifier.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
         notifier.send_notification(title='He said "hello"', body='Price: $10 "good deal"')
         call_args = mock_run.call_args

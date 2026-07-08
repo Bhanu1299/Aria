@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tool import ToolDescriptor, ToolRegistry
+from aria.core.tool import ToolDescriptor, ToolRegistry
 
 
 def _make_tool(name: str, available: bool = True, result: str = "ok") -> ToolDescriptor:

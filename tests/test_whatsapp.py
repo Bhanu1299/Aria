@@ -12,8 +12,8 @@ _DISCONNECTED_MSG = "WhatsApp lost its connection. I'll try to reconnect."
 
 
 def _unconfigured_client():
-    from plugins.messaging.whatsapp import WhatsAppClient
-    with patch("plugins.messaging.whatsapp.WhatsAppClient.is_configured", return_value=False):
+    from aria.plugins.messaging.whatsapp import WhatsAppClient
+    with patch("aria.plugins.messaging.whatsapp.WhatsAppClient.is_configured", return_value=False):
         client = WhatsAppClient.__new__(WhatsAppClient)
         import threading
         client._client = None

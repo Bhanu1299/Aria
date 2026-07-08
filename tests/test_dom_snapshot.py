@@ -1,5 +1,5 @@
 from unittest.mock import patch, MagicMock
-import dom_browser
+import aria.web.dom_browser as dom_browser
 
 
 def _fake_run(page):
@@ -20,7 +20,7 @@ def test_get_dom_snapshot_returns_tuple():
         ],
         "Some page content here",
     ]
-    with patch("agent_browser.run", side_effect=_fake_run(mock_page)):
+    with patch("aria.web.agent_browser.run", side_effect=_fake_run(mock_page)):
         snapshot, count = dom_browser.get_dom_snapshot()
     assert count == 2
     assert "https://example.com" in snapshot
@@ -39,14 +39,14 @@ def test_get_dom_snapshot_includes_interactive_count_in_header():
         [{"tag": "BUTTON", "selector": "#x", "text": "Go", "href": ""}],
         "body text",
     ]
-    with patch("agent_browser.run", side_effect=_fake_run(mock_page)):
+    with patch("aria.web.agent_browser.run", side_effect=_fake_run(mock_page)):
         snapshot, count = dom_browser.get_dom_snapshot()
     assert "INTERACTIVE[1]" in snapshot
     assert count == 1
 
 
 def test_get_dom_snapshot_returns_empty_on_error():
-    with patch("agent_browser.run", side_effect=RuntimeError("browser dead")):
+    with patch("aria.web.agent_browser.run", side_effect=RuntimeError("browser dead")):
         snapshot, count = dom_browser.get_dom_snapshot()
     assert snapshot == ""
     assert count == 0
@@ -60,7 +60,7 @@ def test_get_dom_snapshot_thin_dom():
         [{"tag": "BUTTON", "selector": "#verify", "text": "Verify", "href": ""}],
         "Please verify you are human",
     ]
-    with patch("agent_browser.run", side_effect=_fake_run(mock_page)):
+    with patch("aria.web.agent_browser.run", side_effect=_fake_run(mock_page)):
         snapshot, count = dom_browser.get_dom_snapshot()
     assert count == 1
     assert count < 5
@@ -71,7 +71,7 @@ def test_get_dom_snapshot_zero_elements():
     mock_page.url = "https://example.com/loading"
     mock_page.title.return_value = "Loading..."
     mock_page.evaluate.side_effect = [[], ""]
-    with patch("agent_browser.run", side_effect=_fake_run(mock_page)):
+    with patch("aria.web.agent_browser.run", side_effect=_fake_run(mock_page)):
         snapshot, count = dom_browser.get_dom_snapshot()
     assert count == 0
     assert "INTERACTIVE[0]" in snapshot

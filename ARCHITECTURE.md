@@ -32,9 +32,9 @@ flowchart TB
     end
 
     subgraph brain [" the brain "]
-        AG["Agent tool loop<br/>(agent.py)"]
+        AG["Agent tool loop<br/>(aria/core/agent.py)"]
         REG["ToolRegistry<br/>~43 tools from 7 plugins"]
-        LLM["llm/ failover chains<br/>Claude ⇄ Groq"]
+        LLM["aria/llm failover chains<br/>Claude ⇄ Groq"]
     end
 
     subgraph out [" respond "]
@@ -62,13 +62,13 @@ works, no hotkey, no wake word.
 
 ## The Agent: one loop, no routing
 
-`agent.py` is ~180 lines and is the only decision-maker. Each turn:
+`aria/core/agent.py` is ~180 lines and is the only decision-maker. Each turn:
 
 ```mermaid
 sequenceDiagram
     participant U as user (voice)
     participant A as Agent
-    participant L as llm/ chain
+    participant L as aria/llm chain
     participant T as tool
 
     U->>A: transcript
@@ -85,12 +85,12 @@ sequenceDiagram
 
 - **History compaction** keeps multi-turn sessions inside the context window.
 - **Memory injection**: relevant facts from the vector store are prepended to
-  the system prompt per query (`plugins/memory/context_injector.py`).
+  the system prompt per query (`aria/plugins/memory/context_injector.py`).
 - **Failure discipline**: a tool that throws becomes a readable error string in
   the transcript; the model gets a chance to recover, and `Agent.run()` itself
   can never raise into the voice loop.
 
-### LLM failover tiers (`llm/`)
+### LLM failover tiers (`aria/llm/`)
 
 Every completion names a tier, not a model. Each tier is a provider chain that
 falls through on rate limits, auth errors, or outages:
@@ -105,7 +105,7 @@ One provider being down degrades quality, never availability.
 
 ## Plugins: drop a folder in, get capabilities
 
-A plugin is a folder under `plugins/` whose `__init__.py` defines a
+A plugin is a folder under `aria/plugins/` whose `__init__.py` defines a
 `PluginBase` subclass. **That's the entire contract.** `plugins.discover()`
 finds it at startup — no imports to add, no registration list to edit, and a
 broken plugin is skipped with a log line instead of taking Aria down.
@@ -134,9 +134,9 @@ flowchart LR
 A minimal plugin:
 
 ```python
-# plugins/hue/__init__.py
-from plugin import PluginBase
-from tool import ToolDescriptor, ToolRegistry
+# aria/plugins/hue/__init__.py
+from aria.core.plugin import PluginBase
+from aria.core.tool import ToolDescriptor, ToolRegistry
 
 class HuePlugin(PluginBase):
     def register(self, registry: ToolRegistry) -> None:
@@ -160,7 +160,7 @@ declare `requires_agent = True` to load in phase 2.
 flowchart TB
     Q["user query"] --> INJ["context_injector<br/>top-k relevant facts → system prompt"]
     subgraph stores [" stores "]
-        S1["session KV (memory.py)<br/>last jobs, caches — TTL'd"]
+        S1["session KV (aria/state/memory.py)<br/>last jobs, caches — TTL'd"]
         S2["SQLite (~/.aria/aria.db)<br/>applications, counters, notes"]
         S3["ChromaDB vector store<br/>+ sentence-transformers<br/>long-term facts"]
     end
@@ -178,11 +178,11 @@ next month.
 
 | you experience | source |
 |---|---|
-| pulsing pill at screen bottom whenever the mic is open | `listening_indicator.py` (click-through, never takes focus) |
-| Glass chime on wake, Basso thunk if it woke but heard nothing | `wake_word.py` |
-| soft pop when the follow-up window opens, "Anytime." on thanks | `conversation.py` |
-| "One moment." when a turn runs past 3.5 s | `speaker.ThinkingAck` |
-| menubar ◉ → 🎙 → ⏳ → ✓ | `menubar.py` (rumps) |
+| pulsing pill at screen bottom whenever the mic is open | `aria/ui/listening_indicator.py` (click-through, never takes focus) |
+| Glass chime on wake, Basso thunk if it woke but heard nothing | `aria/voice/wake_word.py` |
+| soft pop when the follow-up window opens, "Anytime." on thanks | `aria/voice/conversation.py` |
+| "One moment." when a turn runs past 3.5 s | `aria.voice.speaker.ThinkingAck` |
+| menubar ◉ → 🎙 → ⏳ → ✓ | `aria/ui/menubar.py` (rumps) |
 
 ## Observability: the assistant that files its own bug reports
 
@@ -217,7 +217,7 @@ These are enforced, not aspirational:
 
 1. **Never steal focus.** All Playwright work runs through a single worker
    thread (`agent_browser.run()` / `navigate()`); on-screen surfaces
-   (`overlay.py`, `listening_indicator.py`) are borderless, click-through, and
+   (`aria/ui/overlay.py`, `aria/ui/listening_indicator.py`) are borderless, click-through, and
    shown with `orderFrontRegardless`.
 2. **Never raise into the voice loop.** Every handler returns a graceful
    spoken fallback. `Agent.run()`, `conversation.hold()`, both loggers, and
@@ -234,25 +234,35 @@ These are enforced, not aspirational:
 
 ## Repository map
 
+Entry points live at the root; everything else is the `aria` package,
+grouped by concern:
+
 ```
-main.py                 wiring + command lifecycle (the only god allowed)
-agent.py                the tool loop
-tool.py                 ToolDescriptor / ToolRegistry
-plugin.py               PluginBase + PluginContext (the plugin contract)
-plugins/                drop-in capability packs (core, media, messaging,
+main.py                 launcher shim → aria.app (so `python main.py` works)
+daily_check.py          reliability CLI (checklist · report · wake)
+aria/
+  app.py                wiring + command lifecycle (the only god allowed)
+  core/                 agent.py (tool loop) · tool.py (registry) ·
+                        plugin.py (contract) · compact.py · config.py · paths.py
+  llm/                  provider chains: Anthropic + Groq, tiered failover
+  plugins/              drop-in capability packs (core, media, messaging,
                         memory, productivity, screen, health)
-llm/                    provider chains: Anthropic + Groq, tiered failover
-conversation.py         follow-up window (the "Jarvis feel")
-speaker.py              interruptible TTS + ThinkingAck
-wake_word.py            3-backend wake engine under a restart supervisor
-listening_indicator.py  on-screen listening HUD
-transcriber.py / voice_capture.py / hotkey.py / menubar.py
-memory.py / memory_extractor.py / auto_dream.py     memory layers
-flight_recorder.py / wake_stats.py / daily_check.py observability
-screen_qa.py / selection.py / overlay.py / vision.py screen intelligence
-browser.py / agent_browser.py / computer_use.py      background browsing
+  voice/                voice_capture · transcriber · speaker (+ThinkingAck) ·
+                        hotkey · wake_word (3 backends, restart supervisor) ·
+                        conversation (follow-up window) · voice_keyterms
+  ui/                   menubar · overlay · listening_indicator (HUD) · notifier
+  web/                  browser · agent_browser (single worker thread) ·
+                        dom_browser · computer_use · websearch · vision
+  screen/               screen_qa · selection — screen intelligence
+  state/                memory · db · session_notes · memory_extractor ·
+                        auto_dream · away_summary — the memory layers
+  features/             jobs · briefing · media · mac_controller · coder ·
+                        scenes · summarizer · applicators · tips
+  system/               sleep_guard · prevent_sleep
+  observability/        flight_recorder · wake_stats
+  skills/               legacy local skills (see project state)
 training/               custom wake-word model pipeline (record → train → onnx)
-tests/                  448 passing; tests/daily_questions.json drives the
+tests/                  455 passing; tests/daily_questions.json drives the
                         daily voice checklist
 ```
 

@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def test_telegram_read_stub():
-    from plugins.messaging.stubs.telegram import read_tool
+    from aria.plugins.messaging.stubs.telegram import read_tool
     tool = read_tool()
     assert tool.name == "telegram_read"
     result = tool.execute({"contact": "Alice"})
@@ -17,7 +17,7 @@ def test_telegram_read_stub():
 
 
 def test_telegram_send_stub():
-    from plugins.messaging.stubs.telegram import send_tool
+    from aria.plugins.messaging.stubs.telegram import send_tool
     tool = send_tool()
     assert tool.name == "telegram_send"
     result = tool.execute({"contact": "Alice", "message": "hi"})
@@ -25,7 +25,7 @@ def test_telegram_send_stub():
 
 
 def test_discord_read_stub():
-    from plugins.messaging.stubs.discord import read_tool
+    from aria.plugins.messaging.stubs.discord import read_tool
     tool = read_tool()
     assert tool.name == "discord_read"
     result = tool.execute({"contact": "general"})
@@ -34,14 +34,14 @@ def test_discord_read_stub():
 
 
 def test_discord_send_stub():
-    from plugins.messaging.stubs.discord import send_tool
+    from aria.plugins.messaging.stubs.discord import send_tool
     tool = send_tool()
     result = tool.execute({"contact": "general", "message": "hello"})
     assert "Discord" in result
 
 
 def test_slack_read_stub():
-    from plugins.messaging.stubs.slack import read_tool
+    from aria.plugins.messaging.stubs.slack import read_tool
     tool = read_tool()
     assert tool.name == "slack_read"
     result = tool.execute({"contact": "general"})
@@ -50,14 +50,14 @@ def test_slack_read_stub():
 
 
 def test_slack_send_stub():
-    from plugins.messaging.stubs.slack import send_tool
+    from aria.plugins.messaging.stubs.slack import send_tool
     tool = send_tool()
     result = tool.execute({"contact": "general", "message": "hello"})
     assert "Slack" in result
 
 
 def test_stubs_all_have_required_fields():
-    from plugins.messaging.stubs import telegram, discord, slack
+    from aria.plugins.messaging.stubs import telegram, discord, slack
     for mod in (telegram, discord, slack):
         for factory in (mod.read_tool, mod.send_tool):
             tool = factory()

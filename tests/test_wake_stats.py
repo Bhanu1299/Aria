@@ -5,7 +5,7 @@ import json
 import time
 
 import daily_check
-import wake_stats
+import aria.observability.wake_stats as wake_stats
 
 
 def _use_log(monkeypatch, tmp_path):
@@ -138,11 +138,11 @@ def test_cli_wake_dead_engine(monkeypatch, tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 def test_indicator_hide_without_show_is_safe():
-    import listening_indicator
+    import aria.ui.listening_indicator as listening_indicator
     assert listening_indicator.hide() is False  # nothing shown, no crash
 
 
 def test_indicator_disabled_via_env(monkeypatch):
-    import listening_indicator
+    import aria.ui.listening_indicator as listening_indicator
     monkeypatch.setenv("ARIA_LISTENING_HUD", "0")
     assert listening_indicator.show("x") is False

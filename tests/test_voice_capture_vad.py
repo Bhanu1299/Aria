@@ -13,8 +13,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import voice_capture as _vc_module
-from voice_capture import VoiceCapture, SAMPLE_RATE, _SILENCE_THRESHOLD, _SILENCE_WINDOW_SAMPLES
+import aria.voice.voice_capture as _vc_module
+from aria.voice.voice_capture import VoiceCapture, SAMPLE_RATE, _SILENCE_THRESHOLD, _SILENCE_WINDOW_SAMPLES
 
 
 def _silent_chunk(frames: int = 512) -> np.ndarray:
