@@ -2,23 +2,23 @@
   "promoted_facts": [
     {
       "fact": "fact 9",
-      "promoted_at": "2026-07-07"
+      "promoted_at": "2026-07-08"
     },
     {
       "fact": "fact 8",
-      "promoted_at": "2026-07-07"
+      "promoted_at": "2026-07-08"
     },
     {
       "fact": "fact 7",
-      "promoted_at": "2026-07-07"
+      "promoted_at": "2026-07-08"
     },
     {
       "fact": "fact 6",
-      "promoted_at": "2026-07-07"
+      "promoted_at": "2026-07-08"
     },
     {
       "fact": "fact 5",
-      "promoted_at": "2026-07-07"
+      "promoted_at": "2026-07-08"
     }
   ],
   "learned_facts": [
