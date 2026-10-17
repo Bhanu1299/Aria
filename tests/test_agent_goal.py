@@ -266,3 +266,53 @@ def test_system_prompt_mentions_task_tracking():
     p = _build_system_prompt()
     assert "update_tasks" in p
     assert len(p.split()) < 600  # keep the per-utterance token cost bounded
+
+
+# ---------------------------------------------------------------------------
+# Answer preservation — empty final turn must not discard the real answer
+# (flight log 2026-07-12: 245s hotel run spoke "I didn't understand that")
+# ---------------------------------------------------------------------------
+
+def _tool_with_text(name: str, tool_id: str, input: dict, text: str) -> LLMResponse:
+    return LLMResponse(text=text, tool_calls=[ToolCall(id=tool_id, name=name, input=input)],
+                       stop_reason="tool_use",
+                       provider_used="anthropic", model_used="claude-sonnet-4-6")
+
+
+def test_answer_survives_gate_then_empty_end_turn():
+    """Model answers, gate nudges, model closes tasks, then ends with no text."""
+    agent = Agent(_registry())
+    answer = "Cheapest rooms: Arlington $89, Alexandria $95."
+    responses = [
+        _tool("update_tasks", "t1", {"tasks": [{"content": "search", "status": "pending"}]}),
+        _ok(answer),                                   # gate fires: task still pending
+        _tool("update_tasks", "t2", {"tasks": [{"content": "search", "status": "completed"}]}),
+        _ok(""),                                       # nothing left to say
+    ]
+    with patch("aria.llm.llm_client.complete", side_effect=responses):
+        result = agent.run("find hotels in every city")
+    assert result == answer
+    assert agent._history[-1] == {"role": "assistant", "content": answer}
+
+
+def test_answer_spoken_alongside_tool_call_survives_empty_end_turn():
+    """Model writes the answer in the same turn as its last tool call, then ends empty."""
+    agent = Agent(_registry())
+    answer = "Here's the list of hotels in all four cities."
+    responses = [
+        _tool_with_text("update_tasks", "t1",
+                        {"tasks": [{"content": "search", "status": "completed"}]}, answer),
+        _ok(""),
+    ]
+    with patch("aria.llm.llm_client.complete", side_effect=responses):
+        result = agent.run("summarize")
+    assert result == answer
+
+
+def test_empty_answer_after_tool_work_is_not_misreported_as_misunderstanding():
+    agent = Agent(_registry(_make_tool("web_search")))
+    responses = [_tool("web_search", "t1", {}), _ok("")]
+    with patch("aria.llm.llm_client.complete", side_effect=responses):
+        result = agent.run("search for hotels")
+    assert "didn't understand" not in result.lower()
+    assert result

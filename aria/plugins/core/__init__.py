@@ -116,19 +116,27 @@ class CorePlugin(_plugin_base.PluginBase):
                 query = f"{query} {location}"
             elif params.get("location_sensitive"):
                 loc = config.CURRENT_LOCATION
-                if loc and loc != "Unknown Location":
+                city = loc.split(",")[0].strip().lower() if loc else ""
+                if loc and loc != "Unknown Location" and city not in query.lower():
                     query = f"{query} {loc}"
 
-            # Primary: DuckDuckGo HTML — one HTTP call, no browser, hard to block
+            # Primary: DuckDuckGo HTML — one HTTP call, no browser.
+            # DDG throttles with HTTP 202 under load, so the fallback matters.
             snippets = websearch.snippets_text(query)
             if snippets:
                 return summarize(page_text=snippets, query=query,
                                  instructions=f"Answer from these search results: {query}")
 
-            # Fallback: Google SERP scrape through the background browser
+            # Fallback: Google SERP through the background browser. The SERP text
+            # itself carries the answer cards (weather, showtimes, scores) and
+            # result snippets; headless Google often exposes no external <a> links.
             url = f"https://www.google.com/search?q={quote_plus(query)}"
             if browser is None:
                 return "Web search unavailable — browser not initialized."
+            serp = browser.fetch(url)
+            if serp:
+                return summarize(page_text=serp, query=query,
+                                 instructions=f"Answer from these search results: {query}")
             links = browser.extract_links(url)
             for link in links[:3]:
                 text = browser.fetch(link)
@@ -342,7 +350,8 @@ class CorePlugin(_plugin_base.PluginBase):
         speaker = self._speaker
 
         def execute(params: dict) -> str:
-            import memory, jobs
+            from aria.state import memory
+            from aria.features import jobs
             query = params["query"]
             cached = memory.get_cached_jobs(query)
             if cached is not None:
@@ -381,7 +390,9 @@ class CorePlugin(_plugin_base.PluginBase):
         keyterms_prompt = self._keyterms_prompt
 
         def execute(params: dict) -> str:
-            import time, computer_use, notifier
+            import time
+            from aria.web import computer_use
+            from aria.ui import notifier
             goal = params["goal"]
 
             def _confirm(summary: str) -> bool:
