@@ -11,6 +11,7 @@ Never raises — all error paths return a spoken error string.
 """
 
 from __future__ import annotations
+from aria.llm.models import GROQ_VISION
 
 import base64
 import logging
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 _SCREENSHOT_PATH = "/tmp/aria_screen.jpg"
 _SETTLE_SECS = 8.0          # seconds to wait after `open url` before screenshotting
 _MAX_PX = "1920"            # max dimension for sips resize (keeps JPEG under ~500 KB)
-_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+_MODEL = GROQ_VISION
 
 _CLIENT: Groq | None = None
 

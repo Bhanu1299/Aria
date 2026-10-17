@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from aria.llm.base import LLMResponse, ToolCall, RateLimitError, AuthError
 from aria.llm.client import LLMClient, ProviderChain
+from aria.llm.models import GROQ_FAST, GROQ_TEXT
 from aria.llm.providers.anthropic import AnthropicProvider
 from aria.llm.providers.groq import GroqProvider
 
@@ -17,20 +18,20 @@ _TIER_CHAINS: dict[str, ProviderChain] = {
         [
             AnthropicProvider("claude-sonnet-4-6"),
             AnthropicProvider("claude-haiku-4-5-20251001"),
-            GroqProvider("llama-3.3-70b-versatile"),
+            GroqProvider(GROQ_TEXT),
         ],
         tier="smart",
     ),
     "cheap": ProviderChain(
         [
             AnthropicProvider("claude-haiku-4-5-20251001"),
-            GroqProvider("llama-3.3-70b-versatile"),
+            GroqProvider(GROQ_FAST),
         ],
         tier="cheap",
     ),
     "fast": ProviderChain(
         [
-            GroqProvider("llama-3.3-70b-versatile"),
+            GroqProvider(GROQ_FAST),
             AnthropicProvider("claude-haiku-4-5-20251001"),
         ],
         tier="fast",

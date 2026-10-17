@@ -15,6 +15,7 @@ Public API:
 """
 
 from __future__ import annotations
+from aria.llm.models import GROQ_VISION
 
 import base64
 import hashlib
@@ -35,7 +36,7 @@ from aria.llm import llm_client
 
 logger = logging.getLogger(__name__)
 
-_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+_VISION_MODEL = GROQ_VISION
 _SCREENSHOT_PATH = "/tmp/aria_cu.jpg"
 _ACTION_SLEEP = 1.2  # base — actual sleep randomised via _human_sleep()
 
@@ -44,7 +45,6 @@ _VALID_ACTIONS = {"click", "type", "scroll", "key", "confirm", "stuck", "needs_i
 _VALID_GENERAL_ACTIONS = {"click", "click_text", "type", "scroll", "key", "navigate", "extract", "confirm", "needs_input", "done", "stuck"}
 _VALID_DOM_FORM_ACTIONS = {"click", "click_text", "type", "scroll", "key", "confirm", "stuck", "needs_input"}
 _VALID_DOM_RESEARCH_ACTIONS = _VALID_GENERAL_ACTIONS | {"click_text"}
-_DOM_TEXT_MODEL = "llama-3.3-70b-versatile"
 
 _CU_GENERAL_SYSTEM = """You control a Chrome browser at 1280x900 resolution.
 Complete ANY browser task: research, shopping, messaging, form submission, booking, or anything else.

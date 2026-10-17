@@ -13,6 +13,7 @@ Public API:
 """
 
 from __future__ import annotations
+from aria.llm.models import GROQ_FAST, GROQ_VISION, groq_params
 
 import json
 import logging
@@ -824,7 +825,7 @@ def read_screen_region(app_name: str) -> str:
 
         client = _get_client()
         response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model=GROQ_VISION,
             messages=[
                 {
                     "role": "user",
@@ -949,7 +950,7 @@ def _sub_classify(transcript: str) -> dict:
     """Use Groq to extract structured action/target/params from transcript."""
     client = _get_client()
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=GROQ_FAST, **groq_params(GROQ_FAST),
         messages=[
             {"role": "system", "content": _SUB_CLASSIFY_SYSTEM},
             {"role": "user", "content": transcript.strip()},

@@ -14,6 +14,7 @@ or when the user explicitly mentions "indeed" in their query.
 """
 
 from __future__ import annotations
+from aria.llm.models import GROQ_VISION
 
 import json
 import logging
@@ -31,7 +32,7 @@ from aria.llm import llm_client
 logger = logging.getLogger(__name__)
 
 _CLIENT: Groq | None = None
-_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+_VISION_MODEL = GROQ_VISION
 _SETTLE_JOBS = 5.0     # seconds to wait after LinkedIn Jobs loads (SPA-heavy)
 
 

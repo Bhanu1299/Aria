@@ -13,6 +13,7 @@ Public API:
 """
 
 from __future__ import annotations
+from aria.llm.models import GROQ_FAST, groq_params
 
 import json
 import logging
@@ -268,7 +269,7 @@ def _sub_classify(transcript: str) -> dict:
     """Groq call → structured media intent."""
     client = _get_client()
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=GROQ_FAST, **groq_params(GROQ_FAST),
         messages=[
             {"role": "system", "content": _MEDIA_CLASSIFY_SYSTEM},
             {"role": "user", "content": transcript.strip()},
