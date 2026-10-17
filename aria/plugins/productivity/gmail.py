@@ -84,6 +84,67 @@ class GmailClient:
         except Exception as exc:
             return _handle_api_error(exc)
 
+    def my_address(self) -> str:
+        """The connected account's own address (lowercased), or '' if unknown."""
+        svc = self._get_service() if self.is_configured() else None
+        if svc is None:
+            return ""
+        try:
+            profile = svc.users().getProfile(userId="me").execute()
+            return (profile.get("emailAddress") or "").lower()
+        except Exception as exc:
+            logger.warning("gmail: getProfile failed: %s", exc)
+            return ""
+
+    def recent_messages(self, days: int = 30, limit: int = 200,
+                        skip_ids: set | None = None) -> list | str:
+        """Bulk metadata for messages newer than `days` (for the context index).
+
+        Pages past list_messages' 20 cap. IDs in skip_ids are not re-fetched.
+        Each item: {id, from, to, cc, subject, ts, snippet}; ts is epoch seconds.
+        """
+        if not self.is_configured():
+            return _NOT_SETUP_MSG
+        svc = self._get_service()
+        if svc is None:
+            return _AUTH_EXPIRED_MSG
+        skip_ids = skip_ids or set()
+        try:
+            ids: list = []
+            page_token = None
+            while len(ids) < limit:
+                kwargs = {"userId": "me", "q": f"newer_than:{max(1, days)}d",
+                          "maxResults": min(100, limit - len(ids))}
+                if page_token:
+                    kwargs["pageToken"] = page_token
+                resp = svc.users().messages().list(**kwargs).execute()
+                ids.extend(m["id"] for m in resp.get("messages", []))
+                page_token = resp.get("nextPageToken")
+                if not page_token:
+                    break
+            results = []
+            for mid in ids:
+                if mid in skip_ids:
+                    continue
+                meta = svc.users().messages().get(
+                    userId="me", id=mid, format="metadata",
+                    metadataHeaders=["From", "To", "Cc", "Subject"],
+                ).execute()
+                headers = {h["name"]: h["value"]
+                           for h in meta.get("payload", {}).get("headers", [])}
+                results.append({
+                    "id": mid,
+                    "from": headers.get("From", ""),
+                    "to": headers.get("To", ""),
+                    "cc": headers.get("Cc", ""),
+                    "subject": headers.get("Subject", ""),
+                    "ts": int(meta.get("internalDate", 0)) / 1000.0,
+                    "snippet": meta.get("snippet", ""),
+                })
+            return results
+        except Exception as exc:
+            return _handle_api_error(exc)
+
     def read_message(self, email_id: str) -> dict | str:
         if not self.is_configured():
             return _NOT_SETUP_MSG

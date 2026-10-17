@@ -6,8 +6,8 @@ steals focus, and the whole loop runs while you keep working.
 
 Three ideas shape everything below:
 
-1. **One brain, many hands.** A single tool-loop Agent decides; ~43 tools across
-   7 drop-in plugins act. There is no intent classifier, no routing table —
+1. **One brain, many hands.** A single tool-loop Agent decides; ~45 tools across
+   8 drop-in plugins act. There is no intent classifier, no routing table —
    deleted, on purpose (see [Design invariants](#design-invariants)).
 2. **The user is never left guessing.** Every state Aria can be in is visible
    (menubar + on-screen HUD) or audible (chime, no-speech cue, "one moment").
@@ -33,7 +33,7 @@ flowchart TB
 
     subgraph brain [" the brain "]
         AG["Agent tool loop<br/>(aria/core/agent.py)"]
-        REG["ToolRegistry<br/>~43 tools from 7 plugins"]
+        REG["ToolRegistry<br/>~45 tools from 8 plugins"]
         LLM["aria/llm failover chains<br/>Claude ⇄ Groq"]
     end
 
@@ -72,7 +72,7 @@ sequenceDiagram
     participant T as tool
 
     U->>A: transcript
-    A->>L: system + history + ~43 tool schemas
+    A->>L: system + history + ~45 tool schemas
     loop until end_turn — capped at 10 tool calls
         L-->>A: tool_use(name, input)
         A->>T: execute(input)
@@ -120,6 +120,7 @@ flowchart LR
         MED["media · 7 tools"]
         SCR["screen · 2 tools<br/>look / point"]
         MEM["memory · ChromaDB wiring"]
+        CTX["context · 2 tools<br/>cross-app person/topic timeline"]
         HLT["health · self_report"]
     end
 
@@ -173,6 +174,35 @@ flowchart TB
 Tell Aria your favorite coffee once; it's embedded, consolidated during
 "dreams," and injected into context whenever coffee comes up — this session or
 next month.
+
+## Context layer: one timeline across every app
+
+Tools reach apps one at a time; the context layer is what *connects* them.
+`aria/plugins/context/` keeps a local index (`~/.aria/context.db`, SQLite +
+FTS5) of Gmail, Calendar and iMessage, and links every handle a person uses —
+work email, phone number, display name — to one identity via macOS Contacts,
+email headers and calendar attendees.
+
+```mermaid
+flowchart LR
+    subgraph src [" sources (every 30 min) "]
+        GM["Gmail<br/>headers + snippets"]
+        GC["Calendar<br/>−7d … +14d, attendees"]
+        IM["iMessage<br/>one item per chat-day"]
+        AB["Contacts<br/>name ⇄ phones ⇄ emails"]
+    end
+    GM & GC & IM --> IDX["context.db<br/>items · FTS5 · people · aliases"]
+    AB -->|"links identities"| IDX
+    IDX --> T["context_for(person | topic)<br/>upcoming first, then newest"]
+```
+
+"What's going on with Priya?" is **one** `context_for` call that returns her
+emails, texts and next meeting together. Without it, the Agent makes three
+separate reads and has to work out by itself that `+1 555…` and
+`priya@acme.com` are the same person. Name matching tolerates voice-transcript
+misspellings ("Pria"), single first names never merge two people, and a fuzzy
+name match loses to a real topic match ("Macro" ≠ "Marco"). The index stays on
+the machine; only what the Agent reads goes to the LLM.
 
 ## Feedback: nothing happens silently
 
@@ -245,7 +275,7 @@ aria/
   core/                 agent.py (tool loop) · tool.py (registry) ·
                         plugin.py (contract) · compact.py · config.py · paths.py
   llm/                  provider chains: Anthropic + Groq, tiered failover
-  plugins/              drop-in capability packs (core, media, messaging,
+  plugins/              drop-in capability packs (core, context, media, messaging,
                         memory, productivity, screen, health)
   voice/                voice_capture · transcriber · speaker (+ThinkingAck) ·
                         hotkey · wake_word (3 backends, restart supervisor) ·
@@ -262,7 +292,7 @@ aria/
   observability/        flight_recorder · wake_stats
   skills/               legacy local skills (see project state)
 training/               custom wake-word model pipeline (record → train → onnx)
-tests/                  455 passing; tests/daily_questions.json drives the
+tests/                  492 passing; tests/daily_questions.json drives the
                         daily voice checklist
 ```
 

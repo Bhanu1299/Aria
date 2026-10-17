@@ -6,6 +6,7 @@ import logging
 import os
 import sqlite3
 import subprocess
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,47 @@ class iMessageClient:
             })
         return messages
 
+    def recent(self, days: int = 30, limit: int = 3000) -> list | str:
+        """All 1:1 messages newer than `days`, oldest first (for the context index).
+
+        Each item: {handle, text, ts, is_from_me}; ts is epoch seconds.
+        Newer macOS leaves `text` NULL and stores it in attributedBody.
+        """
+        cutoff_s = time.time() - 978307200 - max(1, days) * 86400
+        try:
+            conn = self._connect()
+            rows = conn.execute(
+                """
+                SELECT m.is_from_me, m.text, m.attributedBody, m.date, h.id
+                FROM message m
+                JOIN handle h ON m.handle_id = h.ROWID
+                WHERE m.date > ?
+                ORDER BY m.date ASC
+                LIMIT ?
+                """,
+                (cutoff_s * 1e9, limit),
+            ).fetchall()
+            conn.close()
+        except PermissionError:
+            return _PERMISSION_MSG
+        except sqlite3.DatabaseError as exc:
+            if "authorization" in str(exc).lower():
+                return _PERMISSION_MSG
+            return f"I couldn't read messages: {exc}"
+        except Exception as exc:
+            logger.warning("imessage.recent failed: %s", exc)
+            return f"I couldn't read messages: {exc}"
+
+        out = []
+        for is_from_me, text, attributed, mac_ts, handle in rows:
+            body = text or decode_attributed_body(attributed)
+            if not body:
+                continue
+            ts = mac_ts / 1e9 if mac_ts > 1e15 else mac_ts
+            out.append({"handle": handle, "text": body,
+                        "ts": ts + 978307200, "is_from_me": bool(is_from_me)})
+        return out
+
     def send(self, contact: str, message: str, service: str = "auto") -> str:
         """Send a message via AppleScript. Returns 'Sent.' or error string."""
         handle = self.resolve_contact(contact)
@@ -158,3 +200,25 @@ end tell
         conn = sqlite3.connect(_CHAT_DB, timeout=5)
         conn.row_factory = sqlite3.Row
         return conn
+
+
+def decode_attributed_body(blob) -> str:
+    """Pull the plain string out of a chat.db attributedBody (typedstream) blob.
+
+    The NSString payload follows the class name: 5 header bytes, then a
+    length byte (or 0x81 + 2-byte little-endian length), then UTF-8 text.
+    Returns '' for anything that doesn't fit that shape.
+    """
+    if not blob:
+        return ""
+    try:
+        data = bytes(blob).split(b"NSString", 1)[1][5:]
+        if data[0] == 0x81:
+            length = int.from_bytes(data[1:3], "little")
+            data = data[3:3 + length]
+        else:
+            length = data[0]
+            data = data[1:1 + length]
+        return data.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
