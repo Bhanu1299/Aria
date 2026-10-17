@@ -54,6 +54,12 @@ class AnthropicProvider(Provider):
             raise RateLimitError(str(exc)) from exc
         except _anthropic.AuthenticationError as exc:
             raise AuthError(str(exc)) from exc
+        except _anthropic.BadRequestError as exc:
+            # An empty credit balance won't recover mid-session — treat like a bad
+            # key so the chain disables this provider instead of retrying every step.
+            if "credit balance" in str(exc).lower():
+                raise AuthError(str(exc)) from exc
+            raise
         except Exception:
             raise
 

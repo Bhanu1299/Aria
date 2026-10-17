@@ -19,6 +19,7 @@ Public API:
 """
 
 from __future__ import annotations
+from aria.llm.models import GROQ_TEXT, groq_params
 
 import logging
 import threading
@@ -93,7 +94,7 @@ def extract(transcript: str, answer: str) -> str:
             answer=answer.strip(),
         )
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_TEXT, **groq_params(GROQ_TEXT),
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},

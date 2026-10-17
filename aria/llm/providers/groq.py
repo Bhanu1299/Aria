@@ -9,8 +9,63 @@ import groq as _groq
 
 import aria.core.config as config
 from aria.llm.base import LLMResponse, ToolCall, Provider, RateLimitError, AuthError
+from aria.llm.models import groq_params
 
 logger = logging.getLogger(__name__)
+
+
+def _block_text(content) -> str:
+    """Flatten Anthropic content (str or list of blocks) to plain text."""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for b in content or []:
+        if isinstance(b, dict) and b.get("type") == "text":
+            parts.append(b.get("text", ""))
+        elif isinstance(b, str):
+            parts.append(b)
+    return "\n".join(p for p in parts if p)
+
+
+def _convert_messages(messages: list[dict]) -> list[dict]:
+    """Anthropic-style history (what agent.py builds) → OpenAI-style for Groq.
+
+    assistant tool_use blocks → assistant.tool_calls
+    user tool_result blocks   → one role="tool" message each
+    lists of text blocks      → a single string
+    """
+    out: list[dict] = []
+    for msg in messages:
+        role, content = msg.get("role"), msg.get("content")
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        blocks = [b for b in (content or []) if isinstance(b, dict)]
+        if role == "assistant":
+            calls = [
+                {
+                    "id": b["id"],
+                    "type": "function",
+                    "function": {"name": b["name"], "arguments": json.dumps(b.get("input", {}))},
+                }
+                for b in blocks if b.get("type") == "tool_use"
+            ]
+            converted: dict = {"role": "assistant", "content": _block_text(blocks) or None}
+            if calls:
+                converted["tool_calls"] = calls
+            out.append(converted)
+            continue
+        results = [b for b in blocks if b.get("type") == "tool_result"]
+        for b in results:
+            out.append({
+                "role": "tool",
+                "tool_call_id": b["tool_use_id"],
+                "content": _block_text(b.get("content", "")),
+            })
+        text = _block_text(blocks)
+        if text or not results:
+            out.append({"role": role, "content": text})
+    return out
 
 
 def _convert_tools(tools: list[dict]) -> list[dict]:
@@ -51,7 +106,7 @@ class GroqProvider(Provider):
         system: str | None = None,
     ) -> LLMResponse:
         client = self._get_client()
-        msgs = list(messages)
+        msgs = _convert_messages(messages)
         if system:
             msgs = [{"role": "system", "content": system}] + msgs
 
@@ -59,6 +114,7 @@ class GroqProvider(Provider):
             "model": self.model,
             "max_tokens": max_tokens,
             "messages": msgs,
+            **groq_params(self.model),
         }
         if tools:
             kwargs["tools"] = _convert_tools(tools)

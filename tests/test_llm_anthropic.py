@@ -84,6 +84,37 @@ def test_rate_limit_raises():
         pass
 
 
+def test_empty_credit_balance_raises_auth_error():
+    """Out of credits won't fix itself mid-session — surface it as AuthError so
+    the chain disables the provider instead of retrying it on every step."""
+    import anthropic as _ant
+    p, mock_client = _make_provider()
+    mock_client.messages.create.side_effect = _ant.BadRequestError(
+        message="Your credit balance is too low to access the Anthropic API.",
+        response=MagicMock(status_code=400), body={},
+    )
+    try:
+        p.complete([{"role": "user", "content": "hi"}])
+        assert False, "should have raised"
+    except AuthError:
+        pass
+
+
+def test_other_bad_requests_still_raise_normally():
+    import anthropic as _ant
+    p, mock_client = _make_provider()
+    mock_client.messages.create.side_effect = _ant.BadRequestError(
+        message="messages: roles must alternate", response=MagicMock(status_code=400), body={},
+    )
+    try:
+        p.complete([{"role": "user", "content": "hi"}])
+        assert False, "should have raised"
+    except AuthError:
+        assert False, "a malformed request must not disable the provider"
+    except _ant.BadRequestError:
+        pass
+
+
 def test_system_and_tools_passed_through():
     p, mock_client = _make_provider()
     mock_client.messages.create.return_value = _make_anthropic_response()
