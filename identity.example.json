@@ -1,0 +1,16 @@
+{
+  "name": "Your Name",
+  "email": "you@example.com",
+  "phone": "",
+  "location": "City, State",
+  "linkedin": "https://www.linkedin.com/in/your-handle",
+  "github": "https://github.com/your-handle",
+  "resume_path": "/path/to/resume.pdf",
+  "summary": "One or two sentences about you, used to personalize answers and job applications.",
+  "skills": [],
+  "experience": [],
+  "education": [],
+  "target_roles": [],
+  "learned_facts": [],
+  "promoted_facts": []
+}
