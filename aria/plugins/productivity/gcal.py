@@ -77,7 +77,7 @@ class CalendarClient:
             return None
 
     def list_events(self, time_min: str = "today", time_max: str = "",
-                    calendar_id: str = "primary") -> list | str:
+                    calendar_id: str = "primary", max_results: int = 20) -> list | str:
         if not self.is_configured():
             return _NOT_SETUP_MSG
         svc = self._get_service()
@@ -90,7 +90,7 @@ class CalendarClient:
                 "timeMin": t_min,
                 "singleEvents": True,
                 "orderBy": "startTime",
-                "maxResults": 20,
+                "maxResults": max_results,
             }
             if time_max:
                 kwargs["timeMax"] = _parse_time(time_max)
@@ -149,6 +149,11 @@ def _format_event(event: dict) -> dict:
         "end": end.get("dateTime", end.get("date", "")),
         "location": event.get("location", ""),
         "description": event.get("description", ""),
+        "attendees": [
+            {"email": a.get("email", ""), "name": a.get("displayName", ""),
+             "self": bool(a.get("self"))}
+            for a in event.get("attendees", [])
+        ],
     }
 
 
