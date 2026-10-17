@@ -15,3 +15,10 @@ CLAUDE.md
 docs/superpowers/
 openclaw-main/
 claude-code-main/
+dist/
+
+# Personal profile + runtime memory (copy identity.example.json to start)
+identity.json
+
+# Local audit notes (private)
+audit/

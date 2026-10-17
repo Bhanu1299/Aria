@@ -19,3 +19,6 @@ anthropic
 croniter
 chromadb
 sentence-transformers
+google-api-python-client
+google-auth-oauthlib
+spotipy
