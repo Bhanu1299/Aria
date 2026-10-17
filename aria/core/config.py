@@ -103,6 +103,21 @@ def check_permissions() -> bool:
     """
     all_ok = True
 
+    # pynput doesn't fail without Accessibility — the hotkey just never
+    # fires. Ask macOS directly; with prompt=True it shows the system
+    # dialog naming the responsible app (Aria.app or the terminal).
+    try:
+        from HIServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
+        if not AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True}):
+            print(
+                "\n[Aria] Accessibility not granted yet — the ⌥ Space hotkey won't work "
+                "until it is (wake word still works).\n"
+                "  System Settings → Privacy & Security → Accessibility → enable Aria "
+                "(or your terminal app), then restart Aria.\n"
+            )
+    except Exception:
+        pass
+
     # ------------------------------------------------------------------
     # 1. Accessibility (pynput global key listener)
     # ------------------------------------------------------------------
