@@ -1,8 +1,8 @@
 # Aria Architecture
 
 Aria is a **background voice agent for macOS**: hotkey or wake word → speech → a
-tool-using LLM agent → spoken answer. The screen never moves, the browser never
-steals focus, and the whole loop runs while you keep working.
+tool-using LLM agent → spoken answer. Search and page reading run headless, Aria's
+own overlays never take focus, and the whole loop runs while you keep working.
 
 Three ideas shape everything below:
 
@@ -62,7 +62,7 @@ works, no hotkey, no wake word.
 
 ## The Agent: one loop, no routing
 
-`aria/core/agent.py` is ~180 lines and is the only decision-maker. Each turn:
+`aria/core/agent.py` is ~250 lines and is the only decision-maker. Each turn:
 
 ```mermaid
 sequenceDiagram
@@ -73,7 +73,7 @@ sequenceDiagram
 
     U->>A: transcript
     A->>L: system + history + ~45 tool schemas
-    loop until end_turn — capped at 10 tool calls
+    loop until end_turn — 25-step budget
         L-->>A: tool_use(name, input)
         A->>T: execute(input)
         T-->>A: result string (never raises)
@@ -97,9 +97,9 @@ falls through on rate limits, auth errors, or outages:
 
 | tier | chain | used for |
 |---|---|---|
-| `smart` | Claude Sonnet 4.6 → Claude Haiku 4.5 → Llama-3.3-70B (Groq) | the Agent loop |
-| `cheap` | Claude Haiku 4.5 → Llama-3.3-70B | extractors, summaries |
-| `fast` | Llama-3.3-70B → Claude Haiku 4.5 | latency-sensitive helpers |
+| `smart` | Claude Sonnet 4.6 → Claude Haiku 4.5 → GPT-OSS 120B (Groq) | the Agent loop |
+| `cheap` | Claude Haiku 4.5 → GPT-OSS 20B (Groq) | extractors, summaries |
+| `fast` | GPT-OSS 20B (Groq) → Claude Haiku 4.5 | latency-sensitive helpers |
 
 One provider being down degrades quality, never availability.
 
@@ -245,7 +245,7 @@ exponential backoff and are logged — it cannot die silently.
 
 These are enforced, not aspirational:
 
-1. **Never steal focus.** All Playwright work runs through a single worker
+1. **Never steal focus.** Agent browser work runs through a single worker
    thread (`agent_browser.run()` / `navigate()`); on-screen surfaces
    (`aria/ui/overlay.py`, `aria/ui/listening_indicator.py`) are borderless, click-through, and
    shown with `orderFrontRegardless`.
@@ -292,7 +292,7 @@ aria/
   observability/        flight_recorder · wake_stats
   skills/               legacy local skills (see project state)
 training/               custom wake-word model pipeline (record → train → onnx)
-tests/                  492 passing; tests/daily_questions.json drives the
+tests/                  ~550 tests; tests/daily_questions.json drives the
                         daily voice checklist
 ```
 
