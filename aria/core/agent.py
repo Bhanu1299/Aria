@@ -135,6 +135,7 @@ class Agent:
         tool_calls_used = 0
         tasks_touched = False   # update_tasks used this run
         gate_fired = False      # completion gate nudges at most once per run
+        last_text = ""          # latest non-empty model text this run
 
         while tool_calls_used < self.max_tool_calls:
             resp = llm_client.complete(
@@ -144,6 +145,8 @@ class Agent:
                 max_tokens=2048,
                 system=system,
             )
+            if resp.text and resp.text.strip():
+                last_text = resp.text.strip()
 
             if resp.stop_reason == "end_turn":
                 # Completion gate (Claude Code pattern): don't accept "done"
@@ -168,7 +171,7 @@ class Agent:
                         ),
                     })
                     continue
-                answer = resp.text.strip() or "I didn't understand that. Could you rephrase?"
+                answer = self._final_answer(resp.text, last_text)
                 self._history += [
                     {"role": "user", "content": text},
                     {"role": "assistant", "content": answer},
@@ -179,7 +182,7 @@ class Agent:
                 return resp.text
 
             if resp.stop_reason != "tool_use" or not resp.tool_calls:
-                answer = resp.text.strip() or "I didn't understand that. Could you rephrase?"
+                answer = self._final_answer(resp.text, last_text)
                 self._history += [
                     {"role": "user", "content": text},
                     {"role": "assistant", "content": answer},
@@ -237,6 +240,16 @@ class Agent:
             messages.append({"role": "user", "content": tool_results})
 
         # Exceeded max tool calls — return what we have
-        partial = resp.text.strip() if resp.text else ""
         suffix = "I hit my step limit on that one."
-        return f"{partial} {suffix}".strip() if partial else suffix
+        return f"{last_text} {suffix}".strip() if last_text else suffix
+
+    def _final_answer(self, text: str, last_text: str) -> str:
+        """Final spoken answer. Claude often ends with an empty turn after it already
+        gave the answer (e.g. after the completion gate, or alongside its last
+        update_tasks call) — fall back to that earlier text instead of losing it."""
+        answer = (text or "").strip() or last_text
+        if answer:
+            return answer
+        if self.last_run_tools:
+            return "I finished working on that but couldn't put an answer together. Could you ask again?"
+        return "I didn't understand that. Could you rephrase?"

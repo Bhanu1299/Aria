@@ -41,6 +41,8 @@ _FAILURE_MARKERS = (
     "please try again",
     "i'm not sure how to",
     "couldn't find a good result",
+    "couldn't put an answer together",
+    "hit my step limit",
 )
 
 
