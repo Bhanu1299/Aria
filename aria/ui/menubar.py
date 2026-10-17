@@ -7,7 +7,14 @@ Cycles through: IDLE → LISTENING → THINKING → DONE → IDLE
 Called from main.py; set_state() is safe to call from background threads.
 """
 
+from __future__ import annotations
+
+import os
+import subprocess
+
 import rumps
+
+LOG_PATH = os.path.expanduser("~/.aria/logs/aria.log")  # written by Aria.app's launcher
 
 ICONS = {
     "IDLE":      "◉",
@@ -23,9 +30,18 @@ class AriaMenuBar(rumps.App):
         super().__init__(
             name="Aria",
             title=ICONS["IDLE"],
-            menu=[rumps.MenuItem("Quit", callback=self._quit)],
+            menu=[
+                rumps.MenuItem("Show Log", callback=self._show_log),
+                rumps.MenuItem("Quit", callback=self._quit),
+            ],
             quit_button=None,  # disable default Quit so ours is the only one
         )
+
+    def _show_log(self, _sender):
+        if os.path.exists(LOG_PATH):
+            subprocess.Popen(["open", "-a", "Console", LOG_PATH])
+        else:
+            rumps.alert("Aria", "No log yet — the log is written when Aria runs from Aria.app.")
 
     def _quit(self, _sender):
         rumps.quit_application()
@@ -56,6 +72,13 @@ class AriaMenuBar(rumps.App):
 
     def run(self):
         """Start the rumps main loop (blocks the calling thread)."""
+        # Menu-bar-only: no Python rocket in the Dock, never steals focus.
+        try:
+            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+            NSApplication.sharedApplication().setActivationPolicy_(
+                NSApplicationActivationPolicyAccessory)
+        except Exception:
+            pass
         super().run()
 
 

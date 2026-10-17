@@ -389,11 +389,22 @@ def on_release():
 def main():
     global menubar, voice_capture, transcriber_instance, speaker, browser, hotkey_listener
 
+    from aria.system import single_instance
+    if not single_instance.acquire():
+        print("[Aria] Already running — look for ◉ in the menu bar.")
+        sys.exit(single_instance.ALREADY_RUNNING_EXIT)
+
     print("Aria starting up (Phase 2E)...")
     print(
         "[Aria] App control tip: For full app control, grant accessibility access:\n"
-        "       System Settings → Privacy & Security → Accessibility → add Terminal"
+        "       System Settings → Privacy & Security → Accessibility → add "
+        + ("Aria" if os.getenv("ARIA_APP_BUNDLE") else "Terminal")
     )
+
+    # 0. Must precede every pynput Listener (incl. the permission check's):
+    #    keeps keyboard-layout (TIS) calls on the main thread — else SIGABRT.
+    from aria.voice import pynput_safe
+    pynput_safe.install()
 
     # 1. Check permissions
     if not config.check_permissions():
@@ -411,8 +422,15 @@ def main():
     speaker = Speaker()
 
     # 5. Start headless browser
+    # Non-fatal: without Chromium only the web tools degrade (they already
+    # answer "browser not initialized"); voice, apps, messaging keep working.
     browser = BrowserExecutor()
-    browser.start()
+    try:
+        browser.start()
+    except Exception as exc:
+        print(f"[Aria] Background browser unavailable — web tools disabled: {exc}\n"
+              "       Fix: venv/bin/python -m playwright install chromium")
+        browser = None
 
     # 6. Menu bar
     menubar = AriaMenuBar()

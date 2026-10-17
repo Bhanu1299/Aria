@@ -13,9 +13,27 @@
 
 ---
 
+## As a Mac app (recommended for daily use)
+
+```bash
+venv/bin/python scripts/build_app.py               # builds + installs /Applications/Aria.app
+venv/bin/python scripts/build_app.py --login-item  # …and starts Aria at login
+```
+
+Launch **Aria** from Spotlight or Finder. It lives in the menu bar only (no Dock
+icon), runs this repo's code directly (code changes apply on next launch; rebuild
+only if the repo moves), and logs to `~/.aria/logs/aria.log` (menu bar → Show Log).
+macOS asks for permissions as **Aria**, not your terminal — grant Microphone and
+Accessibility on first launch, plus Full Disk Access (manual, in System Settings)
+for iMessage and the context layer. Launching a second copy just reports
+"already running".
+
+---
+
 ## Permissions
 
 Grant these macOS permissions, then **restart your terminal**.
+(Running Aria.app? Grant them to **Aria** instead — no terminal restart needed.)
 
 **1. Accessibility** (required)
 For pynput to capture the global ⌥ Space hotkey from any app.
