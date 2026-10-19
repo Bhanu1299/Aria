@@ -83,6 +83,7 @@ from aria.system.sleep_guard import SleepGuard
 from aria.core.tool import ToolRegistry
 from aria.core.agent import Agent
 from aria.core.plugin import PluginContext
+from aria.dispatch import Dispatcher, RuleSet
 import aria.plugins as plugin_packs
 import aria.observability.flight_recorder as flight_recorder
 
@@ -106,6 +107,7 @@ speaker: Speaker = None
 browser: BrowserExecutor = None
 hotkey_listener: HotkeyListener = None
 _agent: Agent = None
+_dispatcher: Dispatcher = None
 
 
 # ---------------------------------------------------------------------------
@@ -149,29 +151,31 @@ def on_press():
     _recording_active.set()  # set AFTER start_recording() returns — prevents on_release racing in
 
 
-def _run_agent_turn(transcript: str) -> str:
+def _run_turn(transcript: str) -> str:
     """
-    One agent turn: speaks a brief acknowledgment if the run is slow, and
-    records the outcome to the flight recorder. Never raises (Agent.run
-    catches internally).
+    One command through the dispatcher (pre-handlers → direct tool → agent):
+    speaks a brief acknowledgment if the run is slow, and records the outcome
+    and route to the flight recorder. Never raises.
     """
     _t0 = time.time()
     ack = ThinkingAck(speaker)
     ack.start()
     try:
-        answer = _agent.run(transcript)
+        result = _dispatcher.handle(transcript)
     finally:
         ack.cancel()
+    print(f"[Aria] Route: {result.route}"
+          + (f" (escalated from {result.escalated_from})" if result.escalated_from else ""))
     flight_recorder.record(
-        transcript, answer, time.time() - _t0,
-        tools=getattr(_agent, "last_run_tools", []),
+        transcript, result.answer, time.time() - _t0,
+        tools=result.tools, route=result.route, usage=result.usage,
     )
-    return answer
+    return result.answer
 
 
 def _run_followup_turn(text: str) -> str:
-    """Agent turn for conversation-mode follow-ups, with async extractors."""
-    answer = _run_agent_turn(text)
+    """Conversation-mode follow-up turn, with async extractors."""
+    answer = _run_turn(text)
     if answer:
         session_notes.extract_async(text, answer)
         memory_extractor.extract_async(text, answer)
@@ -202,7 +206,7 @@ def handle_command(transcript: str) -> None:
             "mute", "unmute", "pause", "stop", "skip", "next",
             "resume", "play", "screenshot",
         }
-        _is_single_word = transcript.lower().strip() in _SINGLE_WORD_COMMANDS
+        _is_single_word = transcript.lower().strip(" .,!?") in _SINGLE_WORD_COMMANDS
         if not _cleaned or (len(transcript.split()) < 2 and not _is_single_word):
             speaker.say("I didn't catch that, please try again.")
             menubar.set_state("IDLE")
@@ -211,16 +215,7 @@ def handle_command(transcript: str) -> None:
         print(f"[Aria] Transcribed: {transcript!r}")
         menubar.set_state("THINKING")
 
-        # Pre-check: ordinal job follow-ups ("tell me more about the second job")
-        _t0 = time.time()
-        followup = _check_jobs_followup(transcript)
-        if followup is not None:
-            print(f"[Aria] Jobs follow-up: {followup!r}")
-            answer = followup
-            flight_recorder.record(transcript, answer, time.time() - _t0)
-        else:
-            print(f"[Aria] Agent running: {transcript!r}")
-            answer = _run_agent_turn(transcript)
+        answer = _run_turn(transcript)
 
         print(f"[Aria] Answer: {answer[:80]!r}")
         if answer:
@@ -438,7 +433,7 @@ def main():
     # 6b. Discover and load plugins (two phases around Agent creation).
     # Drop a PluginBase subclass into plugins/<name>/ and it loads here —
     # no core edits. A failing plugin is skipped, never fatal.
-    global _agent
+    global _agent, _dispatcher
     _registry = ToolRegistry()
     ctx = PluginContext(
         browser=browser,
@@ -462,6 +457,32 @@ def main():
     _agent = Agent(_registry)
     ctx.agent = _agent  # phase 2: plugins that run prompts through the Agent
     _load_plugins([c for c in plugin_classes if c.requires_agent])
+
+    # 6b'. Dispatcher — the one path every command takes. Direct routes
+    # (aria/dispatch/patterns.json) run tools with zero LLM tokens; the rest
+    # goes to the agent. ARIA_FASTPATH=0 sends everything to the agent.
+    _rules = None
+    if os.getenv("ARIA_FASTPATH", "1") != "0":
+        try:
+            _rules = RuleSet.load()
+            print(f"[Aria] Fast path: {len(_rules.rules)} direct routes")
+        except Exception as exc:
+            print(f"[Aria] Fast path disabled — patterns failed to load: {exc}")
+    _dispatcher = Dispatcher(
+        _registry, _agent, _rules,
+        pre_handlers=[("jobs_followup", _check_jobs_followup)],
+    )
+
+    # 6b''. GateLLM is the only path to an LLM — say so up front if it's down.
+    # Direct routes still work without it.
+    from aria.llm import check_health
+    _gw_problem = check_health(config.GATEWAY_URL)
+    if _gw_problem:
+        print(f"[Aria] GateLLM not reachable at {config.GATEWAY_URL} ({_gw_problem}) — "
+              "only direct commands will work until it's running.")
+        speaker.say("Heads up: the LLM gateway isn't running, so I can only handle simple commands.")
+    else:
+        print(f"[Aria] GateLLM: {config.GATEWAY_URL}")
 
     # 6c. Away summary — speak a greeting based on prior session notes
     away_summary.speak_greeting(speaker)

@@ -121,6 +121,21 @@ def _matched_transcripts(rows: list) -> set:
 _STATUS_TAG = {"pass": "[PASS]", "fail": "[FAIL]", "not_asked": "[ -- ]"}
 
 
+def print_routes(entries: list) -> None:
+    """Dispatcher split: how many commands ran free (direct) vs. through the LLM."""
+    if not entries:
+        return
+    from aria.observability.flight_recorder import route_summary
+    s = route_summary(entries)
+    total = sum(r["count"] for r in s["routes"].values())
+    parts = [
+        f"{r['count']} {kind} ({100 * r['count'] // total}%, avg {r['avg_s']:.1f}s)"
+        for kind, r in sorted(s["routes"].items(), key=lambda kv: -kv[1]["count"])
+    ]
+    print(f"Routes: {', '.join(parts)}")
+    print(f"LLM spend: ${s['cost_usd']:.4f} over {s['tokens']:,} tokens (gateway-reported)")
+
+
 def print_report(rows: list, entries: list, days: int) -> int:
     """Print the report. Returns exit code: 1 if anything failed, else 0."""
     print(f"Aria Daily Check — last {days} day(s), {len(entries)} logged commands")
@@ -146,6 +161,7 @@ def print_report(rows: list, entries: list, days: int) -> int:
         f"Summary: {passed} passed, {len(failed)} failed, "
         f"{not_asked} not asked (of {len(rows)} questions)."
     )
+    print_routes(entries)
 
     if failed:
         print("\nFailure detail:")

@@ -4,12 +4,22 @@ from __future__ import annotations
 import logging
 import time
 
-from aria.llm.base import LLMResponse, ToolCall, Provider, RateLimitError, AuthError
+from aria.llm.base import (
+    AuthError, GatewayError, GatewayUnavailable, LLMResponse, Provider, RateLimitError, ToolCall,
+)
 
 logger = logging.getLogger(__name__)
 
 _ERROR_RESPONSE = LLMResponse(
     text="I'm having trouble connecting right now. Please try again.",
+    tool_calls=[],
+    stop_reason="error",
+    provider_used="none",
+    model_used="none",
+)
+
+_GATEWAY_DOWN_RESPONSE = LLMResponse(
+    text="I can't reach the LLM gateway. Start GateLLM and try again.",
     tool_calls=[],
     stop_reason="error",
     provider_used="none",
@@ -41,6 +51,12 @@ class ProviderChain:
                     self.tier, result.provider_used, result.model_used, result.stop_reason,
                 )
                 return result
+            except GatewayUnavailable as exc:
+                logger.error("[LLM] tier=%s: %s", self.tier, exc)
+                return _GATEWAY_DOWN_RESPONSE
+            except GatewayError as exc:
+                logger.error("[LLM] tier=%s gateway error: %s", self.tier, exc)
+                return _ERROR_RESPONSE
             except RateLimitError:
                 logger.warning("[LLM] %s rate_limited → trying next", provider.name)
                 continue

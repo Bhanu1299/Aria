@@ -57,8 +57,13 @@ def is_failure(answer: str, error: str | None) -> bool:
 
 
 def record(transcript: str, answer: str, duration: float,
-           tools: list | None = None, error: str | None = None) -> None:
-    """Append one command entry. Never raises."""
+           tools: list | None = None, error: str | None = None,
+           route: str | None = None, usage: dict | None = None) -> None:
+    """Append one command entry. Never raises.
+
+    route: dispatcher route ("direct:<rule>", "agent", "pre:<name>").
+    usage: LLM spend for the command — cost_usd, tokens_in, tokens_out.
+    """
     try:
         entry = {
             "ts": time.time(),
@@ -69,6 +74,14 @@ def record(transcript: str, answer: str, duration: float,
             "error": (error or None) and str(error)[:300],
             "failed": is_failure(answer, error),
         }
+        if route:
+            entry["route"] = route
+        if usage:
+            entry["usage"] = {
+                "cost_usd": round(float(usage.get("cost_usd", 0.0)), 6),
+                "tokens_in": int(usage.get("tokens_in", 0)),
+                "tokens_out": int(usage.get("tokens_out", 0)),
+            }
         with _LOCK:
             os.makedirs(os.path.dirname(_LOG_PATH), exist_ok=True)
             _rotate_if_needed()
@@ -107,6 +120,28 @@ def read_recent(days: int = 7) -> list:
     except Exception as exc:
         logger.debug("flight_recorder.read_recent failed: %s", exc)
     return entries
+
+
+def route_summary(entries: list) -> dict:
+    """Per-route counts, average latency, and total LLM spend.
+
+    → {"routes": {"direct": {"count", "avg_s"}, "agent": {...}, "pre": {...},
+       "unrouted": {...}}, "cost_usd": float, "tokens": int}
+    "unrouted" = entries logged before the dispatcher existed.
+    """
+    buckets: dict[str, list] = {}
+    cost, tokens = 0.0, 0
+    for e in entries:
+        kind = (e.get("route") or "unrouted").split(":", 1)[0]
+        buckets.setdefault(kind, []).append(float(e.get("duration") or 0.0))
+        usage = e.get("usage") or {}
+        cost += float(usage.get("cost_usd") or 0.0)
+        tokens += int(usage.get("tokens_in") or 0) + int(usage.get("tokens_out") or 0)
+    routes = {
+        k: {"count": len(v), "avg_s": round(sum(v) / len(v), 2)}
+        for k, v in buckets.items()
+    }
+    return {"routes": routes, "cost_usd": round(cost, 6), "tokens": tokens}
 
 
 def spoken_report(days: int = 7) -> str:

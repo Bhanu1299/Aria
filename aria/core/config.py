@@ -31,16 +31,11 @@ HOTKEY_MODS: list[str] = [m.strip() for m in _raw_mods.split(",") if m.strip()]
 BROWSER_TIMEOUT: int = int(os.getenv("BROWSER_TIMEOUT", "30"))
 
 # ---------------------------------------------------------------------------
-# Groq
+# GateLLM — every LLM call in Aria goes through it (~/GateLLM, OpenAI-compatible).
+# Provider API keys live in GateLLM's .env, not here.
 # ---------------------------------------------------------------------------
 
-GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-
-# ---------------------------------------------------------------------------
-# Anthropic (Claude fallback for complex browser research)
-# ---------------------------------------------------------------------------
-
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+GATEWAY_URL: str = os.getenv("ARIA_GATEWAY_URL", "http://127.0.0.1:8000")
 
 # ---------------------------------------------------------------------------
 # Coder — agentic code execution
