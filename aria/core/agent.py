@@ -111,6 +111,13 @@ class Agent:
         if enable_subagent:
             registry.register(make_subagent_tool(registry))
 
+    def note_turn(self, text: str, answer: str) -> None:
+        """Record a turn handled outside the loop (dispatcher direct route) so follow-ups keep context."""
+        self._history += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": answer},
+        ]
+
     def run(self, text: str) -> str:
         """Run the tool loop for a user utterance. Returns final spoken response. Never raises."""
         try:

@@ -13,7 +13,7 @@ Public API:
 """
 
 from __future__ import annotations
-from aria.llm.models import GROQ_FAST, groq_params
+from aria.llm import gateway_client
 
 import json
 import logging
@@ -23,9 +23,7 @@ import shutil
 import subprocess
 
 from dotenv import load_dotenv
-from groq import Groq
 
-import aria.core.config as config
 
 load_dotenv()
 
@@ -33,16 +31,11 @@ MUSIC_APP = os.getenv("MUSIC_APP", "Music")
 
 logger = logging.getLogger(__name__)
 
-_CLIENT: Groq | None = None
 
 
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set in .env")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
+def _get_client():
+    """GateLLM client — every LLM call in Aria goes through the gateway."""
+    return gateway_client()
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +262,7 @@ def _sub_classify(transcript: str) -> dict:
     """Groq call → structured media intent."""
     client = _get_client()
     response = client.chat.completions.create(
-        model=GROQ_FAST, **groq_params(GROQ_FAST),
+        model="small",
         messages=[
             {"role": "system", "content": _MEDIA_CLASSIFY_SYSTEM},
             {"role": "user", "content": transcript.strip()},

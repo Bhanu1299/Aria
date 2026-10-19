@@ -19,14 +19,12 @@ Public API:
 """
 
 from __future__ import annotations
-from aria.llm.models import GROQ_TEXT, groq_params
+from aria.llm import gateway_client
 
 import logging
 import threading
 
-from groq import Groq
 
-import aria.core.config as config
 import aria.state.memory as memory
 
 logger = logging.getLogger(__name__)
@@ -35,16 +33,11 @@ logger = logging.getLogger(__name__)
 # Groq client (lazy singleton)
 # ---------------------------------------------------------------------------
 
-_CLIENT: Groq | None = None
 
 
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set — session notes disabled")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
+def _get_client():
+    """GateLLM client — every LLM call in Aria goes through the gateway."""
+    return gateway_client()
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +87,7 @@ def extract(transcript: str, answer: str) -> str:
             answer=answer.strip(),
         )
         response = client.chat.completions.create(
-            model=GROQ_TEXT, **groq_params(GROQ_TEXT),
+            model="small",
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
