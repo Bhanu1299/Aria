@@ -50,21 +50,27 @@ aria:  "Anytime."
 ## 🔄 How a command flows
 
 ```mermaid
-flowchart LR
-    T["⌥ Space  /  'Aria'"] --> M["Mic + VAD"]
-    M --> W["Whisper<br/>(local)"]
-    W --> D["Dispatcher<br/>one path"]
-    D -->|"rule match · 0 tokens"| P["9 plugins · 50+ tools"]
+flowchart TB
+    W["⌥ Space  /  'Aria'<br/>mic + VAD → Whisper (local)"]
+    W --> D["Dispatcher<br/>one path for every command"]
+    D -->|"rule match · under 2 ms · 0 tokens"| P["9 plugins · 50+ tools"]
     D -->|"everything else"| A["Agent loop<br/>plan · act · verify"]
     A <--> P
-    A <--> G["GateLLM gateway<br/>every LLM call"]
-    P <-.->|"vision · classifiers"| G
+    A <-->|"every LLM call"| G["GateLLM gateway<br/>fallback · retries · cost"]
+    P -.->|"vision · classifiers"| G
+    G <--> V["Claude · Groq · OpenAI · DeepSeek · Kimi"]
     D --> S["Spoken answer<br/>(interruptible)"]
     A --> S
     S --> C["Follow-up window"]
     C -->|"just keep talking"| D
     S -.-> X["Background:<br/>memory · notes · dreams"]
+    X -.->|"extract · consolidate"| G
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class D,G key
 ```
+
+The two highlighted boxes are the backbone. Every command enters through the **dispatcher**, and every LLM call leaves through the **gateway**. Nothing in Aria talks to a model provider directly.
 
 Here's what happens between "Aria" and the answer, one stage at a time.
 
@@ -84,6 +90,26 @@ Sending "pause the music" to an LLM is slow and costs money. Before building thi
 
 Every command, whether it comes from the hotkey, the wake word or a follow-up, goes through [`Dispatcher.handle()`](aria/dispatch/dispatcher.py):
 
+```mermaid
+flowchart TB
+    N["transcript, normalized<br/>wake word, 'please', p.m. stripped"]
+    N --> PRE{"pre-handler<br/>claims it?"}
+    PRE -->|yes| OUT["spoken answer"]
+    PRE -->|no| R{"rule matches?<br/>patterns.json"}
+    R -->|no| AG["Agent"]
+    R -->|yes| SL{"slots parse?<br/>duration · time · number"}
+    SL -->|"no: never guess"| AG
+    SL -->|yes| TL["tool.execute()<br/>under 2 ms · 0 tokens"]
+    TL -->|"tool missing or raised"| AG
+    TL --> OUT
+    AG <-->|"LLM calls"| GW["GateLLM"]
+    AG --> OUT
+    OUT --> LOG["flight log<br/>route · latency · cost"]
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class R,SL,GW key
+```
+
 1. Pre-handlers catch app-specific follow-ups, like "tell me about the second job".
 2. Direct routes come from [`patterns.json`](aria/dispatch/patterns.json): about 45 whole-sentence regexes with typed slots, each mapped to a tool. "Set a timer for an hour and a half" becomes `timer_set(seconds=5400)`. "Remind me to call mom at 5pm" becomes `reminder_add(task="call mom", due="…T17:00")`, with the date built from parts so it doesn't depend on locale. These run in under 2 ms and use no tokens.
 3. Everything else goes to the agent.
@@ -98,19 +124,21 @@ The rules favor precision over recall. A missed rule costs nothing, because the 
 sequenceDiagram
     participant U as You (voice)
     participant A as Agent
-    participant L as LLM tier chain
+    participant G as GateLLM gateway
+    participant M as Model (Claude · Groq · …)
     participant T as Tool
 
     U->>A: transcript
-    A->>L: system + memories + history + tool schemas
     loop until done (25-step budget)
-        L-->>A: tool_use(name, input)
+        A->>G: tier "smart" + system + memories + history + tool schemas
+        G->>M: first healthy model in the tier (fallback · retries)
+        M-->>G: tool_use(name, input)
+        G-->>A: tool_use + cost header
         A->>T: execute(input)
         T-->>A: result string (tools never raise)
-        A->>L: tool_result
     end
-    Note over A,L: Completion gate: "done" with unfinished tasks<br/>gets one nudge to finish or explain
-    L-->>A: final answer
+    Note over A,G: Completion gate: "done" with unfinished tasks<br/>gets one nudge to finish or explain
+    G-->>A: final answer
     A-->>U: 1–3 spoken sentences
 ```
 
@@ -152,6 +180,41 @@ Aria has no provider SDKs. Every LLM call goes over HTTP to **GateLLM**, an Open
 
 Aria asks for a tier, and the gateway picks the model, falls back across providers when one fails, and returns the cost in a response header:
 
+```mermaid
+flowchart TB
+    subgraph aria [" Aria: every LLM call site "]
+        AG["Agent loop<br/>tier: smart"]
+        VI["Screen Q&A · page reading<br/>job pages · tier: vision"]
+        CL["Media + Mac classifiers<br/>tier: small"]
+        BG["Notes · memory · dreams<br/>briefing · summaries"]
+        CU["Browser agent<br/>vision + Claude escalation"]
+    end
+
+    subgraph gw [" GateLLM "]
+        TIER["tier → ordered model chain"]
+        REL["circuit breaker per model<br/>retry with backoff · 90 s deadline"]
+        Q["model quirks<br/>e.g. gpt-oss reasoning_effort"]
+        COST["cost from config prices<br/>X-Gateway-Cost-Usd"]
+        TIER --> REL --> Q
+    end
+
+    subgraph prov [" providers "]
+        AN["Anthropic"]
+        GR["Groq"]
+        OA["OpenAI"]
+        DS["DeepSeek"]
+        KM["Moonshot"]
+    end
+
+    AG & VI & CL & BG & CU --> TIER
+    Q --> AN & GR & OA & DS & KM
+    Q -.->|"response usage"| COST
+    COST -.->|"per call"| MTR["Aria meter → flight log<br/>cost of every command"]
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class TIER,REL,Q,COST key
+```
+
 | Aria asks for | GateLLM tier | Chain (cheapest first) | Used for |
 |---|---|---|---|
 | `smart` | `frontier` | Claude Sonnet → GPT → Kimi → GPT-OSS 120B | the agent loop |
@@ -178,6 +241,11 @@ flowchart TB
     EXT --> S3
     DREAM["auto-dream (async)<br/>merge · dedupe · decay"] --> S3
     S3 --> INJ
+    EXT <-.->|"tier: small"| GW["GateLLM"]
+    DREAM <-.->|"tier: small"| GW
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class GW key
 ```
 
 Tell Aria your coffee order once. It's embedded, cleaned up during "dreams", and brought back into context whenever coffee comes up, this session or next month. All of it runs in background threads after the answer is spoken, so memory never adds latency.
@@ -204,12 +272,16 @@ Answers are 1–3 spoken sentences: no markdown, no URL dumps. If a turn runs pa
 ```mermaid
 flowchart LR
     CMD["every command"] --> FR["flight recorder<br/>transcript · route · tools · latency · LLM cost · failed?"]
+    GW["GateLLM<br/>cost header on every call"] -->|"metered per command"| FR
     WK["every wake event"] --> WS["wake stats<br/>hits · near-misses · heartbeat"]
-    FR --> DC["daily_check.py report<br/>PASS / FAIL per capability"]
+    FR --> DC["daily_check.py report<br/>PASS / FAIL per capability<br/>direct vs agent · LLM spend"]
     WS --> DW["daily_check.py wake<br/>threshold suggestions"]
-    DC --> FIX["fix the top offender"]
+    DC --> FIX["fix the top offender<br/>or add a rule for a common phrasing"]
     DW --> FIX
     FIX -.->|"weekly loop"| CMD
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class GW key
 ```
 
 A 28-question, 17-category spoken checklist covers every capability. The report matches it against the flight log and shows what passed, what failed, what the mic actually heard, and which tool broke. It also shows the split between direct and agent routes and the total LLM spend, which tells me which phrasings deserve a new rule. You can also just ask: *"How have you been performing?"*
