@@ -38,7 +38,11 @@ flowchart TB
         DSP["Dispatcher<br/>(aria/dispatch)<br/>regex rules → direct tool"]
         AG["Agent tool loop<br/>(aria/core/agent.py)"]
         REG["ToolRegistry<br/>~50 tools from 9 plugins"]
-        LLM["GateLLM gateway<br/>every LLM call (aria/llm)"]
+    end
+
+    subgraph egress [" the only way out "]
+        LLM["GateLLM gateway<br/>every LLM call (aria/llm)<br/>fallback · retries · cost"]
+        PRV["Claude · Groq · OpenAI<br/>DeepSeek · Kimi"]
     end
 
     subgraph out [" respond "]
@@ -56,10 +60,16 @@ flowchart TB
     DSP -->|"rule match: 0 tokens"| REG
     DSP -->|"everything else"| AG
     AG <--> REG
-    AG <--> LLM
+    AG <-->|"tier: smart"| LLM
+    REG <-.->|"vision · classifiers"| LLM
+    EX <-.->|"tier: small"| LLM
+    LLM <--> PRV
     DSP --> TTS
     AG --> TTS --> CONV
     CONV -->|"follow-up speech"| DSP
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class DSP,LLM key
     TTS -.-> EX
 ```
 
@@ -80,6 +90,25 @@ the regex fast path in front of Siri's LLM planner:
 3. **Agent** — everything else, plus any direct route whose slot doesn't parse
    or whose tool is unavailable or raises.
 
+```mermaid
+flowchart TB
+    N["transcript → normalize()"]
+    N --> PRE{"pre-handler?"}
+    PRE -->|answer| OUT["DispatchResult<br/>answer · route · tools · usage"]
+    PRE -->|none| R{"RuleSet.match()"}
+    R -->|None| AG["Agent.run()"]
+    R -->|Escalate| AG
+    R -->|RuleMatch| TL["registry.get(tool).execute(params)"]
+    TL -->|"missing / raised / empty"| AG
+    TL -->|answer| NT["agent.note_turn()"] --> OUT
+    AG <--> GW["GateLLM"]
+    AG --> OUT
+    M["aria.llm.meter<br/>snapshot → since()"] -.->|usage| OUT
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class R,GW key
+```
+
 The flight log records the route and LLM spend for every command;
 `daily_check.py report` prints the direct/agent split. `ARIA_FASTPATH=0`
 sends everything to the Agent.
@@ -92,18 +121,20 @@ sends everything to the Agent.
 sequenceDiagram
     participant U as user (voice)
     participant A as Agent
-    participant L as aria/llm chain
+    participant G as GateLLM (GatewayProvider)
+    participant M as model (tier chain)
     participant T as tool
 
     U->>A: transcript
-    A->>L: system + history + ~45 tool schemas
     loop until end_turn — 25-step budget
-        L-->>A: tool_use(name, input)
+        A->>G: POST /v1/chat/completions<br/>model="frontier" · history → OpenAI format · ~50 tool schemas
+        G->>M: first healthy model (breaker · retry · fallback)
+        M-->>G: tool_calls
+        G-->>A: tool_use + X-Gateway-Cost-Usd (→ meter)
         A->>T: execute(input)
         T-->>A: result string (never raises)
-        A->>L: tool_result
     end
-    L-->>A: final text
+    G-->>A: final text
     A-->>U: spoken answer (1–3 sentences)
 ```
 
@@ -118,6 +149,35 @@ sequenceDiagram
 
 Every completion names a tier, not a model, and goes to GateLLM, which owns the
 provider chain (fallback, retries, model quirks, pricing):
+
+```mermaid
+flowchart TB
+    subgraph aria [" Aria (aria/llm) "]
+        GP["GatewayProvider<br/>agent · Anthropic-style history in"]
+        GC["gateway_client()<br/>OpenAI-shaped · vision, classifiers,<br/>notes, briefing, computer use"]
+        MT["meter<br/>cost · tokens · calls"]
+    end
+
+    subgraph gw [" GateLLM (~/GateLLM) "]
+        API["/v1/chat/completions"]
+        CH["candidate_chain(tier)"]
+        EXE["FallbackExecutor<br/>breaker · retry · deadline"]
+        AD["adapters<br/>openai_compat · groq · moonshot · anthropic"]
+        API --> CH --> EXE --> AD
+    end
+
+    GP & GC -->|"HTTP"| API
+    AD --> PR["provider APIs"]
+    API -.->|"X-Gateway-Model · Provider · Fallbacks · Cost-Usd"| MT
+    MT -.->|"per command"| FL["flight log"]
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class API,EXE key
+```
+
+Failure behavior is explicit. Connection refused raises `GatewayUnavailable`, and
+the agent speaks "I can't reach the LLM gateway". An HTTP error raises
+`GatewayError`. There is no direct-provider fallback in Aria.
 
 | Aria tier | GateLLM tier | chain (in GateLLM config.yaml) | used for |
 |---|---|---|---|
@@ -138,7 +198,7 @@ finds it at startup — no imports to add, no registration list to edit, and a
 broken plugin is skipped with a log line instead of taking Aria down.
 
 ```mermaid
-flowchart LR
+flowchart TB
     D["plugins.discover()<br/>(pkgutil scan)"] --> P1
 
     subgraph P1 [" phase 1 — service plugins "]
@@ -147,16 +207,25 @@ flowchart LR
         MED["media · 7 tools"]
         SCR["screen · 2 tools<br/>look / point"]
         MEM["memory · ChromaDB wiring"]
-        CTX["context · 2 tools<br/>cross-app person/topic timeline"]
+        CTX["context · 2 tools<br/>person/topic timeline"]
         HLT["health · self_report"]
+        SYS["system · 8 tools<br/>timers, reminders, clock,<br/>calculate, agenda, system_control"]
+        CORE ~~~ MEM
+        MSG ~~~ CTX
+        MED ~~~ HLT
+        SCR ~~~ SYS
     end
 
     P1 --> AGENT["Agent created<br/>over the registry"]
     AGENT --> P2
+    DSP["Dispatcher<br/>direct routes"] -->|"0-token tool calls"| SYS
 
     subgraph P2 [" phase 2 — agent-powered plugins "]
         PROD["productivity · 11 tools<br/>gmail, calendar, cron<br/>(cron runs prompts through the live Agent)"]
     end
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class DSP,SYS key
 ```
 
 A minimal plugin:
@@ -196,6 +265,11 @@ flowchart TB
     EXT --> S3
     DREAM["auto_dream (async)<br/>periodic consolidation:<br/>merge, dedupe, decay"] --> S3
     S3 --> INJ
+    EXT <-.->|"tier: small"| GW["GateLLM"]
+    DREAM <-.->|"tier: small"| GW
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class GW key
 ```
 
 Tell Aria your favorite coffee once; it's embedded, consolidated during
@@ -247,13 +321,17 @@ Two local-only JSONL logs, one report tool:
 
 ```mermaid
 flowchart LR
-    CMD["every command"] --> FR["flight_recorder<br/>~/.aria/flight_log.jsonl<br/>transcript · tools · duration · failed?"]
+    CMD["every command"] --> FR["flight_recorder<br/>~/.aria/flight_log.jsonl<br/>transcript · route · tools · duration ·<br/>LLM cost/tokens · failed?"]
+    GW["GateLLM<br/>X-Gateway-Cost-Usd"] -->|"aria.llm.meter, per command"| FR
     WK["every wake event"] --> WS["wake_stats<br/>~/.aria/wake_log.jsonl<br/>detections · near-misses · heartbeat · restarts"]
-    FR --> DC["daily_check.py report<br/>per-capability PASS / FAIL<br/>vs tests/daily_questions.json"]
+    FR --> DC["daily_check.py report<br/>per-capability PASS / FAIL<br/>direct vs agent split · LLM spend"]
     WS --> DW["daily_check.py wake<br/>engine alive? threshold suggestion"]
-    DC --> FIX["fix the top offender"]
+    DC --> FIX["fix the top offender<br/>or add a rule for a common phrasing"]
     DW --> FIX
     FIX -.->|"weekly loop"| CMD
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class GW key
 ```
 
 - `daily_check.py list --core` — a ~3-minute spoken checklist covering every

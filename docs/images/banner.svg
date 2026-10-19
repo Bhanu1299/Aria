@@ -34,12 +34,14 @@
     <text x="84" y="240" font-size="28" fill="#cbd5e1">A background voice agent for macOS</text>
     <text x="84" y="290" font-size="19" fill="#94a3b8">Say “Aria”, ask anything, keep working. Answers come back spoken.</text>
     <g font-size="15" fill="#a5b4fc">
-      <rect x="84" y="320" width="146" height="32" rx="16" fill="#6366f1" fill-opacity="0.16" stroke="#818cf8" stroke-opacity="0.45"/>
-      <text x="157" y="341" text-anchor="middle">40+ tools</text>
-      <rect x="242" y="320" width="166" height="32" rx="16" fill="#6366f1" fill-opacity="0.16" stroke="#818cf8" stroke-opacity="0.45"/>
-      <text x="325" y="341" text-anchor="middle">Claude ⇄ Groq</text>
-      <rect x="420" y="320" width="150" height="32" rx="16" fill="#6366f1" fill-opacity="0.16" stroke="#818cf8" stroke-opacity="0.45"/>
-      <text x="495" y="341" text-anchor="middle">local Whisper</text>
+      <rect x="84" y="320" width="118" height="32" rx="16" fill="#6366f1" fill-opacity="0.16" stroke="#818cf8" stroke-opacity="0.45"/>
+      <text x="143" y="341" text-anchor="middle">50+ tools</text>
+      <rect x="212" y="320" width="184" height="32" rx="16" fill="#0ea5e9" fill-opacity="0.16" stroke="#38bdf8" stroke-opacity="0.55"/>
+      <text x="304" y="341" text-anchor="middle" fill="#bae6fd">zero-token fast path</text>
+      <rect x="406" y="320" width="200" height="32" rx="16" fill="#a855f7" fill-opacity="0.16" stroke="#c084fc" stroke-opacity="0.55"/>
+      <text x="506" y="341" text-anchor="middle" fill="#e9d5ff">every LLM call → gateway</text>
+      <rect x="616" y="320" width="128" height="32" rx="16" fill="#6366f1" fill-opacity="0.16" stroke="#818cf8" stroke-opacity="0.45"/>
+      <text x="680" y="341" text-anchor="middle">local Whisper</text>
     </g>
   </g>
 
