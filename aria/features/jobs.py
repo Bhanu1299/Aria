@@ -14,7 +14,7 @@ or when the user explicitly mentions "indeed" in their query.
 """
 
 from __future__ import annotations
-from aria.llm.models import GROQ_VISION
+from aria.llm import gateway_client
 
 import json
 import logging
@@ -22,27 +22,20 @@ import re
 import time
 from urllib.parse import urlencode
 
-from groq import Groq
 
 import aria.web.agent_browser as agent_browser
 import aria.web.computer_use as computer_use
-import aria.core.config as config
 from aria.llm import llm_client
 
 logger = logging.getLogger(__name__)
 
-_CLIENT: Groq | None = None
-_VISION_MODEL = GROQ_VISION
+_VISION_MODEL = "vision"  # GateLLM tier
 _SETTLE_JOBS = 5.0     # seconds to wait after LinkedIn Jobs loads (SPA-heavy)
 
 
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set in .env")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
+def _get_client():
+    """GateLLM client — every LLM call in Aria goes through the gateway."""
+    return gateway_client()
 
 
 def _parse_salary_filter(query: str) -> str:

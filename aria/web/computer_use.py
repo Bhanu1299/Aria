@@ -15,7 +15,7 @@ Public API:
 """
 
 from __future__ import annotations
-from aria.llm.models import GROQ_VISION
+from aria.llm import gateway_client
 
 import base64
 import hashlib
@@ -27,20 +27,17 @@ import subprocess
 import time
 from pathlib import Path
 
-from groq import Groq
 
 import aria.web.agent_browser as agent_browser
-import aria.core.config as config
 import aria.web.dom_browser as dom_browser
 from aria.llm import llm_client
 
 logger = logging.getLogger(__name__)
 
-_VISION_MODEL = GROQ_VISION
+_VISION_MODEL = "vision"  # GateLLM tier
 _SCREENSHOT_PATH = "/tmp/aria_cu.jpg"
 _ACTION_SLEEP = 1.2  # base — actual sleep randomised via _human_sleep()
 
-_CLIENT: Groq | None = None
 _VALID_ACTIONS = {"click", "type", "scroll", "key", "confirm", "stuck", "needs_input"}
 _VALID_GENERAL_ACTIONS = {"click", "click_text", "type", "scroll", "key", "navigate", "extract", "confirm", "needs_input", "done", "stuck"}
 _VALID_DOM_FORM_ACTIONS = {"click", "click_text", "type", "scroll", "key", "confirm", "stuck", "needs_input"}
@@ -318,13 +315,9 @@ def _human_sleep(base: float = _ACTION_SLEEP) -> None:
     time.sleep(base * random.uniform(0.6, 1.4))
 
 
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set in .env")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
+def _get_client():
+    """GateLLM client — every LLM call in Aria goes through the gateway."""
+    return gateway_client()
 
 
 def take_screenshot() -> str | None:
@@ -513,17 +506,8 @@ def _research_decide(
         return {"action": "stuck", "reason": f"Groq error: {exc}"}
 
 
-_CLAUDE_CLIENT = None
-
-
-def _get_claude_client():
-    global _CLAUDE_CLIENT
-    if _CLAUDE_CLIENT is None:
-        if not config.ANTHROPIC_API_KEY:
-            raise RuntimeError("ANTHROPIC_API_KEY is not set — Claude fallback unavailable")
-        import anthropic as _anthropic
-        _CLAUDE_CLIENT = _anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    return _CLAUDE_CLIENT
+# Escalation model, by GateLLM model id (not a tier: it must accept images).
+_CLAUDE_MODEL = "claude-sonnet-5-5"
 
 
 def _claude_research_decide(
@@ -535,7 +519,7 @@ def _claude_research_decide(
     collected_data: list[dict],
 ) -> dict:
     """
-    Claude claude-sonnet-4-6 vision call for research fallback.
+    Claude vision call (via GateLLM) for research fallback.
     Identical JSON contract to _research_decide().
     Never raises — returns {"action": "stuck"} on error.
     """
@@ -562,27 +546,18 @@ def _claude_research_decide(
             + "\n\nIf you have all the data needed, return 'done' with a complete summary."
         )
     try:
-        client = _get_claude_client()
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
+        response = _get_client().chat.completions.create(
+            model=_CLAUDE_MODEL,
             max_tokens=500,
-            system=_CU_GENERAL_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": [
+            messages=[
+                {"role": "system", "content": _CU_GENERAL_SYSTEM},
+                {"role": "user", "content": [
                     {"type": "text", "text": user_text},
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": b64,
-                        },
-                    },
-                ],
-            }],
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ]},
+            ],
         )
-        raw = next(b.text for b in response.content if b.type == "text").strip()
+        raw = (response.choices[0].message.content or "").strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw.strip())
         raw = _extract_first_json(raw)
@@ -917,13 +892,10 @@ def research_loop(
             if not _use_claude:
                 _groq_consecutive_stucks += 1
                 if _groq_consecutive_stucks >= 2 and not collected_data:
-                    if config.ANTHROPIC_API_KEY:
-                        logger.info("Switching to Claude fallback after %d Groq stucks", _groq_consecutive_stucks)
-                        _use_claude = True
-                        _groq_consecutive_stucks = 0
-                        continue
-                    else:
-                        logger.warning("ANTHROPIC_API_KEY not set — cannot activate Claude fallback")
+                    logger.info("Switching to Claude fallback after %d vision stucks", _groq_consecutive_stucks)
+                    _use_claude = True
+                    _groq_consecutive_stucks = 0
+                    continue
                 elif collected_data:
                     partial = "; ".join(f"{d['label']}: {d['value']}" for d in collected_data)
                     return f"I got stuck partway through. Here's what I found: {partial}"

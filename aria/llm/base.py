@@ -13,6 +13,14 @@ class AuthError(Exception):
     pass
 
 
+class GatewayUnavailable(Exception):
+    """GateLLM isn't reachable (not running, or wrong ARIA_GATEWAY_URL)."""
+
+
+class GatewayError(Exception):
+    """GateLLM answered with an error (e.g. every upstream model in the tier failed)."""
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -27,6 +35,8 @@ class LLMResponse:
     stop_reason: str  # "end_turn" | "tool_use" | "error"
     provider_used: str
     model_used: str
+    # Optional accounting (GatewayProvider fills it): cost_usd, tokens_in, tokens_out, fallbacks.
+    meta: dict = field(default_factory=dict)
 
 
 class Provider(Protocol):

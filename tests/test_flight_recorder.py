@@ -32,6 +32,31 @@ def test_record_appends_jsonl_entry():
     assert "ts" in entry
 
 
+def test_record_stores_route_and_usage():
+    flight_recorder.record("pause", "Paused.", 0.3, route="direct:music_pause")
+    flight_recorder.record("weather?", "Sunny.", 4.0, route="agent",
+                           usage={"cost_usd": 0.0012, "tokens_in": 800, "tokens_out": 30})
+    entries = flight_recorder.read_recent(1)
+    assert entries[0]["route"] == "direct:music_pause" and "usage" not in entries[0]
+    assert entries[1]["usage"] == {"cost_usd": 0.0012, "tokens_in": 800, "tokens_out": 30}
+
+
+def test_route_summary_splits_direct_agent_and_old_entries():
+    entries = [
+        {"route": "direct:music_pause", "duration": 0.2},
+        {"route": "direct:timer_set", "duration": 0.4},
+        {"route": "agent", "duration": 6.0,
+         "usage": {"cost_usd": 0.002, "tokens_in": 900, "tokens_out": 100}},
+        {"duration": 3.0},  # logged before the dispatcher existed
+    ]
+    s = flight_recorder.route_summary(entries)
+    assert s["routes"]["direct"] == {"count": 2, "avg_s": 0.3}
+    assert s["routes"]["agent"] == {"count": 1, "avg_s": 6.0}
+    assert s["routes"]["unrouted"]["count"] == 1
+    assert s["cost_usd"] == pytest.approx(0.002)
+    assert s["tokens"] == 1000
+
+
 def test_failure_detected_from_fallback_answer():
     assert flight_recorder.is_failure("Something went wrong. Please try again.", None)
     assert flight_recorder.is_failure("I didn't understand that. Could you rephrase?", None)

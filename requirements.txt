@@ -8,14 +8,13 @@ patchright
 rumps
 python-dotenv
 numpy
-groq
+httpx
 requests
 pyobjc-framework-Cocoa
 pyobjc-framework-ApplicationServices
 openwakeword
 pyaudio
 pvporcupine
-anthropic
 croniter
 chromadb
 sentence-transformers
