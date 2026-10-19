@@ -37,8 +37,8 @@ aria:  "Anytime."
 
 | | |
 |---|---|
-| 🧭 **One path, cheapest first** | Every command goes through one dispatcher. Strict rules run on-device commands (timers, reminders, volume, apps, math) instantly with **zero LLM tokens**; everything else goes to a single tool-calling agent loop. Both paths call the same tools. |
-| 🚪 **One gateway for every LLM call** | Agent turns, vision, classifiers, browser automation: **every** completion goes through [GateLLM](#6--reach-the-llm-one-gateway-for-every-call), an OpenAI-compatible gateway that owns provider fallback, retries, model quirks and per-call cost. Aria never calls a provider SDK. |
+| 🧭 **Fast path before the LLM** | Timers, reminders, volume, apps and math answer in **under 2 ms with zero tokens**, instead of a 0.3–2 s model round trip. One dispatcher sends everything else to the agent, and both paths call the same tools. Modeled on how Siri routes requests, which I worked out from the files it ships. |
+| 🚪 **One gateway, every LLM call** | Agent turns, vision, classifiers and browser automation all go through [GateLLM](#6--reach-the-llm-one-gateway-for-every-call), an LLM gateway I built as a separate project. It handles provider fallback, retries, model quirks and per-call cost, so Aria imports no provider SDK, and a test fails if one sneaks back in. |
 | 🧰 **50+ tools, 9 drop-in plugins** | Web, apps, system, media, screen, messaging, memory, productivity and cross-app context. Add a capability by dropping a folder in; no core edits. |
 | 🗂️ **Cross-app context** | One local index of Gmail, Calendar and iMessage, with each person's emails, numbers and names linked into one identity. |
 | 💾 **Memory that consolidates** | Facts are extracted after each answer, stored as vectors, and periodically "dreamed" into cleaner long-term memory. |
@@ -80,13 +80,15 @@ Audio goes through voice-activity detection, then **faster-whisper runs on-devic
 
 ### 3 · Route: one dispatcher, cheapest first
 
-Every command, whether from the hotkey, the wake word or a follow-up, goes through [`Dispatcher.handle()`](aria/dispatch/dispatcher.py). The design comes from reverse-engineering Siri, which puts a regex fast path in front of its LLM planner so common requests never touch a model:
+Sending "pause the music" to an LLM is slow and costs money. Before building this I went through the configs and string tables Siri ships on macOS. Its new LLM planner sits behind a regex classifier with 622 patterns, and common requests never reach the model. Aria does the same thing at a smaller scale.
 
-1. **Pre-handlers** handle app-specific intercepts (follow-ups about the last job search).
-2. **Direct routes** come from [`patterns.json`](aria/dispatch/patterns.json): ~45 whole-sentence regexes with typed slots, each mapped to a tool. "Set a timer for an hour and a half" becomes `timer_set(seconds=5400)`, and "remind me to call mom at 5pm" becomes `reminder_add(task="call mom", due="…T17:00")`. These run in under 2 ms with **zero LLM tokens**.
-3. **The agent** handles everything else.
+Every command, whether it comes from the hotkey, the wake word or a follow-up, goes through [`Dispatcher.handle()`](aria/dispatch/dispatcher.py):
 
-Precision beats recall here. A missed rule costs nothing, because the agent still answers. A wrong match does the wrong thing, so the parsers [raise instead of guessing](aria/dispatch/parse.py): "set a timer for a while" goes to the agent rather than becoming a made-up duration. Direct turns are also written into the agent's history, so "turn it back on" after "pause the music" still has context.
+1. Pre-handlers catch app-specific follow-ups, like "tell me about the second job".
+2. Direct routes come from [`patterns.json`](aria/dispatch/patterns.json): about 45 whole-sentence regexes with typed slots, each mapped to a tool. "Set a timer for an hour and a half" becomes `timer_set(seconds=5400)`. "Remind me to call mom at 5pm" becomes `reminder_add(task="call mom", due="…T17:00")`, with the date built from parts so it doesn't depend on locale. These run in under 2 ms and use no tokens.
+3. Everything else goes to the agent.
+
+The rules favor precision over recall. A missed rule costs nothing, because the agent still answers. A wrong match does the wrong thing, so the [slot parsers](aria/dispatch/parse.py) raise instead of guessing: "set a timer for a while" goes to the agent instead of turning into a made-up duration. 120 tests pin real phrasings to the tool each must reach, or to the agent, against a fixed clock. Direct turns are also written into the agent's history, so "turn it back on" after "pause the music" still works.
 
 ### 4 · Think: one agent loop
 
@@ -146,7 +148,9 @@ Restart, and the agent can control your lights. Plugins that need the agent itse
 
 ### 6 · Reach the LLM: one gateway for every call
 
-Aria has no provider SDKs. **Every LLM call** (agent turns, screen and page vision, the media and Mac-control classifiers, session notes, browser automation, and its Claude escalation) goes over HTTP to **GateLLM**, my OpenAI-compatible gateway ([`aria/llm/providers/gateway.py`](aria/llm/providers/gateway.py)). Aria asks for a **tier**, and the gateway picks the model, falls back across providers, retries, applies model quirks, and reports the cost of each call:
+Aria has no provider SDKs. Every LLM call goes over HTTP to **GateLLM**, an OpenAI-compatible gateway I built as a separate project: provider adapters, per-model circuit breakers, retries with backoff, a total deadline per request, and cost accounting, covered by 96 tests. That covers agent turns, screen and page vision, the media and Mac-control classifiers, session notes, browser automation, and the browser agent's Claude escalation ([client code](aria/llm/providers/gateway.py)).
+
+Aria asks for a tier, and the gateway picks the model, falls back across providers when one fails, and returns the cost in a response header:
 
 | Aria asks for | GateLLM tier | Chain (cheapest first) | Used for |
 |---|---|---|---|
@@ -154,7 +158,9 @@ Aria has no provider SDKs. **Every LLM call** (agent turns, screen and page visi
 | `cheap` / `fast` | `small` | GPT-OSS 120B (Groq) → DeepSeek → GPT mini → Claude Haiku | classifiers, extractors |
 | `vision` | `vision` | Qwen3.8-27B (Groq) → Claude Haiku → Claude Sonnet | screenshots, page reading |
 
-The agent writes Anthropic-style history (`tool_use` / `tool_result` blocks). The gateway client translates it to OpenAI format on the way out, so whichever vendor the gateway picks, even one that changes mid-task, sees a history it accepts. Model IDs, prices and quirks (gpt-oss needs `reasoning_effort: low` or it returns empty answers at small token budgets) live in the gateway's config, not in Aria.
+The agent writes Anthropic-style history (`tool_use` / `tool_result` blocks). The client translates it to OpenAI format on the way out, so whichever vendor serves a request, including one that takes over mid-task, gets history it accepts. Model IDs, prices and quirks live in the gateway's config, not in Aria. One example of a quirk: gpt-oss returns an empty answer at small token budgets unless `reasoning_effort` is set to `low`.
+
+One path also makes cost visible. A meter tallies each call, so the flight log records what every command cost, including vision calls made deep inside a tool. In one live run, seven calls across all four paths (Claude for the agent, gpt-oss for classifiers, Qwen for vision, Claude for browser escalation) cost $0.0033 in total.
 
 If the gateway isn't running, Aria says so at startup and in its answers. Direct routes keep working without it.
 
