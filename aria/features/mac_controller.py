@@ -13,7 +13,7 @@ Public API:
 """
 
 from __future__ import annotations
-from aria.llm.models import GROQ_FAST, GROQ_VISION, groq_params
+from aria.llm import gateway_client
 
 import json
 import logging
@@ -24,22 +24,15 @@ import subprocess
 import tempfile
 import time as _time
 
-from groq import Groq
 
-import aria.core.config as config
 
 logger = logging.getLogger(__name__)
 
-_CLIENT: Groq | None = None
 
 
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set in .env")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
+def _get_client():
+    """GateLLM client — every LLM call in Aria goes through the gateway."""
+    return gateway_client()
 
 
 # ---------------------------------------------------------------------------
@@ -825,7 +818,7 @@ def read_screen_region(app_name: str) -> str:
 
         client = _get_client()
         response = client.chat.completions.create(
-            model=GROQ_VISION,
+            model="vision",
             messages=[
                 {
                     "role": "user",
@@ -950,7 +943,7 @@ def _sub_classify(transcript: str) -> dict:
     """Use Groq to extract structured action/target/params from transcript."""
     client = _get_client()
     response = client.chat.completions.create(
-        model=GROQ_FAST, **groq_params(GROQ_FAST),
+        model="small",
         messages=[
             {"role": "system", "content": _SUB_CLASSIFY_SYSTEM},
             {"role": "user", "content": transcript.strip()},

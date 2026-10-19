@@ -11,7 +11,7 @@ Never raises — all error paths return a spoken error string.
 """
 
 from __future__ import annotations
-from aria.llm.models import GROQ_VISION
+from aria.llm import gateway_client
 
 import base64
 import json
@@ -20,9 +20,7 @@ import os
 import re
 import subprocess
 
-from groq import Groq
 
-import aria.core.config as config
 import aria.ui.overlay as overlay
 import aria.screen.selection as selection
 
@@ -30,9 +28,8 @@ logger = logging.getLogger(__name__)
 
 _SCREENSHOT_PATH = "/tmp/aria_screen_qa.jpg"
 _MAX_PX = "1920"            # max dimension for sips resize (keeps JPEG under ~500 KB)
-_MODEL = GROQ_VISION
+_MODEL = "vision"  # GateLLM tier
 
-_CLIENT: Groq | None = None
 
 _SYSTEM = (
     "You are Aria, a voice assistant. "
@@ -58,13 +55,9 @@ _EXPLAIN_SYSTEM = (
 )
 
 
-def _get_client() -> Groq:
-    global _CLIENT
-    if _CLIENT is None:
-        if not config.GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY is not set in .env")
-        _CLIENT = Groq(api_key=config.GROQ_API_KEY)
-    return _CLIENT
+def _get_client():
+    """GateLLM client — every LLM call in Aria goes through the gateway."""
+    return gateway_client()
 
 
 def _capture(path: str = _SCREENSHOT_PATH) -> str | None:

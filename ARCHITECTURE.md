@@ -6,9 +6,12 @@ own overlays never take focus, and the whole loop runs while you keep working.
 
 Three ideas shape everything below:
 
-1. **One brain, many hands.** A single tool-loop Agent decides; ~45 tools across
-   8 drop-in plugins act. There is no intent classifier, no routing table —
-   deleted, on purpose (see [Design invariants](#design-invariants)).
+1. **One path, many hands.** Every command goes through one dispatcher: strict
+   regex rules run on-device commands (timers, reminders, volume, apps…) straight
+   on a tool with zero LLM tokens; everything else goes to a single tool-loop
+   Agent. ~50 tools across 9 drop-in plugins act, and both paths call the same
+   tools. Every LLM call, with no exceptions, goes out through GateLLM (see
+   [Design invariants](#design-invariants)).
 2. **The user is never left guessing.** Every state Aria can be in is visible
    (menubar + on-screen HUD) or audible (chime, no-speech cue, "one moment").
 3. **It measures itself.** Every command and every wake-word event is logged
@@ -32,9 +35,14 @@ flowchart TB
     end
 
     subgraph brain [" the brain "]
+        DSP["Dispatcher<br/>(aria/dispatch)<br/>regex rules → direct tool"]
         AG["Agent tool loop<br/>(aria/core/agent.py)"]
-        REG["ToolRegistry<br/>~45 tools from 8 plugins"]
-        LLM["aria/llm failover chains<br/>Claude ⇄ Groq"]
+        REG["ToolRegistry<br/>~50 tools from 9 plugins"]
+    end
+
+    subgraph egress [" the only way out "]
+        LLM["GateLLM gateway<br/>every LLM call (aria/llm)<br/>fallback · retries · cost"]
+        PRV["Claude · Groq · OpenAI<br/>DeepSeek · Kimi"]
     end
 
     subgraph out [" respond "]
@@ -48,19 +56,64 @@ flowchart TB
 
     HK --> VAD
     WW --> VAD
-    VAD --> WH --> AG
+    VAD --> WH --> DSP
+    DSP -->|"rule match: 0 tokens"| REG
+    DSP -->|"everything else"| AG
     AG <--> REG
-    AG <--> LLM
+    AG <-->|"tier: smart"| LLM
+    REG <-.->|"vision · classifiers"| LLM
+    EX <-.->|"tier: small"| LLM
+    LLM <--> PRV
+    DSP --> TTS
     AG --> TTS --> CONV
-    CONV -->|"follow-up speech"| AG
+    CONV -->|"follow-up speech"| DSP
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class DSP,LLM key
     TTS -.-> EX
 ```
 
 A follow-up spoken into the `conversation.hold()` window goes straight back
-into the Agent **with full cross-turn history** — "what about tomorrow?" just
-works, no hotkey, no wake word.
+through the dispatcher **with full cross-turn history** — "what about tomorrow?"
+just works, no hotkey, no wake word. Direct-route turns are written into the
+Agent's history too, so "turn it back on" after "pause the music" has context.
 
-## The Agent: one loop, no routing
+## The dispatcher: one path, cheapest first
+
+`aria/dispatch/` is the single entry point (`Dispatcher.handle()`), modeled on
+the regex fast path in front of Siri's LLM planner:
+
+1. **Pre-handlers** — app-specific intercepts (jobs follow-ups).
+2. **Direct routes** — `patterns.json`: whole-command regexes with typed slots
+   (`duration`, `when`, `task_when`, `int`) mapped to a tool and its params.
+   Parsers raise rather than guess; precision over recall.
+3. **Agent** — everything else, plus any direct route whose slot doesn't parse
+   or whose tool is unavailable or raises.
+
+```mermaid
+flowchart TB
+    N["transcript → normalize()"]
+    N --> PRE{"pre-handler?"}
+    PRE -->|answer| OUT["DispatchResult<br/>answer · route · tools · usage"]
+    PRE -->|none| R{"RuleSet.match()"}
+    R -->|None| AG["Agent.run()"]
+    R -->|Escalate| AG
+    R -->|RuleMatch| TL["registry.get(tool).execute(params)"]
+    TL -->|"missing / raised / empty"| AG
+    TL -->|answer| NT["agent.note_turn()"] --> OUT
+    AG <--> GW["GateLLM"]
+    AG --> OUT
+    M["aria.llm.meter<br/>snapshot → since()"] -.->|usage| OUT
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class R,GW key
+```
+
+The flight log records the route and LLM spend for every command;
+`daily_check.py report` prints the direct/agent split. `ARIA_FASTPATH=0`
+sends everything to the Agent.
+
+## The Agent: one loop
 
 `aria/core/agent.py` is ~250 lines and is the only decision-maker. Each turn:
 
@@ -68,18 +121,20 @@ works, no hotkey, no wake word.
 sequenceDiagram
     participant U as user (voice)
     participant A as Agent
-    participant L as aria/llm chain
+    participant G as GateLLM (GatewayProvider)
+    participant M as model (tier chain)
     participant T as tool
 
     U->>A: transcript
-    A->>L: system + history + ~45 tool schemas
     loop until end_turn — 25-step budget
-        L-->>A: tool_use(name, input)
+        A->>G: POST /v1/chat/completions<br/>model="frontier" · history → OpenAI format · ~50 tool schemas
+        G->>M: first healthy model (breaker · retry · fallback)
+        M-->>G: tool_calls
+        G-->>A: tool_use + X-Gateway-Cost-Usd (→ meter)
         A->>T: execute(input)
         T-->>A: result string (never raises)
-        A->>L: tool_result
     end
-    L-->>A: final text
+    G-->>A: final text
     A-->>U: spoken answer (1–3 sentences)
 ```
 
@@ -90,18 +145,50 @@ sequenceDiagram
   the transcript; the model gets a chance to recover, and `Agent.run()` itself
   can never raise into the voice loop.
 
-### LLM failover tiers (`aria/llm/`)
+### LLM tiers via GateLLM (`aria/llm/`)
 
-Every completion names a tier, not a model. Each tier is a provider chain that
-falls through on rate limits, auth errors, or outages:
+Every completion names a tier, not a model, and goes to GateLLM, which owns the
+provider chain (fallback, retries, model quirks, pricing):
 
-| tier | chain | used for |
-|---|---|---|
-| `smart` | Claude Sonnet 4.6 → Claude Haiku 4.5 → GPT-OSS 120B (Groq) | the Agent loop |
-| `cheap` | Claude Haiku 4.5 → GPT-OSS 20B (Groq) | extractors, summaries |
-| `fast` | GPT-OSS 20B (Groq) → Claude Haiku 4.5 | latency-sensitive helpers |
+```mermaid
+flowchart TB
+    subgraph aria [" Aria (aria/llm) "]
+        GP["GatewayProvider<br/>agent · Anthropic-style history in"]
+        GC["gateway_client()<br/>OpenAI-shaped · vision, classifiers,<br/>notes, briefing, computer use"]
+        MT["meter<br/>cost · tokens · calls"]
+    end
 
-One provider being down degrades quality, never availability.
+    subgraph gw [" GateLLM (~/GateLLM) "]
+        API["/v1/chat/completions"]
+        CH["candidate_chain(tier)"]
+        EXE["FallbackExecutor<br/>breaker · retry · deadline"]
+        AD["adapters<br/>openai_compat · groq · moonshot · anthropic"]
+        API --> CH --> EXE --> AD
+    end
+
+    GP & GC -->|"HTTP"| API
+    AD --> PR["provider APIs"]
+    API -.->|"X-Gateway-Model · Provider · Fallbacks · Cost-Usd"| MT
+    MT -.->|"per command"| FL["flight log"]
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class API,EXE key
+```
+
+Failure behavior is explicit. Connection refused raises `GatewayUnavailable`, and
+the agent speaks "I can't reach the LLM gateway". An HTTP error raises
+`GatewayError`. There is no direct-provider fallback in Aria.
+
+| Aria tier | GateLLM tier | chain (in GateLLM config.yaml) | used for |
+|---|---|---|---|
+| `smart` | `frontier` | Claude Sonnet → GPT → Kimi → GPT-OSS 120B | the Agent loop |
+| `cheap` / `fast` | `small` | GPT-OSS 120B (Groq) → DeepSeek → GPT mini → Claude Haiku | classifiers, extractors |
+| — | `vision` | Qwen3.8-27B (Groq) → Claude Haiku → Claude Sonnet | screenshots, page reading |
+
+Modules that build OpenAI-format messages (vision, classifiers, computer use)
+use `gateway_client().chat.completions.create(model="vision", …)`. Every call
+is tallied in `aria.llm.meter`; the dispatcher snapshots it per command, so the
+flight log's cost covers LLM calls made inside tools too.
 
 ## Plugins: drop a folder in, get capabilities
 
@@ -111,7 +198,7 @@ finds it at startup — no imports to add, no registration list to edit, and a
 broken plugin is skipped with a log line instead of taking Aria down.
 
 ```mermaid
-flowchart LR
+flowchart TB
     D["plugins.discover()<br/>(pkgutil scan)"] --> P1
 
     subgraph P1 [" phase 1 — service plugins "]
@@ -120,16 +207,25 @@ flowchart LR
         MED["media · 7 tools"]
         SCR["screen · 2 tools<br/>look / point"]
         MEM["memory · ChromaDB wiring"]
-        CTX["context · 2 tools<br/>cross-app person/topic timeline"]
+        CTX["context · 2 tools<br/>person/topic timeline"]
         HLT["health · self_report"]
+        SYS["system · 8 tools<br/>timers, reminders, clock,<br/>calculate, agenda, system_control"]
+        CORE ~~~ MEM
+        MSG ~~~ CTX
+        MED ~~~ HLT
+        SCR ~~~ SYS
     end
 
     P1 --> AGENT["Agent created<br/>over the registry"]
     AGENT --> P2
+    DSP["Dispatcher<br/>direct routes"] -->|"0-token tool calls"| SYS
 
     subgraph P2 [" phase 2 — agent-powered plugins "]
         PROD["productivity · 11 tools<br/>gmail, calendar, cron<br/>(cron runs prompts through the live Agent)"]
     end
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class DSP,SYS key
 ```
 
 A minimal plugin:
@@ -169,6 +265,11 @@ flowchart TB
     EXT --> S3
     DREAM["auto_dream (async)<br/>periodic consolidation:<br/>merge, dedupe, decay"] --> S3
     S3 --> INJ
+    EXT <-.->|"tier: small"| GW["GateLLM"]
+    DREAM <-.->|"tier: small"| GW
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class GW key
 ```
 
 Tell Aria your favorite coffee once; it's embedded, consolidated during
@@ -220,13 +321,17 @@ Two local-only JSONL logs, one report tool:
 
 ```mermaid
 flowchart LR
-    CMD["every command"] --> FR["flight_recorder<br/>~/.aria/flight_log.jsonl<br/>transcript · tools · duration · failed?"]
+    CMD["every command"] --> FR["flight_recorder<br/>~/.aria/flight_log.jsonl<br/>transcript · route · tools · duration ·<br/>LLM cost/tokens · failed?"]
+    GW["GateLLM<br/>X-Gateway-Cost-Usd"] -->|"aria.llm.meter, per command"| FR
     WK["every wake event"] --> WS["wake_stats<br/>~/.aria/wake_log.jsonl<br/>detections · near-misses · heartbeat · restarts"]
-    FR --> DC["daily_check.py report<br/>per-capability PASS / FAIL<br/>vs tests/daily_questions.json"]
+    FR --> DC["daily_check.py report<br/>per-capability PASS / FAIL<br/>direct vs agent split · LLM spend"]
     WS --> DW["daily_check.py wake<br/>engine alive? threshold suggestion"]
-    DC --> FIX["fix the top offender"]
+    DC --> FIX["fix the top offender<br/>or add a rule for a common phrasing"]
     DW --> FIX
     FIX -.->|"weekly loop"| CMD
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class GW key
 ```
 
 - `daily_check.py list --core` — a ~3-minute spoken checklist covering every
@@ -252,11 +357,16 @@ These are enforced, not aspirational:
 2. **Never raise into the voice loop.** Every handler returns a graceful
    spoken fallback. `Agent.run()`, `conversation.hold()`, both loggers, and
    every plugin tool are exception-proof at their boundary.
-3. **One brain.** The intent classifier / planner stack (~2,100 lines) was
-   deleted once the tool-loop Agent proved strictly better. Dead paths drift;
-   drift ships bugs.
-4. **Local-first.** Whisper, wake models, ChromaDB, both logs — all on-device.
-   Only LLM completions leave the machine.
+3. **One brain, one path.** The old LLM intent classifier / planner stack
+   (~2,100 lines) was deleted once the tool-loop Agent proved strictly better.
+   The dispatcher is not a second brain: it only runs a tool when a strict rule
+   matches with fully parsed slots, and calls the same tools the Agent does.
+4. **Local-first, one way out.** Whisper, wake models, ChromaDB, both logs — all
+   on-device. Only LLM completions leave the machine, and every one goes through
+   GateLLM (`ARIA_GATEWAY_URL`, default `http://127.0.0.1:8000`): the agent via
+   `GatewayProvider`, vision/classifiers/computer use via `gateway_client()`.
+   Aria imports no provider SDK (guard test: `test_no_module_calls_a_provider_sdk_directly`).
+   Gateway down → Aria says so; direct routes still work.
 5. **Voice is the UI.** Answers are 1–3 spoken sentences; no markdown, no URL
    dumps. Long work is acknowledged out loud rather than silently spinning.
 6. **Python 3.9 discipline.** `from __future__ import annotations` everywhere;
@@ -274,9 +384,10 @@ aria/
   app.py                wiring + command lifecycle (the only god allowed)
   core/                 agent.py (tool loop) · tool.py (registry) ·
                         plugin.py (contract) · compact.py · config.py · paths.py
-  llm/                  provider chains: Anthropic + Groq, tiered failover
+  dispatch/             dispatcher · rules + patterns.json · parse (durations, times)
+  llm/                  GateLLM client: GatewayProvider (agent) · gateway_client() · meter
   plugins/              drop-in capability packs (core, context, media, messaging,
-                        memory, productivity, screen, health)
+                        memory, productivity, screen, health, system)
   voice/                voice_capture · transcriber · speaker (+ThinkingAck) ·
                         hotkey · wake_word (3 backends, restart supervisor) ·
                         conversation (follow-up window) · voice_keyterms
