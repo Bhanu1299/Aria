@@ -12,6 +12,7 @@ Never raises — all error paths return a spoken error string.
 
 from __future__ import annotations
 from aria.llm import gateway_client
+from aria.llm.tasks import tier_for
 
 import base64
 import json
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 _SCREENSHOT_PATH = "/tmp/aria_screen_qa.jpg"
 _MAX_PX = "1920"            # max dimension for sips resize (keeps JPEG under ~500 KB)
-_MODEL = "vision"  # GateLLM tier
+_MODEL = tier_for("screen_qa")  # aria/llm/tasks.py
 
 
 _SYSTEM = (

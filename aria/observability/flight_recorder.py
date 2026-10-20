@@ -82,6 +82,8 @@ def record(transcript: str, answer: str, duration: float,
                 "tokens_in": int(usage.get("tokens_in", 0)),
                 "tokens_out": int(usage.get("tokens_out", 0)),
             }
+            if usage.get("escalations"):
+                entry["usage"]["escalations"] = int(usage["escalations"])
         with _LOCK:
             os.makedirs(os.path.dirname(_LOG_PATH), exist_ok=True)
             _rotate_if_needed()

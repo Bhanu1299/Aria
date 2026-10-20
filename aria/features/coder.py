@@ -407,7 +407,7 @@ def run(command: str, menubar=None) -> str:
             resp = llm_client.complete(
                 messages=messages,
                 tools=_TOOLS,
-                tier="smart",
+                task="coder",
                 max_tokens=4096,
                 system=system,
             )

@@ -50,7 +50,7 @@ def compress(notes: str) -> str:
             messages=[
                 {"role": "user", "content": f"Compress these session notes:\n\n{notes}"},
             ],
-            tier="fast",
+            task="history_compact",
             system=_NOTES_SYSTEM_PROMPT,
             max_tokens=300,
         )
@@ -92,7 +92,7 @@ def compact_messages(messages: list[dict]) -> list[dict]:
         )
         resp = llm_client.complete(
             messages=[{"role": "user", "content": f"Summarize this conversation:\n\n{older_text}"}],
-            tier="fast",
+            task="history_compact",
             system=_MESSAGES_SYSTEM_PROMPT,
             max_tokens=400,
         )

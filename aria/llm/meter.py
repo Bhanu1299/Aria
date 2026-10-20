@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 
 _LOCK = threading.Lock()
-_TOTALS = {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "calls": 0}
+_TOTALS = {"cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "calls": 0, "escalations": 0}
 
 
 def add(meta: dict) -> None:
@@ -18,6 +18,12 @@ def add(meta: dict) -> None:
         _TOTALS["tokens_in"] += int(meta.get("tokens_in", 0))
         _TOTALS["tokens_out"] += int(meta.get("tokens_out", 0))
         _TOTALS["calls"] += 1
+
+
+def add_escalation() -> None:
+    """A small-tier answer failed validation and was retried on frontier."""
+    with _LOCK:
+        _TOTALS["escalations"] += 1
 
 
 def snapshot() -> dict:
@@ -32,4 +38,5 @@ def since(before: dict) -> dict:
         "tokens_in": now["tokens_in"] - before["tokens_in"],
         "tokens_out": now["tokens_out"] - before["tokens_out"],
         "calls": now["calls"] - before["calls"],
+        "escalations": now["escalations"] - before.get("escalations", 0),
     }

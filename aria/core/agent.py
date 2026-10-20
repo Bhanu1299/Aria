@@ -148,7 +148,7 @@ class Agent:
             resp = llm_client.complete(
                 messages=messages,
                 tools=tool_dicts if tool_dicts else None,
-                tier="smart",
+                task="agent",
                 max_tokens=2048,
                 system=system,
             )

@@ -5,8 +5,9 @@ All Aria components that need SQLite import get_connection() from here.
 Single database file: ~/.aria/aria.db
 
 Tables owned here:
-  applications  — job application history (migrated from tracker.py)
-  memory        — persistent key-value store (owned by memory.py)
+  applications     — job application history (migrated from tracker.py)
+  memory           — persistent key-value store (owned by memory.py)
+  learned_answers  — form answers the user gave by voice / in review (features/answer_bank.py)
 """
 
 from __future__ import annotations
@@ -48,6 +49,15 @@ CREATE TABLE IF NOT EXISTS facts (
 )
 """
 
+_CREATE_LEARNED_ANSWERS = """
+CREATE TABLE IF NOT EXISTS learned_answers (
+    question   TEXT    PRIMARY KEY,
+    answer     TEXT    NOT NULL,
+    source     TEXT    NOT NULL DEFAULT 'user',
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def get_connection() -> sqlite3.Connection:
     """
@@ -62,5 +72,6 @@ def get_connection() -> sqlite3.Connection:
     conn.execute(_CREATE_APPLICATIONS)
     conn.execute(_CREATE_MEMORY)
     conn.execute(_CREATE_FACTS)
+    conn.execute(_CREATE_LEARNED_ANSWERS)
     conn.commit()
     return conn
