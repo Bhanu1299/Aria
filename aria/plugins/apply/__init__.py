@@ -6,6 +6,10 @@ Tools:
   apply_job      — fill the application for the next sheet job, a given sheet row,
                    or a URL, and stop for review (aria/features/applicator.py).
                    NEVER submits.
+  job_outreach_draft — save a job outreach email as a draft in the JOBS Gmail
+                   account (GOOGLE_JOBS_ACCOUNT). Never sends; never the personal account.
+
+Every Google call here uses the jobs account (google_auth.JOBS), never personal.
 
 Submitting is deliberately NOT a tool: only the user's own words ("submit it",
 "I submitted it", "skip this job") reach applicator.handle_followup, a dispatcher
@@ -20,7 +24,7 @@ from urllib.parse import urlparse
 import aria.core.plugin as _plugin_base
 import aria.state.memory as memory
 from aria.core.tool import ToolDescriptor, ToolRegistry
-from aria.integrations import sheets
+from aria.integrations import google_auth, sheets
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,7 @@ class ApplyPlugin(_plugin_base.PluginBase):
     def register(self, registry: ToolRegistry) -> None:
         registry.register(self._job_from_sheet_tool())
         registry.register(self._apply_job_tool())
+        registry.register(self._job_outreach_draft_tool())
 
     # -- voice helpers -----------------------------------------------------
 
@@ -152,6 +157,38 @@ class ApplyPlugin(_plugin_base.PluginBase):
                     "url": {"type": "string", "description": "Application URL (optional)"},
                 },
                 "required": [],
+            },
+            execute=execute,
+        )
+
+    def _job_outreach_draft_tool(self) -> ToolDescriptor:
+        from aria.plugins.productivity.gmail import GmailClient
+        client = GmailClient(google_auth.JOBS)
+
+        def execute(params: dict) -> str:
+            return client.create_draft(
+                params.get("to", ""), params.get("subject", ""), params["body"],
+                params.get("cc", ""), params.get("reply_to_id", ""),
+            )
+
+        return ToolDescriptor(
+            name="job_outreach_draft",
+            description=(
+                "Save a job-search outreach email as a DRAFT in the user's JOBS Gmail account — "
+                "never sends. Use for emails to recruiters, hiring managers or referrals about a "
+                "job or application. Personal email goes to gmail_create_draft instead."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Recipient email address"},
+                    "subject": {"type": "string", "description": "Email subject"},
+                    "body": {"type": "string", "description": "Email body text"},
+                    "cc": {"type": "string", "description": "CC addresses (optional)"},
+                    "reply_to_id": {"type": "string",
+                                    "description": "Message ID in the jobs inbox to reply to (optional)"},
+                },
+                "required": ["body"],
             },
             execute=execute,
         )

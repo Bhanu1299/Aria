@@ -12,19 +12,22 @@ from aria.integrations import google_auth
 
 logger = logging.getLogger(__name__)
 
-_NOT_SETUP_MSG = f"Google isn't connected yet. Run: {google_auth.SETUP_CMD}"
-_AUTH_EXPIRED_MSG = f"Google auth expired or is missing permissions. Run: {google_auth.SETUP_CMD}"
 _RATE_LIMIT_MSG = "Gmail is rate-limited. Try again in a minute."
 _SCOPES = [google_auth.GMAIL_MODIFY, google_auth.GMAIL_LABELS, google_auth.GMAIL_COMPOSE]
 
 
 class GmailClient:
-    def __init__(self) -> None:
-        self._service = None
+    """Gmail for ONE Google account ("personal" or "jobs") — never the other."""
 
-    @staticmethod
-    def is_configured() -> bool:
-        return google_auth.is_configured()
+    def __init__(self, account: str) -> None:
+        self.account = account
+        self._service = None
+        cmd, who = google_auth.setup_cmd(account), google_auth.label(account)
+        self._not_setup_msg = f"{who} isn't connected yet. Run: {cmd}"
+        self._auth_expired_msg = f"{who} auth expired or is missing permissions. Run: {cmd}"
+
+    def is_configured(self) -> bool:
+        return google_auth.is_configured(self.account)
 
     def _get_service(self):
         if self._service is not None:
@@ -32,7 +35,7 @@ class GmailClient:
         if not self.is_configured():
             return None
         try:
-            self._service = google_auth.build_service("gmail", "v1", _SCOPES)
+            self._service = google_auth.build_service("gmail", "v1", _SCOPES, account=self.account)
             return self._service
         except Exception as exc:
             logger.warning("gmail: auth failed: %s", exc)
@@ -40,10 +43,10 @@ class GmailClient:
 
     def list_messages(self, query: str = "", limit: int = 5) -> list | str:
         if not self.is_configured():
-            return _NOT_SETUP_MSG
+            return self._not_setup_msg
         svc = self._get_service()
         if svc is None:
-            return _AUTH_EXPIRED_MSG
+            return self._auth_expired_msg
         limit = min(max(1, limit), 20)
         try:
             resp = svc.users().messages().list(
@@ -71,7 +74,7 @@ class GmailClient:
                 })
             return results
         except Exception as exc:
-            return _handle_api_error(exc)
+            return _handle_api_error(exc, self._auth_expired_msg)
 
     def my_address(self) -> str:
         """The connected account's own address (lowercased), or '' if unknown."""
@@ -93,10 +96,10 @@ class GmailClient:
         Each item: {id, from, to, cc, subject, ts, snippet}; ts is epoch seconds.
         """
         if not self.is_configured():
-            return _NOT_SETUP_MSG
+            return self._not_setup_msg
         svc = self._get_service()
         if svc is None:
-            return _AUTH_EXPIRED_MSG
+            return self._auth_expired_msg
         skip_ids = skip_ids or set()
         try:
             ids: list = []
@@ -132,14 +135,14 @@ class GmailClient:
                 })
             return results
         except Exception as exc:
-            return _handle_api_error(exc)
+            return _handle_api_error(exc, self._auth_expired_msg)
 
     def read_message(self, email_id: str) -> dict | str:
         if not self.is_configured():
-            return _NOT_SETUP_MSG
+            return self._not_setup_msg
         svc = self._get_service()
         if svc is None:
-            return _AUTH_EXPIRED_MSG
+            return self._auth_expired_msg
         try:
             msg = svc.users().messages().get(
                 userId="me", id=email_id, format="full"
@@ -155,14 +158,14 @@ class GmailClient:
                 "body_text": body,
             }
         except Exception as exc:
-            return _handle_api_error(exc)
+            return _handle_api_error(exc, self._auth_expired_msg)
 
     def send_message(self, to: str, subject: str, body: str, cc: str = "") -> str:
         if not self.is_configured():
-            return _NOT_SETUP_MSG
+            return self._not_setup_msg
         svc = self._get_service()
         if svc is None:
-            return _AUTH_EXPIRED_MSG
+            return self._auth_expired_msg
         try:
             msg = MIMEText(body)
             msg["to"] = to
@@ -173,15 +176,15 @@ class GmailClient:
             svc.users().messages().send(userId="me", body={"raw": raw}).execute()
             return "Sent."
         except Exception as exc:
-            return _handle_api_error(exc)
+            return _handle_api_error(exc, self._auth_expired_msg)
 
     def create_draft(self, to: str, subject: str, body: str, cc: str = "", reply_to_id: str = "") -> str:
         """Save a draft in Gmail. Never sends. reply_to_id threads it as a reply to that email."""
         if not self.is_configured():
-            return _NOT_SETUP_MSG
+            return self._not_setup_msg
         svc = self._get_service()
         if svc is None:
-            return _AUTH_EXPIRED_MSG
+            return self._auth_expired_msg
         try:
             msg = MIMEText(body)
             message: dict = {}
@@ -204,16 +207,17 @@ class GmailClient:
                 msg["cc"] = cc
             message["raw"] = base64.urlsafe_b64encode(msg.as_bytes()).decode()
             svc.users().drafts().create(userId="me", body={"message": message}).execute()
-            return f"Draft saved for {to}: {subject}. It's in your Gmail drafts; nothing was sent."
+            where = google_auth.account_email(self.account) or f"your {self.account} Gmail"
+            return f"Draft saved for {to}: {subject}. It's in the drafts of {where}; nothing was sent."
         except Exception as exc:
-            return _handle_api_error(exc)
+            return _handle_api_error(exc, self._auth_expired_msg)
 
     def reply_message(self, email_id: str, body: str) -> str:
         if not self.is_configured():
-            return _NOT_SETUP_MSG
+            return self._not_setup_msg
         svc = self._get_service()
         if svc is None:
-            return _AUTH_EXPIRED_MSG
+            return self._auth_expired_msg
         try:
             orig = svc.users().messages().get(
                 userId="me", id=email_id, format="metadata",
@@ -235,7 +239,7 @@ class GmailClient:
             ).execute()
             return "Sent."
         except Exception as exc:
-            return _handle_api_error(exc)
+            return _handle_api_error(exc, self._auth_expired_msg)
 
 
 def _extract_body(payload: dict) -> str:
@@ -252,10 +256,10 @@ def _extract_body(payload: dict) -> str:
     return ""
 
 
-def _handle_api_error(exc: Exception) -> str:
+def _handle_api_error(exc: Exception, auth_expired_msg: str) -> str:
     msg = str(exc).lower()
     if "quota" in msg or "rate" in msg or "429" in msg:
         return _RATE_LIMIT_MSG
     if "invalid_grant" in msg or "token" in msg or "auth" in msg:
-        return _AUTH_EXPIRED_MSG
+        return auth_expired_msg
     return f"Gmail error: {exc}"

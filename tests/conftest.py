@@ -26,3 +26,5 @@ def _no_live_http(monkeypatch):
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _refuse)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _refuse_async)
+    # ...and never launches the real GateLLM process on an unreachable gateway.
+    monkeypatch.setattr("aria.core.config.GATEWAY_AUTOSTART", False)

@@ -17,7 +17,7 @@ ARIA = Path(__file__).parent.parent / "aria"
 
 
 def _client(svc):
-    client = GmailClient.__new__(GmailClient)
+    client = GmailClient("personal")
     client._service = svc
     return client
 
@@ -109,6 +109,9 @@ def test_reply_without_spoken_yes_drafts_in_thread():
 def test_job_pipeline_cannot_send_email():
     pipeline = [ARIA / "features" / "applicator.py", *sorted((ARIA / "features" / "ats").glob("*.py")),
                 *sorted((ARIA / "plugins" / "apply").glob("*.py")), ARIA / "integrations" / "sheets.py"]
-    pattern = re.compile(r"send_message|reply_message|gmail_send|gmail_reply|messages\(\)\.send|GmailClient")
+    pattern = re.compile(r"send_message|reply_message|gmail_send|gmail_reply|messages\(\)\.send")
     offenders = [f"{p.relative_to(ARIA)}: {m.group(0)}" for p in pipeline for m in pattern.finditer(p.read_text())]
     assert not offenders, offenders
+    # The only Gmail the pipeline may touch is the jobs account's, and only for drafts.
+    clients = [m.group(0) for p in pipeline for m in re.finditer(r"GmailClient\([^)]*\)", p.read_text())]
+    assert clients and all(c == "GmailClient(google_auth.JOBS)" for c in clients), clients

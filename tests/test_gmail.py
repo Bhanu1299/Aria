@@ -13,14 +13,12 @@ _AUTH_EXPIRED = "Google auth expired. Run: python -m aria.setup google"
 
 def _unconfigured():
     from aria.plugins.productivity.gmail import GmailClient
-    client = GmailClient.__new__(GmailClient)
-    client._service = None
-    return client
+    return GmailClient("personal")
 
 
 def _configured(mock_svc):
     from aria.plugins.productivity.gmail import GmailClient
-    client = GmailClient.__new__(GmailClient)
+    client = GmailClient("personal")
     client._service = mock_svc
     return client
 

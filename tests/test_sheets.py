@@ -209,12 +209,12 @@ def test_old_token_without_sheets_scope_asks_for_reauth(tmp_path):
     token = tmp_path / "google.json"
     token.write_text(json.dumps({"scopes": [google_auth.GMAIL_MODIFY], "token": "t"}))
     with pytest.raises(google_auth.GoogleAuthError, match="python -m aria.setup google"):
-        google_auth.load_credentials([google_auth.SPREADSHEETS], token)
+        google_auth.load_credentials([google_auth.SPREADSHEETS], google_auth.PERSONAL, token)
 
 
 def test_not_connected_asks_for_setup(tmp_path):
     with pytest.raises(google_auth.GoogleAuthError, match="isn't connected"):
-        google_auth.load_credentials([google_auth.SPREADSHEETS], tmp_path / "nope.json")
+        google_auth.load_credentials([google_auth.SPREADSHEETS], google_auth.PERSONAL, tmp_path / "nope.json")
 
 
 def test_auth_error_surfaces_as_sheet_error(monkeypatch):
@@ -278,9 +278,18 @@ def test_setup_without_client_secret_says_where_to_put_it(tmp_path, monkeypatch,
     assert str(tmp_path / "google_client_secret.json") in capsys.readouterr().out
 
 
-def test_setup_passes_account_hint(monkeypatch):
+def test_setup_picks_account(monkeypatch):
     import aria.setup as setup
     seen = []
-    monkeypatch.setattr(google_auth, "run_setup", lambda account=None: seen.append(account) or 0)
-    assert setup.main(["google", "--account", "me@example.com"]) == 0
-    assert seen == ["me@example.com"]
+    monkeypatch.setattr(google_auth, "run_setup", lambda account, email=None: seen.append((account, email)) or 0)
+    assert setup.main(["google"]) == 0
+    assert setup.main(["google", "--account", "jobs"]) == 0
+    assert setup.main(["google", "--account", "jobs", "--email", "j@example.com"]) == 0
+    assert seen == [("personal", None), ("jobs", None), ("jobs", "j@example.com")]
+
+
+def test_setup_rejects_unknown_account(monkeypatch, capsys):
+    import aria.setup as setup
+    monkeypatch.setattr(google_auth, "run_setup", lambda *a, **k: pytest.fail("must not run"))
+    assert setup.main(["google", "--account", "me@example.com"]) == 1
+    assert "--email" in capsys.readouterr().out

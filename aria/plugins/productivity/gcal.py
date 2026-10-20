@@ -10,8 +10,10 @@ from aria.integrations import google_auth
 
 logger = logging.getLogger(__name__)
 
-_NOT_SETUP_MSG = f"Google isn't connected yet. Run: {google_auth.SETUP_CMD}"
-_AUTH_EXPIRED_MSG = f"Google auth expired or is missing permissions. Run: {google_auth.SETUP_CMD}"
+# Calendar is a personal-assistant feature: always the personal account.
+_ACCOUNT = google_auth.PERSONAL
+_NOT_SETUP_MSG = f"Google isn't connected yet. Run: {google_auth.setup_cmd(_ACCOUNT)}"
+_AUTH_EXPIRED_MSG = f"Google auth expired or is missing permissions. Run: {google_auth.setup_cmd(_ACCOUNT)}"
 _SCOPES = [google_auth.CALENDAR]
 
 
@@ -52,7 +54,7 @@ class CalendarClient:
 
     @staticmethod
     def is_configured() -> bool:
-        return google_auth.is_configured()
+        return google_auth.is_configured(_ACCOUNT)
 
     def _get_service(self):
         if self._service is not None:
@@ -60,7 +62,7 @@ class CalendarClient:
         if not self.is_configured():
             return None
         try:
-            self._service = google_auth.build_service("calendar", "v3", _SCOPES)
+            self._service = google_auth.build_service("calendar", "v3", _SCOPES, account=_ACCOUNT)
             return self._service
         except Exception as exc:
             logger.warning("gcal: auth failed: %s", exc)

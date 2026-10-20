@@ -70,7 +70,7 @@ class ProductivityPlugin(_plugin_base.PluginBase):
         from aria.plugins.productivity.cron import CronScheduler
         import aria.ui.notifier as notifier
 
-        gmail = GmailClient()
+        gmail = GmailClient("personal")
         cal = CalendarClient()
         cron = CronScheduler(
             agent=self._agent,
@@ -156,8 +156,10 @@ class ProductivityPlugin(_plugin_base.PluginBase):
         return ToolDescriptor(
             name="gmail_create_draft",
             description=(
-                "Save an email as a Gmail DRAFT — never sends. The default for writing any email: "
-                "outreach, recruiter or cold emails, follow-ups, 'write/draft an email to ...'. "
+                "Save an email as a DRAFT in the user's PERSONAL Gmail — never sends. The default "
+                "for writing any personal email: follow-ups, replies, 'write/draft an email to ...'. "
+                "Job outreach (recruiters, hiring managers, cold emails about a job) goes to "
+                "job_outreach_draft instead. "
                 "Set reply_to_id (from gmail_list) to draft a reply in that thread."
             ),
             input_schema={

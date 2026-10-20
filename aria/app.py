@@ -477,9 +477,13 @@ def main():
 
     # 6b''. GateLLM is the only path to an LLM — say so up front if it's down.
     # Direct routes still work without it.
-    from aria.llm import check_health
+    from aria.llm import autostart, check_health
+    autostart.init()
     _gw_problem = check_health(config.GATEWAY_URL)
-    if _gw_problem:
+    if _gw_problem and autostart.available(config.GATEWAY_URL):
+        print(f"[Aria] GateLLM: {config.GATEWAY_URL} (starts on first LLM call, "
+              f"stops after {config.GATEWAY_IDLE_SECONDS // 60} idle min)")
+    elif _gw_problem:
         print(f"[Aria] GateLLM not reachable at {config.GATEWAY_URL} ({_gw_problem}) — "
               "only direct commands will work until it's running.")
         speaker.say("Heads up: the LLM gateway isn't running, so I can only handle simple commands.")
