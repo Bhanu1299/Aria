@@ -8,7 +8,7 @@ from aria.core.tool import ToolDescriptor, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-_NOT_SETUP_MSG = "Google isn't connected yet. Run: python -m aria.setup gmail"
+_NOT_SETUP_MSG = "Google isn't connected yet. Run: python -m aria.setup google"
 
 
 def _str_prop(desc: str) -> dict:

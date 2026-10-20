@@ -7,18 +7,15 @@ import logging
 import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from pathlib import Path
+
+from aria.integrations import google_auth
 
 logger = logging.getLogger(__name__)
 
-_CREDS_PATH = Path.home() / ".aria" / "credentials" / "google.json"
-_NOT_SETUP_MSG = "Google isn't connected yet. Run: python -m aria.setup gmail"
-_AUTH_EXPIRED_MSG = "Google auth expired. Run: python -m aria.setup gmail"
+_NOT_SETUP_MSG = f"Google isn't connected yet. Run: {google_auth.SETUP_CMD}"
+_AUTH_EXPIRED_MSG = f"Google auth expired or is missing permissions. Run: {google_auth.SETUP_CMD}"
 _RATE_LIMIT_MSG = "Gmail is rate-limited. Try again in a minute."
-_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.labels",
-]
+_SCOPES = [google_auth.GMAIL_MODIFY, google_auth.GMAIL_LABELS]
 
 
 class GmailClient:
@@ -27,7 +24,7 @@ class GmailClient:
 
     @staticmethod
     def is_configured() -> bool:
-        return _CREDS_PATH.exists()
+        return google_auth.is_configured()
 
     def _get_service(self):
         if self._service is not None:
@@ -35,15 +32,7 @@ class GmailClient:
         if not self.is_configured():
             return None
         try:
-            from google.oauth2.credentials import Credentials
-            from google.auth.transport.requests import Request
-            from googleapiclient.discovery import build
-
-            creds = Credentials.from_authorized_user_file(str(_CREDS_PATH), _SCOPES)
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                _CREDS_PATH.write_text(creds.to_json())
-            self._service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+            self._service = google_auth.build_service("gmail", "v1", _SCOPES)
             return self._service
         except Exception as exc:
             logger.warning("gmail: auth failed: %s", exc)
