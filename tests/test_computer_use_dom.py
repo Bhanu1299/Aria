@@ -13,17 +13,18 @@ PAGE TEXT:
 Apple AirPods Pro $249.00 In Stock"""
 
 
-def _mock_groq_response(content: str):
+def _mock_llm_response(content: str):
+    """Stand-in for aria.llm.llm_client — returns an LLMResponse-like object."""
     mock_client = MagicMock()
-    mock_client.chat.completions.create.return_value.choices[0].message.content = content
+    mock_client.complete.return_value = MagicMock(text=content)
     return mock_client
 
 
 def test_dom_decide_returns_click_with_selector():
-    mock_client = _mock_groq_response(
+    mock_client = _mock_llm_response(
         '{"action": "click", "selector": "#add-to-cart-button", "reason": "add to cart"}'
     )
-    with patch("aria.web.computer_use._get_client", return_value=mock_client):
+    with patch("aria.web.computer_use.llm_client", mock_client):
         result = computer_use._dom_decide(
             snapshot=SAMPLE_SNAPSHOT,
             goal="add AirPods Pro to cart",
@@ -36,7 +37,7 @@ def test_dom_decide_returns_click_with_selector():
 
 
 def test_dom_decide_returns_stuck_on_llm_error():
-    with patch("aria.web.computer_use._get_client", side_effect=RuntimeError("no key")):
+    with patch("aria.web.computer_use.llm_client.complete", side_effect=RuntimeError("no key")):
         result = computer_use._dom_decide(
             snapshot=SAMPLE_SNAPSHOT,
             goal="some goal",
@@ -48,8 +49,8 @@ def test_dom_decide_returns_stuck_on_llm_error():
 
 
 def test_dom_decide_returns_stuck_on_invalid_action():
-    mock_client = _mock_groq_response('{"action": "fly", "reason": "invalid"}')
-    with patch("aria.web.computer_use._get_client", return_value=mock_client):
+    mock_client = _mock_llm_response('{"action": "fly", "reason": "invalid"}')
+    with patch("aria.web.computer_use.llm_client", mock_client):
         result = computer_use._dom_decide(
             snapshot=SAMPLE_SNAPSHOT,
             goal="goal",
@@ -61,11 +62,11 @@ def test_dom_decide_returns_stuck_on_invalid_action():
 
 
 def test_dom_decide_passes_history_to_prompt():
-    mock_client = _mock_groq_response(
+    mock_client = _mock_llm_response(
         '{"action": "scroll", "direction": "down", "amount": 400, "reason": "scroll"}'
     )
     history = [{"step": 1, "action": "click", "selector": "#btn", "reason": "test"}]
-    with patch("aria.web.computer_use._get_client", return_value=mock_client):
+    with patch("aria.web.computer_use.llm_client", mock_client):
         result = computer_use._dom_decide(
             snapshot=SAMPLE_SNAPSHOT,
             goal="goal",
@@ -74,17 +75,17 @@ def test_dom_decide_passes_history_to_prompt():
             max_steps=30,
             history=history,
         )
-    call_args = mock_client.chat.completions.create.call_args
-    user_content = call_args[1]["messages"][1]["content"]
+    call_args = mock_client.complete.call_args
+    user_content = call_args[1]["messages"][0]["content"]
     assert "Step 1: click" in user_content
     assert result["action"] == "scroll"
 
 
 def test_dom_research_decide_returns_navigate():
-    mock_client = _mock_groq_response(
+    mock_client = _mock_llm_response(
         '{"action": "navigate", "url": "https://amazon.com", "reason": "go to amazon"}'
     )
-    with patch("aria.web.computer_use._get_client", return_value=mock_client):
+    with patch("aria.web.computer_use.llm_client", mock_client):
         result = computer_use._dom_research_decide(
             snapshot=SAMPLE_SNAPSHOT,
             goal="search amazon for airpods",
@@ -98,10 +99,10 @@ def test_dom_research_decide_returns_navigate():
 
 
 def test_dom_research_decide_returns_done():
-    mock_client = _mock_groq_response(
+    mock_client = _mock_llm_response(
         '{"action": "done", "summary": "AirPods Pro costs $249.", "reason": "found price"}'
     )
-    with patch("aria.web.computer_use._get_client", return_value=mock_client):
+    with patch("aria.web.computer_use.llm_client", mock_client):
         result = computer_use._dom_research_decide(
             snapshot=SAMPLE_SNAPSHOT,
             goal="find airpods price",
@@ -115,7 +116,7 @@ def test_dom_research_decide_returns_done():
 
 
 def test_dom_research_decide_returns_stuck_on_error():
-    with patch("aria.web.computer_use._get_client", side_effect=RuntimeError("api down")):
+    with patch("aria.web.computer_use.llm_client.complete", side_effect=RuntimeError("api down")):
         result = computer_use._dom_research_decide(
             snapshot=SAMPLE_SNAPSHOT,
             goal="goal",
@@ -128,10 +129,10 @@ def test_dom_research_decide_returns_stuck_on_error():
 
 
 def test_dom_research_decide_click_text_is_valid():
-    mock_client = _mock_groq_response(
+    mock_client = _mock_llm_response(
         '{"action": "click_text", "text": "Add to Cart", "reason": "add product"}'
     )
-    with patch("aria.web.computer_use._get_client", return_value=mock_client):
+    with patch("aria.web.computer_use.llm_client", mock_client):
         result = computer_use._dom_research_decide(
             snapshot=SAMPLE_SNAPSHOT,
             goal="add to cart",

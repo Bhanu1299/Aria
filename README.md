@@ -425,8 +425,8 @@ The full design, with more diagrams, is in **[ARCHITECTURE.md](ARCHITECTURE.md)*
 - **On-device:** the daily voice checklist exercises the real mic, TTS, screen permissions and focus behavior, the things mocks can't prove.
 
 ```bash
-venv/bin/python -m pytest -q --ignore=tests/test_transcriber.py \
-  --ignore=tests/test_voice_capture.py --ignore=tests/test_speaker.py   # these need real audio hardware
+venv/bin/python -m pytest -q          # no network, no audio hardware
+venv/bin/python scripts/manual_voice_capture.py   # real-hardware checks live in scripts/manual_*.py
 ```
 
 ## License
