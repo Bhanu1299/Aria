@@ -6,9 +6,12 @@ Playwright sync_api requires all calls to happen on the thread that created
 the browser — so every operation is submitted to the worker via a queue.
 
 Public API:
-  navigate(url, settle_secs)  navigate to url on the browser thread
-  run(fn)                     execute fn(page) on the browser thread, return result
-  close()                     shut down the worker thread and close the browser
+  navigate(url, settle_secs, tab=None)  navigate to url on the browser thread
+  run(fn, tab=None)                     execute fn(page) on the browser thread, return result
+  close()                               shut down the worker thread and close the browser
+
+tab: None is the shared page every tool uses. A name (e.g. "apply") gets its own
+tab in the same window, so a form left open for review survives other browsing.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ _thread_lock = threading.Lock()
 # Playwright objects live only on the worker thread
 _context = None
 _page = None
+_tabs: dict = {}      # name → Page, for work that must not be navigated away
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +64,7 @@ def _open_browser():
                 pass
             _context = None
             _page = None
+            _tabs.clear()
 
     logger.info("Opening visible browser window...")
     _context = get_persistent_context(headless=False)
@@ -69,6 +74,25 @@ def _open_browser():
         logger.debug("Stealth patches applied to new page.")
     logger.info("Visible browser ready.")
     return _page
+
+
+def _get_page(tab):
+    """The shared page (tab=None) or a named tab, opened on first use. Worker thread only."""
+    page = _open_browser()
+    if tab is None:
+        return page
+    named = _tabs.get(tab)
+    if named is not None:
+        try:
+            if not named.is_closed():
+                return named
+        except Exception:
+            pass
+    named = _context.new_page()
+    if _STEALTH:
+        _stealth_sync(named)
+    _tabs[tab] = named
+    return named
 
 
 def _worker():
@@ -85,6 +109,7 @@ def _worker():
                     logger.warning("Error closing browser on shutdown: %s", exc)
             _context = None
             _page = None
+            _tabs.clear()
             break
 
         fn, result_queue = item
@@ -122,27 +147,26 @@ def _submit(fn):
 # Public API
 # ---------------------------------------------------------------------------
 
-def run(fn):
+def run(fn, tab=None):
     """
     Execute fn(page) on the browser worker thread and return the result.
     The browser is opened automatically if not already open.
-    fn receives the active Playwright Page as its only argument.
+    fn receives the Playwright Page (shared, or the named tab) as its only argument.
     """
     def _do():
-        page = _open_browser()
-        return fn(page)
+        return fn(_get_page(tab))
     return _submit(_do)
 
 
-def navigate(url: str, settle_secs: float = 3.0, wait_until: str = "domcontentloaded") -> None:
+def navigate(url: str, settle_secs: float = 3.0, wait_until: str = "domcontentloaded", tab=None) -> None:
     """
-    Navigate the visible browser to url. Blocks until the page loads and
-    the settle delay elapses. Opens the browser if not already open.
+    Navigate the visible browser (or a named tab) to url. Blocks until the page
+    loads and the settle delay elapses. Opens the browser if not already open.
     """
-    logger.info("Navigating to: %s", url)
+    logger.info("Navigating%s to: %s", f" [{tab}]" if tab else "", url)
 
     def _do():
-        page = _open_browser()
+        page = _get_page(tab)
         try:
             page.goto(url, wait_until=wait_until, timeout=30_000)
         except Exception as exc:

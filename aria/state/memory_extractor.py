@@ -131,7 +131,7 @@ def extract(transcript: str, answer: str) -> list[str]:
         )
         resp = llm_client.complete(
             messages=[{"role": "user", "content": prompt}],
-            tier="fast",
+            task="memory_extract",
             system=_SYSTEM_PROMPT,
             max_tokens=512,
         )

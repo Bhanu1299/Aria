@@ -20,6 +20,7 @@ Public API:
 
 from __future__ import annotations
 from aria.llm import gateway_client
+from aria.llm.tasks import tier_for
 
 import logging
 import threading
@@ -87,7 +88,7 @@ def extract(transcript: str, answer: str) -> str:
             answer=answer.strip(),
         )
         response = client.chat.completions.create(
-            model="small",
+            model=tier_for("session_notes"),
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},

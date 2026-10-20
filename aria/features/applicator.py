@@ -1,223 +1,408 @@
+"""applicator.py — the one entry point for job applications: fill → stop for review → you decide.
+
+run_application(job, progress_fn, voice_ask_fn) → spoken one-liner
+  1. fill     Greenhouse adapter / LinkedIn Easy Apply / generic browser loop — never submits
+  2. review   full-page screenshot + markdown summary in ~/.aria/reviews/ (needs-you first);
+              the form stays open in its own browser tab
+  3. record   sheet Status "In review" (+ note in Updates), aria.db application_runs,
+              flight log job entry with the LLM cost of this job, keyed by sheet row
+
+Then, only from the user's own words (handle_followup, a dispatcher pre-handler —
+never an agent tool, so no LLM can decide to submit):
+  "submit it"         → learn the answers the user corrected in the form, click the form's
+                        submit button, verify the confirmation → tracker + sheet "Applied"
+  "I submitted it"    → the user submitted by hand → tracker + sheet "Applied"
+  "skip this job"     → sheet "Skipped"
+Failures → sheet "Needs human" + the reason in Updates.
 """
-applicator.py — Phase 3C: Voice-driven job application for Aria
-
-Uses DOM-based automation for known sites (LinkedIn) and falls back
-to the coordinate-based computer_use loop for unknown sites.
-
-Public API:
-  run_application(job, voice_capture, transcriber, speaker)
-    → "submitted" | "not submitted" | "failed"
-"""
-
 from __future__ import annotations
 
-from aria.core import paths as _aria_paths
-
-import json
 import logging
+import re
 import time
+from datetime import date
 from pathlib import Path
+from typing import Callable, Optional
+from urllib.parse import urlparse
 
-import aria.web.agent_browser as agent_browser
-import aria.web.computer_use as computer_use
-import aria.web.dom_browser as dom_browser
-import aria.features.linkedin_applicator as linkedin_applicator
+import aria.features.answer_bank as answer_bank
 import aria.features.tracker as tracker
+import aria.state.db as db
+import aria.state.memory as memory
+from aria.dispatch.parse import normalize
+from aria.features import ats
+from aria.features.ats import greenhouse
+from aria.features.ats import submit as ats_submit
+from aria.integrations import sheets
+from aria.llm import meter
+from aria.observability import flight_recorder
 
 logger = logging.getLogger(__name__)
 
+PENDING_KEY = "pending_application"
+REVIEWS_DIR = Path.home() / ".aria" / "reviews"
 
-def _load_identity() -> dict:
-    """Read identity.json from the same directory as this file."""
-    path = _aria_paths.IDENTITY_JSON
-    return json.loads(path.read_text())
+_ATS_NAME = {"greenhouse": "Greenhouse", "linkedin": "LinkedIn Easy Apply", "generic": "Application"}
+_SECTIONS = [
+    ("needs_me", "Needs you"),
+    ("llm_draft", "Drafted by the LLM: check the wording"),
+    ("llm_guess", "Guessed by the LLM: check these"),
+    ("bank", "From your answer bank"),
+    ("skipped", "Left empty (optional)"),
+]
+# Corrections to these aren't reusable answers (files, company-specific essays, consents).
+_NO_LEARN_KINDS = {"file", "textarea", "checkbox"}
+
+_SUBMIT_RE = re.compile(
+    r"(?:yes |ok |okay )?(?:go ahead and )?(?:submit|send)(?: it| that| this| the application| my application|"
+    r" the form| this application)?(?: now)?"
+)
+_BY_HAND_RE = re.compile(
+    r"i(?: have|'ve)? (?:already |just )?(?:submitted|sent)(?: it| the application| my application)?|"
+    r"i applied(?: to it)?|mark (?:it|this|the job) (?:as )?applied"
+)
+_SKIP_RE = re.compile(
+    r"skip (?:this |the )?(?:job|application|role|one)|don'?t apply(?: to (?:it|this(?: one)?))?|"
+    r"not applying(?: to (?:it|this(?: one)?))?|pass on (?:it|this(?: one| job)?)"
+)
 
 
-def _capture_voice_confirmation(voice_capture, transcriber) -> str:
-    """
-    Record ~3 seconds of audio and transcribe.
-    speaker.say() must complete BEFORE this is called — it blocks until
-    macOS `say` exits (speaker.py:43), so recording starts after the prompt.
-    Returns transcription string (empty on error).
-    """
-    try:
-        voice_capture.start_recording()
-        time.sleep(3)
-        wav_path = voice_capture.stop_recording()
-        return transcriber.transcribe(wav_path)
-    except Exception as exc:
-        logger.error("Voice confirmation capture failed: %s", exc)
+# ---------------------------------------------------------------------------
+# Pending review (persisted, so a restart doesn't forget what's open)
+# ---------------------------------------------------------------------------
+
+def pending() -> Optional[dict]:
+    p = memory.get_persistent(PENDING_KEY)
+    return p if isinstance(p, dict) and p.get("job") else None
+
+
+def _set_pending(value: Optional[dict]) -> None:
+    memory.set_persistent(PENDING_KEY, value)
+
+
+def _names(job: dict, result=None) -> tuple:
+    company = job.get("company") or (result.company if result else "") or "this company"
+    role = job.get("role") or (result.title if result else "") or "this role"
+    return company, role
+
+
+# ---------------------------------------------------------------------------
+# Records: sheet, aria.db, flight log
+# ---------------------------------------------------------------------------
+
+def _sheet_update(job: dict, status: str, note: str) -> str:
+    """Update the job's sheet row (if it came from the sheet). Returns an error string or ""."""
+    if not job.get("row"):
         return ""
-
-
-def _voice_ask(field_name: str, speaker, voice_capture, transcriber) -> str:
-    """Ask the user a question via voice and return their transcribed answer."""
-    speaker.say(f"I need your {field_name}. Please say it now.")
-    return _capture_voice_confirmation(voice_capture, transcriber)
-
-
-def _is_linkedin_url(url: str) -> bool:
-    """Check if URL is a LinkedIn job page."""
-    return "linkedin.com" in url.lower()
-
-
-def run_application(job: dict, voice_capture, transcriber, speaker) -> str:
-    """
-    Run the full job application flow for the given job.
-
-    1. Navigate the persistent visible browser to the job URL.
-    2. For LinkedIn: use DOM-based linkedin_applicator.
-       For other sites: use coordinate-based computer_use loop.
-    3. When the loop returns "confirm", ask for voice confirmation.
-    4. Submit on "yes", leave the browser open on "no".
-    5. Log every submission to tracker.py (SQLite).
-
-    Returns:
-        "submitted"     — form submitted, row logged in tracker
-        "not submitted" — user declined at confirmation step
-        "failed"        — navigation error, stuck, or no URL
-    """
-    url = job.get("url", "").strip()
-    if not url:
-        logger.error("run_application: job has no URL — %r", job.get("title"))
-        return "failed"
-
-    identity = _load_identity()
-
-    # Navigate the already-open visible browser to the job URL
     try:
-        agent_browser.navigate(url, settle_secs=5.0)
+        sheets.set_status(int(job["row"]), status, note,
+                          company=job.get("company") or None, role=job.get("role") or None)
+        return ""
+    except sheets.SheetError as exc:
+        logger.warning("applicator: sheet update failed: %s", exc)
+        return str(exc)
     except Exception as exc:
-        logger.error("Navigation to job URL failed: %s", exc)
-        return "failed"
+        logger.error("applicator: sheet update failed: %s", exc)
+        return "I couldn't update the sheet."
 
-    context_data = {
-        "name":        identity.get("name", ""),
-        "email":       identity.get("email", ""),
-        "phone":       identity.get("phone", ""),
-        "location":    identity.get("location", ""),
-        "linkedin":    identity.get("linkedin", ""),
-        "github":      identity.get("github", ""),
-        "summary":     identity.get("summary", ""),
-        "education":   identity.get("education", ""),
-        "resume_path": identity.get("resume_path", ""),
-        "experience":  identity.get("experience", []),
-        "skills":      identity.get("skills", []),
-    }
 
-    # ----------------------------------------------------------------
-    # Route: LinkedIn → DOM, others → vision loop
-    # ----------------------------------------------------------------
-    if _is_linkedin_url(url):
-        voice_ask_fn = lambda field: _voice_ask(field, speaker, voice_capture, transcriber)
-        result, data = linkedin_applicator.run_linkedin_application(
-            job, context_data, voice_ask_fn,
+def _finish(job: dict, ats_name: str, stage: str, before: dict, ok: bool = True,
+            note: str = "", needs_me: int = 0, review_path: str = "") -> None:
+    """Cost of this step → flight log (keyed by sheet row) + aria.db application_runs."""
+    usage = meter.since(before)
+    company, role = _names(job)
+    flight_recorder.record_job(job.get("row"), company, role, stage, ats_name, usage, ok, note)
+    conn = None
+    try:
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT INTO application_runs (sheet_row, company, role, url, ats, stage, needs_me, "
+            "cost_usd, review_path, note) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (job.get("row"), company, role, job.get("url", ""), ats_name, stage, needs_me,
+             float(usage.get("cost_usd", 0.0)), review_path, note[:500]),
         )
-        logger.info("linkedin_applicator returned: %r (data=%r)", result, data)
+        conn.commit()
+    except Exception as exc:
+        logger.error("applicator: run record failed: %s", exc)
+    finally:
+        if conn is not None:
+            conn.close()
 
-        # Handle LinkedIn-specific failures
-        if result == "stuck" and isinstance(data, dict):
-            reason = data.get("reason", "")
-            if reason == "not_logged_in":
-                speaker.say("You are not logged in to LinkedIn. Please log in and try again.")
-                return "failed"
 
-    else:
-        # Vision-based fallback with voice-ask loop for unknown sites
-        goal = (
-            f"Fill out the job application form for: "
-            f"{job.get('title', 'this position')} at {job.get('company', 'this company')}. "
-            "Fill every required field using the applicant profile in Context. "
-            "Do NOT click Submit or Apply — return 'confirm' when the form is complete."
+# ---------------------------------------------------------------------------
+# Review artifacts
+# ---------------------------------------------------------------------------
+
+def _slug(text: str, limit: int = 40) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[:limit] or "job"
+
+
+def build_summary(job: dict, result, company: str, role: str, screenshot: str = "") -> str:
+    """Markdown review: job, then every field grouped by source, needs-you first."""
+    ats_name = _ATS_NAME.get(result.ats, result.ats or "Application")
+    lines = [f"# Review: {role} at {company}", ""]
+    lines.append(f"- **Form:** {ats_name}, {result.form_url or job.get('url', '')}")
+    if job.get("row"):
+        lines.append(f"- **Sheet row:** {job['row']}")
+    if screenshot:
+        lines.append(f"- **Screenshot:** {screenshot}")
+    lines.append("- **Status:** filled, NOT submitted. Say \"submit it\", or submit in the browser and "
+                 "say \"I submitted it\". Say \"skip this job\" to skip it.")
+    if result.error:
+        lines.append(f"- **Problem:** {result.error}")
+    lines.append("")
+    for source, title in _SECTIONS:
+        rows = [r for r in result.review if r["source"] == source]
+        if not rows:
+            continue
+        lines.append(f"## {title} ({len(rows)})")
+        lines.append("")
+        if source == "llm_draft":
+            for r in rows:
+                lines.append(f"### {r['label']}")
+                lines.append("")
+                lines.extend(f"> {ln}" if ln else ">" for ln in (r["value"] or "").splitlines())
+                lines.append("")
+            continue
+        lines.append("| Field | Value | Required | Note |")
+        lines.append("|---|---|---|---|")
+        for r in rows:
+            cell = lambda t: str(t or "").replace("|", "\\|").replace("\n", " ")
+            lines.append(f"| {cell(r['label'])} | {cell(r['value'])} | {'yes' if r['required'] else ''} | {cell(r['note'])} |")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _write_review(job: dict, result, company: str, role: str) -> tuple:
+    REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    stem = f"{_slug(company)}_{_slug(role, 30)}_{date.today().isoformat()}"
+    png = REVIEWS_DIR / f"{stem}.png"
+    md = REVIEWS_DIR / f"{stem}.md"
+    shot = ""
+    try:
+        import aria.web.agent_browser as agent_browser
+        agent_browser.run(lambda page: page.screenshot(path=str(png), full_page=True), tab=result.tab)
+        shot = str(png)
+    except Exception as exc:
+        logger.warning("applicator: screenshot failed: %s", exc)
+    md.write_text(build_summary(job, result, company, role, shot))
+    return str(md), shot
+
+
+def spoken_result(result, company: str, role: str) -> str:
+    ats_name = _ATS_NAME.get(result.ats, "Application")
+    n_me, drafts = result.count("needs_me"), result.count("llm_draft")
+    need = ("Nothing needs you." if n_me == 0
+            else "1 field needs you." if n_me == 1 else f"{n_me} fields need you.")
+    out = f"{ats_name} form filled for {role} at {company}. {need}"
+    if drafts:
+        out += f" I drafted {drafts} answer{'s' if drafts != 1 else ''} — check the wording."
+    if result.error:
+        out += " Something went wrong partway, so check it closely."
+    return out + " Say submit it when you're ready."
+
+
+# ---------------------------------------------------------------------------
+# Fill
+# ---------------------------------------------------------------------------
+
+def _is_linkedin(url: str) -> bool:
+    return (urlparse(url).hostname or "").endswith("linkedin.com")
+
+
+def _fill_linkedin(job: dict, voice_ask_fn) -> "ats.FillResult":
+    import aria.features.linkedin_applicator as linkedin_applicator
+    import aria.web.agent_browser as agent_browser
+    import aria.web.dom_browser as dom_browser
+
+    result = ats.FillResult(ats="linkedin", identified="linkedin", form_url=job["url"])
+    agent_browser.navigate(job["url"], settle_secs=5.0)
+    answers = answer_bank.load()["answers"]
+    context = {k: v for k, v in answers.items() if v not in (None, "") and not isinstance(v, dict)}
+    context["resume_path"] = greenhouse.resume_path() or ""
+    status, data = linkedin_applicator.run_linkedin_application(job, context, voice_ask_fn or (lambda _f: ""))
+    if status != "confirm":
+        reason = (data or {}).get("reason", status) if isinstance(data, dict) else status
+        result.error = f"LinkedIn Easy Apply stopped ({reason})."
+        return result
+    result.review = [
+        {"name": e.get("selector", ""), "label": e.get("label", ""), "kind": e.get("field_type", ""),
+         "value": "", "source": "needs_me", "required": True, "note": "still empty"}
+        for e in dom_browser.find_empty_required_fields()
+    ]
+    return result
+
+
+def run_application(
+    job: dict,
+    progress_fn: Optional[Callable[[str], None]] = None,
+    voice_ask_fn: Optional[Callable[[str], str]] = None,
+) -> str:
+    """Fill the application for a job (sheet row dict or {"url": ...}) and stop for review.
+    Returns one spoken sentence or two. Never submits, never raises."""
+    say = progress_fn or (lambda _msg: None)
+    before = meter.snapshot()
+    job = dict(job or {})
+    url = (job.get("url") or "").strip()
+    company, role = _names(job)
+    try:
+        prior = pending()
+        if prior and prior["job"].get("url") != url:
+            pc, pr = _names(prior["job"])
+            say(f"Closing the review for {pr} at {pc} — it stays In review in the sheet.")
+
+        if not url:
+            note = f"no application URL ({job.get('apply_link') or 'empty'})"
+            _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, note)
+            _finish(job, "", "error", before, ok=False, note=note)
+            return f"{role} at {company} has no application link I can open, so I marked it Needs human."
+
+        result = _fill_linkedin(job, voice_ask_fn) if _is_linkedin(url) else ats.fill_application(job, say)
+        if not job.get("company") and result.company:
+            job["company"] = result.company
+        if not job.get("role") and result.title:
+            job["role"] = result.title
+        company, role = _names(job, result)
+
+        if result.error and not result.review:
+            _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, result.error)
+            _finish(job, result.ats, "error", before, ok=False, note=result.error)
+            return f"I couldn't fill the application for {role} at {company}. {result.error}"
+
+        say("Saving a screenshot and the review summary.")
+        md, shot = _write_review(job, result, company, role)
+        _set_pending({
+            "job": {k: job.get(k) for k in ("row", "company", "role", "url", "location")},
+            "ats": result.ats, "tab": result.tab, "form_url": result.form_url,
+            "filled": result.filled, "review_path": md, "screenshot": shot, "started": time.time(),
+        })
+        n_me = result.count("needs_me")
+        sheet_err = _sheet_update(
+            job, sheets.STATUS_IN_REVIEW,
+            f"Aria filled the {_ATS_NAME.get(result.ats, 'application')} form, "
+            f"{n_me} field{'s' if n_me != 1 else ''} need you; not submitted",
         )
-        max_steps = 30
-        current_step = 1
-        voice_asks = 0
-        max_voice_asks = 5
+        _finish(job, result.ats, "filled", before, ok=not result.error,
+                note=result.error or sheet_err, needs_me=n_me, review_path=md)
+        spoken = spoken_result(result, company, role)
+        return spoken + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
+    except Exception as exc:
+        logger.error("run_application failed: %s", exc)
+        _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, f"Aria error: {exc}")
+        _finish(job, "", "error", before, ok=False, note=str(exc))
+        return f"Something went wrong applying to {role} at {company}. I marked it Needs human."
 
-        while True:
-            result, data = computer_use.run_loop(
-                goal, context_data, max_steps=max_steps, start_step=current_step,
-            )
-            logger.info("computer_use.run_loop returned: %r (data=%r)", result, data)
 
-            if result == "needs_input" and voice_asks < max_voice_asks and data:
-                voice_asks += 1
-                field_name = data.get("field", "this field")
-                current_step = data.get("step", current_step) + 1
+# ---------------------------------------------------------------------------
+# After review — only reachable from the user's own words (handle_followup)
+# ---------------------------------------------------------------------------
 
-                answer = _voice_ask(field_name, speaker, voice_capture, transcriber)
-                logger.info("Voice answer for %r: %r", field_name, answer)
+def _same_form(current: str, expected: str) -> bool:
+    a, b = urlparse(current or ""), urlparse(expected or "")
+    return bool(a.hostname) and (a.hostname, a.path.rstrip("/")) == (b.hostname, b.path.rstrip("/"))
 
-                if answer.strip():
-                    try:
-                        computer_use.execute({"action": "type", "text": answer.strip()})
-                        time.sleep(0.5)
-                        computer_use.execute({"action": "key", "key": "Tab"})
-                    except Exception as exc:
-                        logger.warning("Failed to type voice answer: %s", exc)
-                    context_data[field_name] = answer.strip()
-                continue
 
-            break
+def learn_corrections(filled: dict, now: dict) -> int:
+    """Answers the user changed in the form since Aria filled it → answer bank (source "review")."""
+    count = 0
+    for name, f in (filled or {}).items():
+        if f.get("kind") in _NO_LEARN_KINDS:
+            continue
+        current = (now.get(name) or "").strip()
+        if not current or current == (f.get("value") or "").strip():
+            continue
+        if re.fullmatch(r"\+\d{1,4}", current):        # country picker shows only the dial code
+            continue
+        if answer_bank.learn(f.get("label", ""), current, source="review"):
+            count += 1
+    return count
 
-    # ----------------------------------------------------------------
-    # Confirm + Submit (shared by both paths)
-    # ----------------------------------------------------------------
-    if result == "confirm":
-        # Form is filled — ask user for voice confirmation before submitting
-        speaker.say(
-            f"The application for {job.get('title', 'this job')} "
-            f"at {job.get('company', 'this company')} looks complete. "
-            "Say yes to submit, or no to cancel."
-        )
-        response = _capture_voice_confirmation(voice_capture, transcriber)
-        logger.info("Voice confirmation response: %r", response)
 
-        _CONFIRM_WORDS = {"yes", "submit", "go ahead", "do it", "yes submit",
-                          "send it", "yep", "yeah", "sure", "confirm"}
-        if any(w in response.lower() for w in _CONFIRM_WORDS):
-            # Click the submit button
-            submitted_via_dom = dom_browser.click_by_text("Submit application")
-            if not submitted_via_dom:
-                # Fallback: vision-based submit click
-                b64 = computer_use.take_screenshot()
-                if b64 is not None:
-                    submit_action = computer_use.decide(
-                        b64=b64,
-                        goal="Click the final Submit Application or Apply Now button.",
-                        context_data={},
-                        step=1,
-                        max_steps=1,
-                    )
-                    if submit_action.get("action") == "click":
-                        computer_use.execute(submit_action)
+def submit_pending() -> str:
+    p = pending()
+    if not p:
+        return "There's no application waiting for review."
+    job, tab, ats_name = p["job"], p.get("tab"), p.get("ats", "")
+    company, role = _names(job)
+    before = meter.snapshot()
+    try:
+        import aria.web.agent_browser as agent_browser
+        current = agent_browser.run(lambda page: page.url, tab=tab)
+        if not _same_form(current, p.get("form_url", "")):
+            return ("That form isn't open anymore, so I won't submit anything. If you submitted it "
+                    "yourself, say I submitted it.")
 
-            time.sleep(2)  # let the submit request complete
+        learned = 0
+        if ats_name == "greenhouse":
+            try:
+                learned = learn_corrections(p.get("filled") or {}, greenhouse.read_values(list(p.get("filled") or {})))
+            except Exception as exc:
+                logger.warning("applicator: couldn't read corrections: %s", exc)
 
-            # Verify success
-            success = (
-                dom_browser.page_has_text("application was sent")
-                or dom_browser.page_has_text("applied")
-                or dom_browser.page_has_text("successfully submitted")
-            )
-            if success:
-                logger.info("Application confirmed submitted successfully")
-            else:
-                logger.warning("Submit may have failed — confirmation text not found")
+        outcome = ats_submit.submit(tab)
+        saved = f" I saved {learned} answer{'s' if learned != 1 else ''} you changed." if learned else ""
+        if outcome.status == "submitted":
+            tracker.log_application(company, role, ats_name, job.get("url") or p.get("form_url", ""), "applied")
+            sheet_err = _sheet_update(job, sheets.STATUS_APPLIED, "submitted by Aria after your review")
+            _finish(job, ats_name, "submitted", before, review_path=p.get("review_path", ""))
+            _set_pending(None)
+            msg = f"Submitted {role} at {company}. Logged it and marked the sheet Applied.{saved}"
+            return msg + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
+        if outcome.status == "invalid":
+            fields = ", ".join(outcome.missing[:4])
+            return f"The form didn't accept it yet. Still needed: {fields}.{saved}"
+        if outcome.status == "no_button":
+            return ("I can't find the submit button, so nothing was sent. If you submitted it yourself, "
+                    "say I submitted it.")
+        note = "clicked submit but saw no confirmation, check your email"
+        _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, note)
+        _finish(job, ats_name, "submit_unconfirmed", before, ok=False, note=note)
+        return ("I clicked submit but didn't see a confirmation. I marked it Needs human, so check "
+                f"the browser and your email.{saved}")
+    except Exception as exc:
+        logger.error("submit_pending failed: %s", exc)
+        return "Something went wrong submitting. Check the browser before trying again."
 
-            tracker.log_application(
-                company=job.get("company", ""),
-                role=job.get("title", ""),
-                platform=job.get("platform", ""),
-                url=url,
-                status="applied",
-            )
-            return "submitted"
 
-        else:
-            # User said no — browser stays open so they can review the filled form
-            return "not submitted"
+def mark_submitted_by_hand() -> str:
+    p = pending()
+    if not p:
+        return "There's no application waiting for review."
+    job, ats_name = p["job"], p.get("ats", "")
+    company, role = _names(job)
+    before = meter.snapshot()
+    seen = ats_submit.page_confirms(p.get("tab"))
+    tracker.log_application(company, role, ats_name, job.get("url") or p.get("form_url", ""), "applied")
+    sheet_err = _sheet_update(job, sheets.STATUS_APPLIED,
+                              "you submitted it" + (", confirmation seen" if seen else ""))
+    _finish(job, ats_name, "submitted", before, note="by hand", review_path=p.get("review_path", ""))
+    _set_pending(None)
+    return f"Marked {role} at {company} as applied." + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
 
-    # stuck or max_steps — browser stays open so user can finish manually
-    return "failed"
+
+def skip_pending() -> str:
+    p = pending()
+    if not p:
+        return "There's no application waiting for review."
+    job = p["job"]
+    company, role = _names(job)
+    before = meter.snapshot()
+    sheet_err = _sheet_update(job, sheets.STATUS_SKIPPED, "skipped after review")
+    _finish(job, p.get("ats", ""), "skipped", before, review_path=p.get("review_path", ""))
+    _set_pending(None)
+    return f"Skipped {role} at {company}." + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
+
+
+def handle_followup(text: str) -> Optional[str]:
+    """Dispatcher pre-handler: "submit it" / "I submitted it" / "skip this job" while a
+    review is open. Anything else (or nothing pending) → None, so routing continues."""
+    if not pending():
+        return None
+    q = normalize(text)
+    if _SUBMIT_RE.fullmatch(q):
+        return submit_pending()
+    if _BY_HAND_RE.fullmatch(q):
+        return mark_submitted_by_hand()
+    if _SKIP_RE.fullmatch(q):
+        return skip_pending()
+    return None

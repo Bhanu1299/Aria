@@ -1,16 +1,19 @@
+"""Manual check: record 3s from the real mic and transcribe it with Whisper."""
+from __future__ import annotations
+
+import os
 import sys
 import time
 
-sys.path.insert(0, "/Users/bhanuteja/Documents/trae_projects/Aria")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aria.voice.transcriber import Transcriber, load_model
+from aria.voice.transcriber import Transcriber
 from aria.voice.voice_capture import VoiceCapture
 
 print("[TEST] transcriber.py")
 print("First run may download ~140MB Whisper model...")
 
-model = load_model()
-transcriber = Transcriber(model)
+transcriber = Transcriber()  # loads the Whisper model, blocks until ready
 
 capture = VoiceCapture()
 capture.start_recording()

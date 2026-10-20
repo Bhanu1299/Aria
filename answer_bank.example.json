@@ -1,0 +1,36 @@
+{
+  "_readme": "Copy to ~/.aria/answer_bank.json and fill in. Values like <...> count as unset, so Aria leaves those fields for you. Answers you give by voice or fix in review are added to 'learned' automatically.",
+  "answers": {
+    "first_name": "<first name>",
+    "last_name": "<last name>",
+    "full_name": "<full name as you want it on applications>",
+    "legal_name": "<full legal name>",
+    "email": "<you@example.com>",
+    "phone": "<+1 555 555 5555>",
+    "linkedin": "<https://www.linkedin.com/in/you>",
+    "github": "<https://github.com/you>",
+    "website": "<https://your-portfolio.dev>",
+    "location": "<City, ST>",
+    "address": "<street, city, state, zip>",
+    "grad_date": "<May 2026>",
+    "relocation": "<Yes / No>",
+    "sponsorship": "<Yes / No — will you now or in the future require visa sponsorship>",
+    "work_authorization": "<Yes / No — are you authorized to work in the US>",
+    "years_experience": "<number>",
+    "start_date": "<Immediately / a date>",
+    "eeo": {
+      "gender": "<your answer, or: Decline to self-identify>",
+      "race": "<your answer, or: Decline to self-identify>",
+      "hispanic_latino": "<your answer, or: Decline to self-identify>",
+      "veteran": "<your answer, or: I don't wish to answer>",
+      "disability": "<your answer, or: I don't wish to answer>"
+    }
+  },
+  "aliases": {
+    "sponsorship": ["will you require visa support"]
+  },
+  "learned": {},
+  "salary_rule": {
+    "floor": 120000
+  }
+}

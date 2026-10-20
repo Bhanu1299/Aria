@@ -35,6 +35,7 @@ def test_say_writes_wav(tmp_path):
 
 def test_edge_tts_writes_wav(tmp_path):
     """generate_edge_clips() creates WAV files via Edge TTS."""
+    pytest.importorskip("edge_tts")  # optional training dep
     import asyncio
     from generate_tts import generate_edge_clips
 

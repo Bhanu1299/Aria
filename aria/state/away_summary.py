@@ -81,7 +81,7 @@ def generate(session_notes: str, last_search: str) -> str:
         )
         resp = llm_client.complete(
             messages=[{"role": "user", "content": prompt}],
-            tier="fast",
+            task="away_summary",
             system=_SYSTEM_PROMPT,
             max_tokens=128,
         )

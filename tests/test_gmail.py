@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-_NOT_SETUP = "Google isn't connected yet. Run: python -m aria.setup gmail"
-_AUTH_EXPIRED = "Google auth expired. Run: python -m aria.setup gmail"
+_NOT_SETUP = "Google isn't connected yet. Run: python -m aria.setup google"
+_AUTH_EXPIRED = "Google auth expired. Run: python -m aria.setup google"
 
 
 def _unconfigured():

@@ -1,9 +1,10 @@
 """
 linkedin_applicator.py — LinkedIn Easy Apply automation for Aria.
 
-Drives the multi-page LinkedIn Easy Apply modal by filling fields from
-identity.json context_data, uploading resume, and advancing through pages
-until the review/submit screen is reached.
+Drives the multi-page LinkedIn Easy Apply modal by filling fields from the
+user's answer bank (aria/features/answer_bank.py), uploading the resume, and
+advancing through pages until the review/submit screen is reached. Fields the
+bank can't answer are asked by voice and the answer is learned.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import logging
 import os
 import time
 
+import aria.features.answer_bank as answer_bank
 import aria.web.agent_browser as agent_browser
 import aria.web.dom_browser as dom_browser
 
@@ -132,33 +134,35 @@ def _run_linkedin_flow(
                     _upload_resume(selector, resume_path)
                 continue
 
+            # Answers come only from the user's answer bank — no guessed defaults.
+            matched = _bank_answer(label, job)
+
             # Select / dropdown
             if field_type == "select":
-                matched = _match_field_label(label, context_data)
                 if matched:
                     _select_option(selector, matched)
                 elif voice_ask_count < _MAX_VOICE_ASKS:
                     answer = _safe_voice_ask(voice_ask_fn, label)
                     voice_ask_count += 1
                     if answer:
+                        answer_bank.learn(label, answer, source="voice")
                         _select_option(selector, answer)
                 continue
 
             # Radio buttons
             if field_type == "radio":
-                matched = _match_field_label(label, context_data)
                 if matched:
                     _click_radio_option(selector, matched)
                 continue
 
             # Text / textarea
-            matched = _match_field_label(label, context_data)
             if matched:
                 dom_browser.fill_if_empty(selector, matched)
             elif voice_ask_count < _MAX_VOICE_ASKS:
                 answer = _safe_voice_ask(voice_ask_fn, label)
                 voice_ask_count += 1
                 if answer:
+                    answer_bank.learn(label, answer, source="voice")
                     dom_browser.fill_if_empty(selector, answer)
 
         # c. Check for review / submit page FIRST
@@ -472,47 +476,10 @@ def _click_radio_option(selector: str, value: str) -> bool:
 # Helpers
 # -----------------------------------------------------------------------
 
-def _match_field_label(label: str, context_data: dict) -> str | None:
-    """Fuzzy match field label to context_data value. Returns value or None."""
-    low = label.lower()
-
-    # Direct matches
-    if "phone" in low or "mobile" in low:
-        return context_data.get("phone", "")
-    if "email" in low:
-        return context_data.get("email", "")
-    if "first name" in low:
-        name = context_data.get("name", "")
-        return name.split()[0] if name else ""
-    if "last name" in low or "surname" in low:
-        name = context_data.get("name", "")
-        return name.split()[-1] if name else ""
-    if "full name" in low or "your name" in low:
-        return context_data.get("name", "")
-    if "linkedin" in low or "profile url" in low:
-        return context_data.get("linkedin", "")
-    if "location" in low or "city" in low or "where" in low:
-        return context_data.get("location", "")
-    if "website" in low or "github" in low or "portfolio" in low:
-        return context_data.get("github", "")
-    if "summary" in low or "headline" in low or "about" in low:
-        return context_data.get("summary", "")
-
-    # Common questions with safe defaults
-    if "authorized" in low or "eligible" in low or "legally" in low:
-        return "Yes"
-    if "sponsorship" in low or "visa" in low:
-        return "No"
-    if "currently" in low and ("work" in low or "employ" in low):
-        return "No"
-    # Years of experience
-    if "year" in low and "experience" in low:
-        return "3"
-    # Salary / compensation
-    if "salary" in low or "compensation" in low or "pay" in low:
-        return ""  # skip — don't auto-fill salary
-
-    return None
+def _bank_answer(label: str, job: dict) -> str | None:
+    """The user's answer-bank value for this label, or None (never a guess)."""
+    found = answer_bank.lookup(label, job=job)
+    return found.value if found else None
 
 
 def _label_is_resume(label: str) -> bool:

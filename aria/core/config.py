@@ -38,6 +38,18 @@ BROWSER_TIMEOUT: int = int(os.getenv("BROWSER_TIMEOUT", "30"))
 GATEWAY_URL: str = os.getenv("ARIA_GATEWAY_URL", "http://127.0.0.1:8000")
 
 # ---------------------------------------------------------------------------
+# Google + job sheet. GOOGLE_ACCOUNT pre-selects the account on the consent
+# screen (python -m aria.setup google). Tab names are configurable because the
+# sheet has other tabs Aria must not touch.
+# ---------------------------------------------------------------------------
+
+GOOGLE_ACCOUNT: str = os.getenv("GOOGLE_ACCOUNT", "")
+MUSE_SHEET_ID: str = os.getenv("MUSE_SHEET_ID", "")
+MUSE_SHEET_TAB: str = os.getenv("MUSE_SHEET_TAB", "Sheet1")
+MUSE_APPLIED_TAB: str = os.getenv("MUSE_APPLIED_TAB", "Applied")
+MUSE_CONTACTS_TAB: str = os.getenv("MUSE_CONTACTS_TAB", "Contacts")
+
+# ---------------------------------------------------------------------------
 # Coder — agentic code execution
 # ---------------------------------------------------------------------------
 
