@@ -346,6 +346,10 @@ def plan(
             p.note = "agreement — yours to accept"
             continue
 
+        if answer_bank.always_ask(f.label):
+            p.source = "needs_me" if f.required else "skipped"
+            p.note = "you asked to always answer this yourself"
+            continue
         found = answer_bank.lookup(f.label, options=f.options or None, job=job_ctx)
         if found:
             p.value, p.source = found.value, "bank"

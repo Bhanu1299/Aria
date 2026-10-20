@@ -54,7 +54,7 @@ if(r.decisions.length){detail.appendChild(el('h3',null,'Why this job'));var u=el
 r.decisions.slice().reverse().forEach(function(d){var li=el('li',d.picked?'picked':'');li.appendChild(el('b',null,(d.picked?'Picked: ':'Skipped: ')+(d.company||'?')+' — '+(d.role||'?')+' (row '+d.row+')'));
 li.appendChild(el('div','muted small',(d.reasons||[]).join(' · ')));u.appendChild(li)});detail.appendChild(u)}}
 draw();
-function poll(){if(location.hash!=='#live'){return}fetch('/api/runs',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){runs=d.runs;draw();
+function poll(){if(!document.getElementById('live-tab').classList.contains('on')){return}fetch('/api/runs',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){runs=d.runs;draw();
 status.textContent='Updated '+new Date().toLocaleTimeString()+' · polling every 2 s · read-only'}).catch(function(){status.textContent='Live updates paused (dashboard server not reachable).'})}
 setInterval(poll,2000)})();
 """
@@ -206,12 +206,22 @@ h3.sub3{margin:18px 0 8px}details{border-top:1px solid var(--line);padding:6px 0
 #tiers input{width:100%;min-width:260px}button{font:inherit;font-size:12px;padding:4px 10px;border:1px solid var(--line);
 border-radius:5px;background:var(--panel);color:var(--ink);cursor:pointer}button:hover{border-color:var(--accent)}
 .result.ok{color:var(--ok)}.result.bad{color:var(--bad)}code{font-size:12px}
+.summary{font-size:15px;font-weight:600;margin:0 0 12px}.fix{color:var(--warn);margin-top:2px}
+.filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}.filter.on{border-color:var(--accent);color:var(--accent)}
+#apps tr.company td{background:var(--bg);border-top:2px solid var(--line)}#apps tr.role td:first-child{padding-left:18px}
+ul.timeline{margin:6px 0 4px;padding-left:16px}ul.timeline li{margin:2px 0}.warnpill{font-size:11px;color:var(--warn);border:1px solid var(--warn);border-radius:9px;padding:0 6px}
+input.ans{padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink);width:100%;min-width:180px}
+table.answers td:first-child{width:28%}table.answers td:nth-child(2){width:32%}select.scope{max-width:260px;font:inherit;font-size:12px}
+img.crop{display:block;max-width:420px;margin-top:6px;border:1px solid var(--line);border-radius:4px}.guess{white-space:pre-wrap}
+.downwarn{color:var(--bad);margin-left:6px}details.flat{margin-top:16px}details.flat section{border:none;padding:8px 0}
 @media (max-width:820px){.live{grid-template-columns:1fr}}
 """
 
 TABS_JS = r"""
-(function(){function show(){var h=location.hash||'#pipeline';if(!document.querySelector(h+'-tab'))h='#pipeline';
+(function(){function saved(){try{return localStorage.getItem('dash.tab')}catch(e){return null}}
+function show(){var h=location.hash||saved()||'#today';if(!document.querySelector(h+'-tab'))h='#today';
+try{localStorage.setItem('dash.tab',h)}catch(e){}
 document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('on','#'+t.id===h+'-tab')});
 document.querySelectorAll('nav.tabs a').forEach(function(a){a.classList.toggle('on',a.getAttribute('href')===h)})}
-window.addEventListener('hashchange',show);show()})();
+window.addEventListener('hashchange',show);if(!location.hash&&saved())history.replaceState(null,'',saved());show()})();
 """

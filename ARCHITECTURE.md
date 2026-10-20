@@ -477,8 +477,9 @@ aria/
   dashboard/            `python -m aria.dashboard`: pipeline page on 127.0.0.1 —
                         sources (sheet · aria.db · reviews · Coldstart · Gmail, never written) ·
                         model (match by apply link else company+role; stage = furthest evidence) · render ·
-                        tabs (Live run · LLM costs · Settings) · costs (GateLLM call log + flight log) ·
-                        settings (the ONLY writer: GateLLM .env keys + config.yaml tiers, then reload)
+                        today · answers · applications · health · tabs (Live run · Costs · Settings) ·
+                        costs (GateLLM call log + flight log) · writers: settings (GateLLM .env keys +
+                        config.yaml tiers, then reload) and answers (via features/answer_bank edits)
   core/                 agent.py (tool loop) · tool.py (registry) ·
                         plugin.py (contract) · compact.py · config.py · paths.py
   dispatch/             dispatcher · rules + patterns.json · parse (durations, times)

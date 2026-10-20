@@ -49,8 +49,7 @@ def _generic(job: dict, progress_fn) -> FillResult:
     result = FillResult(ats="generic", company=job.get("company", ""), title=job.get("role", ""))
     try:
         agent_browser.navigate(job["url"], settle_secs=3.0)
-        bank = answer_bank.load()["answers"]
-        context = {k: v for k, v in bank.items() if v not in (None, "") and k != "salary_rule"}
+        context = answer_bank.fillable_answers(answer_bank.load(), job)   # never always-ask answers
         goal = (
             f"Fill out the job application form for {job.get('role', 'this role')} at "
             f"{job.get('company', 'this company')} using the applicant answers in Context. "

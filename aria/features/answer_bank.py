@@ -27,13 +27,28 @@ field for the user.
 
 learn(question, answer, source) records an answer the user gave (by voice or in
 review) in aria.db so the same question is answered from the bank next time.
+
+Two more rules, both set from the dashboard and stored in the seed file:
+  always_ask   ["salary_rule", "why do you want to work here", ...] — keys or questions
+               Aria must never fill on its own: lookup → None, and callers mark the
+               field needs_me without an LLM guess (always_ask(label)).
+  job_answers  {"acme | software engineer": {"<question>": "<answer>"}} — answers for
+               one job only, checked before everything else for that job.
+
+Edits (set_answer / set_learned / set_job_answer / set_always_ask / set_salary_floor)
+back the seed file up once before the first write, and log every change in aria.db
+(answer_changes) so undo(change_id) can put the old value back.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
+import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
@@ -145,7 +160,8 @@ _lock = threading.Lock()
 
 
 def _empty() -> dict:
-    return {"answers": {}, "aliases": {}, "learned": {}, "salary_rule": {"floor": DEFAULT_SALARY_FLOOR}}
+    return {"answers": {}, "aliases": {}, "learned": {}, "salary_rule": {"floor": DEFAULT_SALARY_FLOOR},
+            "job_answers": {}, "always_ask": []}
 
 
 def load(path: Optional[Path] = None) -> dict:
@@ -160,7 +176,7 @@ def load(path: Optional[Path] = None) -> dict:
         data = {}
     bank = _empty()
     for k in bank:
-        if isinstance(data.get(k), dict):
+        if isinstance(data.get(k), type(bank[k])):
             bank[k] = data[k]
     bank["learned"] = {**bank["learned"], **_db_learned()}
     return bank
@@ -388,10 +404,52 @@ def _match(bank: dict, q: str) -> tuple[Optional[str], Optional[str], float, str
     return None, None, 0.0, ""
 
 
+def job_key(job: Optional[dict]) -> str:
+    """The key a job's own answers are stored under: "company | role", normalized."""
+    job = job or {}
+    company, role = normalize(job.get("company", "")), normalize(job.get("role", ""))
+    return f"{company} | {role}" if company or role else ""
+
+
+def _always_ask(bank: dict, q: str) -> bool:
+    items = {normalize(i) if " " in str(i) else str(i) for i in bank.get("always_ask") or []}
+    if not items or not q:
+        return False
+    return q in items or (_match(bank, q)[0] or "") in items
+
+
+def always_ask(label: str, path: Optional[Path] = None) -> bool:
+    """True when the user asked to answer this field themselves, every time. Never raises."""
+    try:
+        return _always_ask(load(path), normalize(label))
+    except Exception as exc:
+        logger.error("answer_bank.always_ask(%r) failed: %s", label, exc)
+        return False
+
+
+def fillable_answers(bank: dict, job: Optional[dict] = None) -> dict:
+    """Answers safe to hand a browser agent: set, not marked always-ask, plus this job's
+    own answers (keyed by question) when a job is given."""
+    skip = set(bank.get("always_ask") or [])
+    out = {k: v for k, v in bank["answers"].items()
+           if v not in (None, "") and not isinstance(v, dict) and k not in skip and k != "salary_rule"}
+    if job:
+        out.update({q: v for q, v in (bank.get("job_answers") or {}).get(job_key(job), {}).items()
+                    if str(v).strip() and q not in skip})
+    return out
+
+
 def _lookup(bank: dict, label: str, options, job) -> Optional[Answer]:
     q = normalize(label)
-    if not q:
+    if not q or _always_ask(bank, q):
         return None
+    own = (bank.get("job_answers") or {}).get(job_key(job), {}) if job else {}
+    if q in own and str(own[q]).strip():
+        value = str(own[q]).strip()
+        if options:
+            value = choose_option(value, options)
+        if value:
+            return Answer(key="job", value=value, source="job", matched=q)
     key, question, score, _how = _match(bank, q)
     if key:
         found = _resolve(bank, key, q, score, options, job)
@@ -444,3 +502,209 @@ def learn(question: str, answer: str, source: str = "user") -> bool:
     finally:
         if conn is not None:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Edits (dashboard): seed file + aria.db, every change logged for undo
+# ---------------------------------------------------------------------------
+
+_MISSING = object()
+
+
+def _read_file(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+
+
+def backup_path(path: Optional[Path] = None) -> Optional[Path]:
+    """The backup made before the first dashboard write, if there is one."""
+    path = path or BANK_PATH
+    found = sorted(path.parent.glob(path.stem + ".backup-*.json"))
+    return found[0] if found else None
+
+
+def _write_file(data: dict, path: Path) -> None:
+    """Atomic write; the first write ever backs the original up next to it."""
+    if path.exists() and backup_path(path) is None:
+        shutil.copy2(path, path.with_name(f"{path.stem}.backup-{time.strftime('%Y%m%d-%H%M%S')}.json"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _log_change(target: str, key: str, old, new, job: str = "", source: str = "dashboard") -> int:
+    conn = db.get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO answer_changes (target, key, job, old, new, source) VALUES (?,?,?,?,?,?)",
+            (target, key, job, None if old is _MISSING else json.dumps(old),
+             None if new is _MISSING else json.dumps(new), source))
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def _get_nested(node: dict, key: str):
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return _MISSING
+        node = node[part]
+    return node
+
+
+def _set_nested(node: dict, key: str, value) -> None:
+    parts = key.split(".")
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    if value is _MISSING:
+        node.pop(parts[-1], None)
+    else:
+        node[parts[-1]] = value
+
+
+def _apply(target: str, key: str, value, job: str = "", path: Optional[Path] = None):
+    """Set (or, with _MISSING, remove) one stored value. Returns the previous value."""
+    path = path or BANK_PATH
+    with _lock:
+        if target == "learned":
+            old = _db_learned().get(key, _MISSING)
+            conn = db.get_connection()
+            try:
+                if value is _MISSING:
+                    conn.execute("DELETE FROM learned_answers WHERE question=?", (key,))
+                else:
+                    conn.execute(
+                        "INSERT INTO learned_answers (question, answer, source, updated_at) VALUES (?,?,?,datetime('now')) "
+                        "ON CONFLICT(question) DO UPDATE SET answer=excluded.answer, source=excluded.source, "
+                        "updated_at=excluded.updated_at", (key, str(value), "dashboard"))
+                conn.commit()
+            finally:
+                conn.close()
+            return old
+        data = _read_file(path)
+        if target == "answer":
+            node = data.setdefault("answers", {})
+            old = _get_nested(node, key)
+            _set_nested(node, key, value)
+        elif target == "job":
+            jobs = data.setdefault("job_answers", {})
+            old = jobs.get(job, {}).get(key, _MISSING)
+            if value is _MISSING:
+                jobs.get(job, {}).pop(key, None)
+                if job in jobs and not jobs[job]:
+                    jobs.pop(job)
+            else:
+                jobs.setdefault(job, {})[key] = value
+        elif target == "always_ask":
+            items = list(data.get("always_ask") or [])
+            old = key in items
+            want = value is not _MISSING and bool(value)
+            data["always_ask"] = ([i for i in items if i != key] + ([key] if want else []))
+        elif target == "salary_floor":
+            rule = data.setdefault("salary_rule", {})
+            old = rule.get("floor", _MISSING)
+            if value is _MISSING:
+                rule.pop("floor", None)
+            else:
+                rule["floor"] = int(value)
+        else:
+            raise ValueError(f"unknown target {target!r}")
+        _write_file(data, path)
+        return old
+
+
+def _edit(target: str, key: str, value, job: str = "", source: str = "dashboard",
+          path: Optional[Path] = None) -> int:
+    old = _apply(target, key, value, job, path)
+    new = value
+    if target == "always_ask":
+        new = value is not _MISSING and bool(value)
+    logger.info("answer_bank: %s %r changed (%s)", target, key, source)   # never the value
+    return _log_change(target, key, old, new, job, source)
+
+
+def set_answer(key: str, value: Optional[str], source: str = "dashboard", path: Optional[Path] = None) -> int:
+    """Set a canonical key's value in the seed file ("" / None → unset, left for you)."""
+    if not key or not re.fullmatch(r"[a-z0-9_]+(?:\.[a-z0-9_]+)?", key):
+        raise ValueError(f"bad answer key {key!r}")
+    v = (value or "").strip()
+    return _edit("answer", key, v if v else None, source=source, path=path)
+
+
+def set_learned(question: str, value: Optional[str], source: str = "dashboard") -> int:
+    """Set or (empty value) remove a learned answer in aria.db."""
+    q = normalize(question)
+    if not q:
+        raise ValueError("empty question")
+    v = (value or "").strip()
+    return _edit("learned", q, v if v else _MISSING, source=source)
+
+
+def set_job_answer(job: str, question: str, value: Optional[str], source: str = "dashboard",
+                   path: Optional[Path] = None) -> int:
+    """An answer for one job only (job = job_key(...)); empty value removes it."""
+    q = normalize(question)
+    if not q or not job:
+        raise ValueError("question and job are required")
+    v = (value or "").strip()
+    return _edit("job", q, v if v else _MISSING, job=job, source=source, path=path)
+
+
+def set_always_ask(item: str, on: bool, source: str = "dashboard", path: Optional[Path] = None) -> int:
+    """item: a canonical key (e.g. "salary_rule") or a question (normalized here)."""
+    key = item if re.fullmatch(r"[a-z0-9_]+(?:\.[a-z0-9_]+)?", item or "") else normalize(item)
+    if not key:
+        raise ValueError("empty item")
+    return _edit("always_ask", key, bool(on), source=source, path=path)
+
+
+def set_salary_floor(floor: int, source: str = "dashboard", path: Optional[Path] = None) -> int:
+    floor = int(floor)
+    if not 10_000 <= floor <= 10_000_000:
+        raise ValueError("salary floor must be an annual amount")
+    return _edit("salary_floor", "floor", floor, source=source, path=path)
+
+
+def history(limit: int = 50) -> list:
+    conn = db.get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM answer_changes ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def undo(change_id: int, path: Optional[Path] = None) -> int:
+    """Put back the value from before change `change_id`. Returns the new change's id."""
+    conn = db.get_connection()
+    try:
+        row = conn.execute("SELECT * FROM answer_changes WHERE id=?", (int(change_id),)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise ValueError(f"no change #{change_id}")
+    if row["undone_by"]:
+        raise ValueError(f"change #{change_id} was already undone")
+    old = _MISSING if row["old"] is None else json.loads(row["old"])
+    if row["target"] == "always_ask":
+        old = bool(old) if old is not _MISSING else False
+    new_id = _edit(row["target"], row["key"], old, job=row["job"], source=f"undo #{change_id}", path=path)
+    conn = db.get_connection()
+    try:
+        conn.execute("UPDATE answer_changes SET undone_by=? WHERE id=?", (new_id, int(change_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    return new_id

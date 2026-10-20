@@ -126,10 +126,13 @@ class Job:
     status: str = ""
     outcome: str = ""
     contact: str = ""
+    contact_title: str = ""
+    channels: set = field(default_factory=set)       # "email" / "linkedin"
     email: str = ""
     email_confidence: Optional[float] = None
     email_status: str = ""
     found_date: Optional[datetime] = None
+    deadline: Optional[datetime] = None
     last_update: Optional[datetime] = None
     cost: float = 0.0
     sheet_refs: list = field(default_factory=list)
@@ -223,7 +226,15 @@ def _sheet_job(idx: _Index, row: dict, tab: str, today: datetime) -> Job:
     person = contact_name(who)
     if person:
         job.contact = job.contact or person
+        title = re.search(r"\(([^)]{2,80})\)", _CONTACT_PREFIX.sub("", who))
+        if title and not job.contact_title:
+            job.contact_title = title.group(1).split(",")[0].strip()
         job.add(CONTACT, f"Muse sheet ({ref}) Who to contact", who[:80])
+    text_all = " ".join(text_cells).lower()
+    if "linkedin" in text_all:
+        job.channels.add("linkedin")
+    if "email" in text_all or job.email:
+        job.channels.add("email")
     if re.search(r"(?i)draft ready", " ".join(text_cells)):
         job.add(DRAFT, f"Muse sheet ({ref})", "says a draft is ready")
 
@@ -237,6 +248,9 @@ def _sheet_job(idx: _Index, row: dict, tab: str, today: datetime) -> Job:
     outcome_text = f"{status} {row.get('Outcome', '')}".lower()
     if re.search(r"reject|interview|offer", outcome_text) or (tab == "applied" and row.get("Outcome")):
         job.add(OUTCOME, f"Muse sheet ({ref}) Status/Outcome", (row.get("Outcome") or status)[:80])
+    dl_col = next((k for k in row if "deadline" in k.lower() and row.get(k)), "")
+    if dl_col and not job.deadline:
+        job.deadline = parse_found_date(row[dl_col], today)
     found = parse_found_date(row.get("Source", "") + " " + row.get("Updates", ""), today)
     if found and (job.found_date is None or found < job.found_date):
         job.found_date = found
@@ -302,6 +316,7 @@ def build(sources: dict, now: Optional[datetime] = None) -> dict:
             job.add(EMAIL, "Coldstart contact cache", f"{c['email']} ({c.get('status')}, {c.get('confidence')})")
             if not job.contact:
                 job.contact = c.get("name") or ""
+                job.contact_title = c.get("title") or job.contact_title
             if job.email_confidence is None or (c.get("confidence") or 0) > job.email_confidence:
                 job.email, job.email_confidence, job.email_status = c["email"], c.get("confidence"), c.get("status") or ""
 
@@ -320,6 +335,7 @@ def build(sources: dict, now: Optional[datetime] = None) -> dict:
             continue
         info["job"] = job
         job.threads.append(info)
+        job.channels.add("email")
         job.domains.add(info["domain"])
         if not job.email:
             job.email = info["to"]
@@ -352,8 +368,11 @@ def build(sources: dict, now: Optional[datetime] = None) -> dict:
     for job in idx.jobs:
         _settle(job)
 
+    has_deadline_col = any("deadline" in k.lower() for tab in ("current", "applied")
+                           for row in sheet.get(tab, [])[:1] for k in row)
     return {"jobs": idx.jobs, "unmatched": unmatched, "threads": threads_out, "drafts": drafts_out,
-            "reviews": reviews, "now": now, "sources": sources}
+            "reviews": reviews, "now": now, "sources": sources, "has_deadline_col": has_deadline_col,
+            "coldstart": cs}
 
 
 def _thread_info(t: dict, me: str) -> Optional[dict]:
@@ -368,8 +387,12 @@ def _thread_info(t: dict, me: str) -> Optional[dict]:
                     if not m["from_me"] and not m["bounce"] and m["from"]
                     and m["from"].split("@")[-1] == to.split("@")[1]), None)
     bounced = next((datetime.fromtimestamp(m["ts"]) for m in msgs[1:] if m["bounce"]), None)
+    last = msgs[-1]
+    awaiting_me = bool(replied) and not last["from_me"] and not last["bounce"]
     return {"id": t["id"], "to": to, "domain": to.split("@")[1], "subject": msgs[0]["subject"],
-            "sent": datetime.fromtimestamp(msgs[0]["ts"]), "replied": replied, "bounced": bounced}
+            "sent": datetime.fromtimestamp(msgs[0]["ts"]), "replied": replied, "bounced": bounced,
+            "awaiting_me": awaiting_me, "last": datetime.fromtimestamp(last["ts"]),
+            "reply_subjects": [m["subject"] for m in msgs[1:] if not m["from_me"] and not m["bounce"]]}
 
 
 ROLE_MATCH = 0.6
@@ -435,7 +458,8 @@ def needs_me(model: dict) -> dict:
         if job.runs:
             last = job.runs[-1]
             if last.get("stage") == "filled" and last.get("needs_me"):
-                fields = model["reviews"].get(last.get("review_path", ""), [])
+                review = model["reviews"].get(last.get("review_path", "")) or {}
+                fields = [r["field"] for r in review.get("sections", {}).get("needs_me", [])]
                 out["fields"].append({"job": job, "count": int(last["needs_me"]), "fields": fields,
                                       "review": last.get("review_path", "")})
         if job.status.lower() == "needs human":
@@ -488,3 +512,66 @@ def cost(model: dict) -> dict:
             "per_applied": (total / len(applied)) if applied else None,
             "per_applied_by_aria": (sum(j.cost for j in with_runs) / len(with_runs)) if with_runs else None,
             "applied_by_aria": len(with_runs)}
+
+
+# ---------------------------------------------------------------------------
+# per-job facts the Applications / Today tabs share
+# ---------------------------------------------------------------------------
+
+CLOSED_WORDS = re.compile(r"(?i)reject|offer|not gonna apply|skipped|withdrawn|closed")
+
+
+def applied_date(job: Job) -> Optional[datetime]:
+    return min(job.applied_on) if job.applied_on else None
+
+
+def has_applied(job: Job) -> bool:
+    return any(e.stage == APPLIED for e in job.evidence)
+
+
+def is_closed(job: Job) -> bool:
+    return job.stage_label in ("Rejected", "Offer", "Skipped") or bool(CLOSED_WORDS.search(job.status))
+
+
+def response(job: Job) -> str:
+    if any(t["replied"] for t in job.threads):
+        return "replied " + max(t["replied"] for t in job.threads if t["replied"]).strftime("%Y-%m-%d")
+    if any(t["bounced"] for t in job.threads):
+        return "bounced"
+    if job.stage == OUTCOME:
+        return job.stage_label.lower()
+    return ""
+
+
+def next_action(job: Job, now: datetime, outreach_elsewhere: str = "") -> tuple:
+    """(action, bucket) — bucket: needs_action | waiting | no_contact | replied | closed | todo."""
+    if is_closed(job):
+        return "", "closed"
+    if any(t["awaiting_me"] for t in job.threads):
+        return "Answer their reply", "replied"
+    if any(t["bounced"] for t in job.threads) and not any(t["replied"] for t in job.threads):
+        return "Fix the bounced email", "needs_action"
+    if any(t["replied"] for t in job.threads):
+        return "", "replied"
+    if job.threads:
+        last = max(t["sent"] for t in job.threads)
+        if now - last > timedelta(days=FOLLOW_UP_DAYS):
+            return "Follow up", "needs_action"
+        return "Wait for a reply", "waiting"
+    if job.status.lower() == "needs human":
+        return "Finish the application", "needs_action"
+    if job.stage_label == "Form filled (in review)":
+        return "Review and submit", "needs_action"
+    if not has_applied(job) and job.stage < APPLIED:
+        return "Apply", "todo"
+    if job.drafts:
+        return "Send the draft", "needs_action"
+    if outreach_elsewhere:
+        return f"Outreach already sent for {outreach_elsewhere}", "waiting"
+    if "linkedin" in job.channels and not job.email:   # the sheet planned a LinkedIn note
+        return "Send the LinkedIn note", "needs_action"
+    if not job.contact and not job.email:
+        return "Find a contact", "no_contact"
+    if job.email:
+        return "Draft outreach", "needs_action"
+    return "Find their email", "needs_action"
