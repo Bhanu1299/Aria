@@ -8,6 +8,7 @@ Tables owned here:
   applications     — job application history (migrated from tracker.py)
   memory           — persistent key-value store (owned by memory.py)
   learned_answers  — form answers the user gave by voice / in review (features/answer_bank.py)
+  application_runs — every apply-pipeline step: fill / submit / skip / error, with cost
 """
 
 from __future__ import annotations
@@ -58,6 +59,23 @@ CREATE TABLE IF NOT EXISTS learned_answers (
 )
 """
 
+_CREATE_APPLICATION_RUNS = """
+CREATE TABLE IF NOT EXISTS application_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sheet_row   INTEGER,
+    company     TEXT    NOT NULL DEFAULT '',
+    role        TEXT    NOT NULL DEFAULT '',
+    url         TEXT    NOT NULL DEFAULT '',
+    ats         TEXT    NOT NULL DEFAULT '',
+    stage       TEXT    NOT NULL,
+    needs_me    INTEGER NOT NULL DEFAULT 0,
+    cost_usd    REAL    NOT NULL DEFAULT 0,
+    review_path TEXT    NOT NULL DEFAULT '',
+    note        TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def get_connection() -> sqlite3.Connection:
     """
@@ -73,5 +91,6 @@ def get_connection() -> sqlite3.Connection:
     conn.execute(_CREATE_MEMORY)
     conn.execute(_CREATE_FACTS)
     conn.execute(_CREATE_LEARNED_ANSWERS)
+    conn.execute(_CREATE_APPLICATION_RUNS)
     conn.commit()
     return conn

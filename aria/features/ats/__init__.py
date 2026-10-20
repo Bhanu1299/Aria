@@ -33,6 +33,8 @@ class FillResult:
     company: str = ""
     description: str = ""
     review: list = field(default_factory=list)
+    filled: dict = field(default_factory=dict)   # name → {label, kind, value, source}
+    tab: Optional[str] = None                    # agent_browser tab the form is open in
     error: str = ""
 
     def count(self, source: str) -> int:
@@ -88,7 +90,8 @@ def fill_application(job: dict, progress_fn: Optional[Callable[[str], None]] = N
         from aria.features.ats import greenhouse
         gh = greenhouse.fill(job, progress_fn)
         return FillResult(ats="greenhouse", identified=seen, form_url=gh.form_url, title=gh.title,
-                          company=gh.company, description=gh.description, review=gh.review, error=gh.error)
+                          company=gh.company, description=gh.description, review=gh.review,
+                          filled=gh.filled, tab=greenhouse.TAB, error=gh.error)
     if progress_fn and seen:
         progress_fn(f"That's a {seen.title()} form — I don't have a dedicated filler yet, so I'll do it step by step.")
     result = _generic(job, progress_fn)

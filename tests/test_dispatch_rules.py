@@ -70,11 +70,13 @@ def rules():
     ("what's on my calendar today", "agenda", {"day": "today"}),
     ("what's my schedule for tomorrow", "agenda", {"day": "tomorrow"}),
     ("what do i have tomorrow", "agenda", {"day": "tomorrow"}),
-    ("Aria, apply to the next job from Muse", "job_from_sheet", {}),
-    ("apply to the next job", "job_from_sheet", {}),
+    ("Aria, apply to the next job from Muse", "apply_job", {}),
+    ("apply to the next job", "apply_job", {}),
+    ("apply for the next role in my sheet", "apply_job", {}),
+    ("apply to row 7", "apply_job", {"row": 7}),
+    ("apply to sheet row 12", "apply_job", {"row": 12}),
     ("next job from muse", "job_from_sheet", {}),
     ("what's the next job on my list", "job_from_sheet", {}),
-    ("apply for the next role in my sheet", "job_from_sheet", {}),
 ])
 def test_direct_routes(rules, utterance, tool, params):
     m = rules.match(utterance)
@@ -98,6 +100,8 @@ def test_direct_routes(rules, utterance, tool, params):
     "what's five times eight plus the square root of nine",
     "apply to the next job on linkedin",
     "find me the next job in new york",
+    "submit it",
+    "skip this job",
 ])
 def test_open_ended_commands_go_to_agent(rules, utterance):
     assert rules.match(utterance) is None, utterance
