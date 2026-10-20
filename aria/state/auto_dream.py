@@ -71,7 +71,7 @@ def consolidate() -> None:
                     f"Known facts:\n{json.dumps(facts)}"
                 )},
             ],
-            tier="fast",
+            task="auto_dream",
             system=_SYSTEM_PROMPT,
             max_tokens=600,
         )

@@ -35,7 +35,7 @@ def suggest(intent_type: str, answer: str) -> str:
     try:
         resp = llm_client.complete(
             messages=[{"role": "user", "content": f"You just told the user: {answer}"}],
-            tier="fast",
+            task="prompt_suggest",
             system=_SYSTEM_PROMPT,
             max_tokens=60,
         )

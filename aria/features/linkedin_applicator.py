@@ -145,7 +145,7 @@ def _run_linkedin_flow(
                     answer = _safe_voice_ask(voice_ask_fn, label)
                     voice_ask_count += 1
                     if answer:
-                        answer_bank.learn(label, answer)
+                        answer_bank.learn(label, answer, source="voice")
                         _select_option(selector, answer)
                 continue
 
@@ -162,7 +162,7 @@ def _run_linkedin_flow(
                 answer = _safe_voice_ask(voice_ask_fn, label)
                 voice_ask_count += 1
                 if answer:
-                    answer_bank.learn(label, answer)
+                    answer_bank.learn(label, answer, source="voice")
                     dom_browser.fill_if_empty(selector, answer)
 
         # c. Check for review / submit page FIRST

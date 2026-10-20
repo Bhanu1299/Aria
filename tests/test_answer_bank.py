@@ -7,7 +7,14 @@ from pathlib import Path
 import pytest
 
 import aria.features.answer_bank as ab
+import aria.state.db as db
 from aria.core import paths
+
+
+@pytest.fixture(autouse=True)
+def _tmp_db(tmp_path, monkeypatch):
+    """Learned answers go to aria.db — never the real one in tests."""
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "aria.db"))
 
 
 @pytest.fixture
@@ -139,6 +146,10 @@ def test_exact_option_case_insensitive(bank_file):
     ("Decline to self-identify", ["Male", "Female", "Decline To Self Identify"], "Decline To Self Identify"),
     ("Buffalo", ["Buffalo, NY", "Boston, MA"], "Buffalo, NY"),
     ("Remote", ["Yes", "No"], None),
+    ("United States", ["United Kingdom +44", "United States +1", "United States Minor Outlying Islands +1"], "United States +1"),
+    ("No, I do not have a disability", ["Yes, I have a disability, or have had one in the past",
+     "No, I do not have a disability and have not had one in the past", "I don't wish to answer"],
+     "No, I do not have a disability and have not had one in the past"),
 ])
 def test_choose_option(value, options, expected):
     assert ab.choose_option(value, options) == expected
@@ -146,22 +157,37 @@ def test_choose_option(value, options, expected):
 
 # ── learning ────────────────────────────────────────────────────────────────
 
-def test_learn_then_lookup_and_persists(bank_file):
-    assert ab.learn("Preferred pronouns?", "he/him", path=bank_file) is True
+def test_learn_then_lookup_and_persists_in_db(bank_file):
+    assert ab.learn("Preferred pronouns?", "he/him", source="voice") is True
     assert look("Preferred pronouns", bank_file).value == "he/him"
+    conn = db.get_connection()
+    row = conn.execute("SELECT answer, source FROM learned_answers WHERE question = ?",
+                       ("preferred pronouns",)).fetchone()
+    conn.close()
+    assert (row["answer"], row["source"]) == ("he/him", "voice")
     data = json.loads(bank_file.read_text())
-    assert data["learned"]["preferred pronouns"] == "he/him"
-    assert data["answers"]["first_name"] == "Alex"   # rest of the file untouched
+    assert "preferred pronouns" not in data["learned"]          # the seed file is never written
+    assert data["answers"]["first_name"] == "Alex"
 
 
-def test_learn_creates_file(tmp_path):
-    path = tmp_path / "sub" / "answer_bank.json"
-    assert ab.learn("Favorite color", "blue", path=path)
-    assert ab.lookup("favorite color", path=path).value == "blue"
+def test_learn_overwrites_previous_answer(bank_file):
+    ab.learn("Favorite color", "blue")
+    ab.learn("Favorite color", "green", source="review")
+    assert look("favorite color", bank_file).value == "green"
+
+
+def test_learn_works_without_a_seed_file(tmp_path):
+    assert ab.learn("Favorite color", "blue")
+    assert ab.lookup("favorite color", path=tmp_path / "missing.json").value == "blue"
+
+
+def test_db_learned_beats_seed_learned(bank_file):
+    ab.learn("Why do you want to work here?", "Updated answer.")
+    assert look("Why do you want to work here", bank_file).value == "Updated answer."
 
 
 def test_learn_ignores_empty(bank_file):
-    assert ab.learn("Anything", "   ", path=bank_file) is False
+    assert ab.learn("Anything", "   ") is False
 
 
 def test_corrupt_file_degrades_to_empty(tmp_path, monkeypatch):
@@ -264,7 +290,7 @@ def test_learned_answer_used_when_matched_key_is_unset(tmp_path, monkeypatch):
     path.write_text(json.dumps({"answers": {"sponsorship": None}}))
     q = "Will you now or in the future require sponsorship?"
     assert ab.lookup(q, path=path) is None
-    ab.learn(q, "Yes", path=path)
+    ab.learn(q, "Yes")
     assert ab.lookup(q, path=path).value == "Yes"
 
 
@@ -272,3 +298,17 @@ def test_matched_key_ignores_values(bank_file):
     assert ab.matched_key("Are you willing to relocate?", path=bank_file) == "relocation"   # blank value
     assert ab.matched_key("Desired salary", path=bank_file) == "salary_rule"
     assert ab.matched_key("What's your favorite movie?", path=bank_file) is None
+
+
+@pytest.mark.parametrize("label", [
+    "What is the address from which you plan on working? If you would need to relocate, tell us where.",
+    "Which visa would you need us to sponsor?",
+    "Please describe your work authorization status",
+])
+def test_yes_no_keys_ignore_open_questions(bank_file, label):
+    assert look(label, bank_file) is None
+
+
+def test_yes_no_keys_still_match_yes_no_questions(bank_file):
+    assert look("Are you currently based in or willing to relocate to the Bay Area?", bank_file) is None  # blank relocation
+    assert look("Do you now or will you in the future require sponsorship?", bank_file).value == "Yes"

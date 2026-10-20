@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any, Callable
+
+from aria.llm import meter
+from aria.llm.tasks import FRONTIER, tier_for
 
 from aria.llm.base import (
     AuthError, GatewayError, GatewayUnavailable, LLMResponse, Provider, RateLimitError, ToolCall,
@@ -83,9 +87,50 @@ class LLMClient:
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-        tier: str = "smart",
+        tier: str | None = None,
         max_tokens: int = 1024,
         system: str | None = None,
+        task: str | None = None,
     ) -> LLMResponse:
-        chain = self._chains.get(tier) or self._chains["smart"]
+        """task (preferred) looks the tier up in aria.llm.tasks.TASK_TIERS; tier is the raw override."""
+        if task is not None:
+            tier = tier_for(task)
+        tier = tier or "smart"
+        chain = self._chains.get(tier)
+        if chain is None:
+            logger.warning("[LLM] no chain for tier %r — using smart", tier)
+            chain = self._chains["smart"]
         return chain.complete(messages, tools, max_tokens, system)
+
+    def complete_checked(
+        self,
+        task: str,
+        messages: list[dict],
+        validate: Callable[[str], Any],
+        system: str | None = None,
+        max_tokens: int = 1024,
+    ) -> tuple[LLMResponse, Any]:
+        """Run `task` on its tier; validate(text) returns the parsed value or None.
+
+        Invalid output on a non-frontier tier is retried ONCE on frontier, and the
+        escalation is counted in aria.llm.meter. Returns (last response, value | None).
+        """
+        tier = tier_for(task)
+        resp = self.complete(messages, tier=tier, max_tokens=max_tokens, system=system)
+        value = _validated(validate, resp)
+        if value is not None or tier == FRONTIER:
+            return resp, value
+        logger.warning("[LLM] task=%s: %s output failed validation — escalating to frontier", task, tier)
+        meter.add_escalation()
+        resp = self.complete(messages, tier=FRONTIER, max_tokens=max_tokens, system=system)
+        return resp, _validated(validate, resp)
+
+
+def _validated(validate: Callable[[str], Any], resp: LLMResponse) -> Any:
+    if resp.stop_reason == "error":
+        return None
+    try:
+        return validate(resp.text or "")
+    except Exception as exc:
+        logger.debug("[LLM] validator raised: %s", exc)
+        return None

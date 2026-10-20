@@ -151,7 +151,7 @@ def run_application(job: dict, voice_capture, transcriber, speaker) -> str:
                 logger.info("Voice answer for %r: %r", field_name, answer)
 
                 if answer.strip():
-                    answer_bank.learn(field_name, answer)
+                    answer_bank.learn(field_name, answer, source="voice")
                     try:
                         computer_use.execute({"action": "type", "text": answer.strip()})
                         time.sleep(0.5)

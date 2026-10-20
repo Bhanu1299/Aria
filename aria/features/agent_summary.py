@@ -34,7 +34,7 @@ def summarize(intent_type: str, raw_answer: str) -> str:
             messages=[
                 {"role": "user", "content": f"Intent: {intent_type}\nResult: {raw_answer[:500]}"},
             ],
-            tier="cheap",
+            task="agent_summary",
             system=_SYSTEM_PROMPT,
             max_tokens=60,
         )

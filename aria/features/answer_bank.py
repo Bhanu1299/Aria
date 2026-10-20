@@ -1,13 +1,16 @@
 """features/answer_bank.py — the user's answers to application-form questions.
 
-File: ~/.aria/answer_bank.json (outside the repo; template: answer_bank.example.json)
+Seed (hand-edited): ~/.aria/answer_bank.json (template: answer_bank.example.json)
 
     {
-      "answers": {"first_name": "...", "sponsorship": "...", "eeo": {"gender": "..."}, ...},
+      "answers": {"first_name": "...", "sponsorship": null, "eeo": {"gender": "..."}, ...},
       "aliases": {"sponsorship": ["do you need visa sponsorship", ...]},   # extends defaults
-      "learned": {"<normalized question>": "<answer>"},
       "salary_rule": {"floor": 120000}
     }
+
+Learned answers live in aria.db (table learned_answers), not in the seed file — the
+seed's own "learned" block, if any, is read as a lower-priority starting set.
+null / "" / "<placeholder>" = unset: the field is left for the user (needs_me).
 
 lookup(label, options=None, job=None) → Answer | None. Order:
     1. exact learned        a question the user answered before, word for word
@@ -22,8 +25,8 @@ contact fields). A matched key with no value, a placeholder value ("<…>"), or 
 value that fits none of the field's options returns None — the caller leaves the
 field for the user.
 
-learn(question, answer) records an answer the user gave (by voice or in review)
-so the same question is answered from the bank next time.
+learn(question, answer, source) records an answer the user gave (by voice or in
+review) in aria.db so the same question is answered from the bank next time.
 """
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ from typing import Optional, Sequence
 
 from rapidfuzz import fuzz, process
 
+import aria.state.db as db
 from aria.core import paths as _aria_paths
 
 logger = logging.getLogger(__name__)
@@ -98,7 +102,17 @@ DEFAULT_PATTERNS: list[tuple[str, str]] = [
     ("eeo.gender", r"^gender\b|\bgender identity\b|^sex$"),
     ("eeo.veteran", r"\bveteran"),
     ("eeo.disability", r"\bdisabilit"),
+    ("eeo.transgender", r"\btransgender"),
+    ("eeo.lgbtq", r"\blgbtq|\bsexual orientation"),
+    ("eeo.pronouns", r"\bpronoun"),
 ]
+
+# Keys whose answers are yes/no: their patterns only apply to yes/no questions, so
+# "What is the address ... if you relocate ..." doesn't get "Yes".
+YES_NO_KEYS = {"relocation", "sponsorship", "work_authorization", "conflict_of_interest",
+               "outside_business", "hybrid_onsite_ok", "eeo.hispanic_latino", "eeo.transgender",
+               "eeo.lgbtq"}
+_OPEN_QUESTION = re.compile(r"^(?:what|where|which|when|how|who|why|please (?:describe|explain|list|provide)|describe|explain|list)\b")
 
 _PLACEHOLDER = re.compile(r"^<.*>$")
 _YES = {"yes", "y", "true"}
@@ -134,7 +148,9 @@ def _empty() -> dict:
     return {"answers": {}, "aliases": {}, "learned": {}, "salary_rule": {"floor": DEFAULT_SALARY_FLOOR}}
 
 
-def load(path: Path = BANK_PATH) -> dict:
+def load(path: Optional[Path] = None) -> dict:
+    """Seed file + learned answers from aria.db (db wins on the same question)."""
+    path = path or BANK_PATH
     try:
         data = json.loads(path.read_text())
     except FileNotFoundError:
@@ -146,14 +162,21 @@ def load(path: Path = BANK_PATH) -> dict:
     for k in bank:
         if isinstance(data.get(k), dict):
             bank[k] = data[k]
+    bank["learned"] = {**bank["learned"], **_db_learned()}
     return bank
 
 
-def _save(bank: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(bank, indent=2, ensure_ascii=False))
-    tmp.replace(path)
+def _db_learned() -> dict:
+    conn = None
+    try:
+        conn = db.get_connection()
+        return {r["question"]: r["answer"] for r in conn.execute("SELECT question, answer FROM learned_answers")}
+    except Exception as exc:
+        logger.error("answer_bank: can't read learned answers: %s", exc)
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _identity_answers() -> dict:
@@ -247,6 +270,11 @@ def _salary_for(bank: dict, job: Optional[dict]) -> Optional[str]:
 # Options
 # ---------------------------------------------------------------------------
 
+def _core(option: str) -> str:
+    """Option text without a trailing dial code or parenthetical."""
+    return re.sub(r"\s*(?:\+\d[\d ]*|\([^)]*\))$", "", normalize(option)).strip()
+
+
 def choose_option(value: str, options: Sequence[str]) -> Optional[str]:
     """The option that means `value`, or None. Never picks an unrelated option."""
     opts = [o for o in options if str(o).strip()]
@@ -256,6 +284,9 @@ def choose_option(value: str, options: Sequence[str]) -> Optional[str]:
     for o in opts:
         if normalize(o) == nv:
             return o
+    core = [o for o in opts if _core(o) == nv]           # "United States +1", "Master's (MS)"
+    if len(core) == 1:
+        return core[0]
     if nv in _YES | _NO:
         want = _YES if nv in _YES else _NO
         hits = [o for o in opts if normalize(o).split(" ")[0] in want]
@@ -328,7 +359,7 @@ def lookup(
     label: str,
     options: Optional[Sequence[str]] = None,
     job: Optional[dict] = None,
-    path: Path = BANK_PATH,
+    path: Optional[Path] = None,
 ) -> Optional[Answer]:
     """Answer for a form field label from the user's bank, or None. Never raises."""
     try:
@@ -347,7 +378,7 @@ def _match(bank: dict, q: str) -> tuple[Optional[str], Optional[str], float, str
     if q in aliases:
         return aliases[q], None, 100.0, "alias"
     for key, pattern in DEFAULT_PATTERNS:
-        if re.search(pattern, q):
+        if re.search(pattern, q) and not (key in YES_NO_KEYS and _OPEN_QUESTION.match(q)):
             return key, None, 100.0, "pattern"
     choices = {f"a:{a}": a for a in aliases}
     choices.update({f"l:{n}": n for n in learned})
@@ -374,7 +405,7 @@ def _lookup(bank: dict, label: str, options, job) -> Optional[Answer]:
     return None
 
 
-def matched_key(label: str, path: Path = BANK_PATH) -> Optional[str]:
+def matched_key(label: str, path: Optional[Path] = None) -> Optional[str]:
     """The canonical key a label maps to, even when the user hasn't answered it yet.
 
     Lets callers tell "a question we know but have no answer for" (leave it for
@@ -388,18 +419,31 @@ def matched_key(label: str, path: Path = BANK_PATH) -> Optional[str]:
         return None
 
 
-def learn(question: str, answer: str, path: Path = BANK_PATH) -> bool:
-    """Remember the user's answer to a question. Returns False if nothing was saved."""
+def learn(question: str, answer: str, source: str = "user") -> bool:
+    """Remember the user's answer to a question in aria.db. False if nothing was saved.
+
+    source: "voice" | "review" | "user" — where the answer came from.
+    """
     q, a = normalize(question), (answer or "").strip()
     if not q or not a:
         return False
+    conn = None
     try:
         with _lock:
-            bank = load(path)
-            bank["learned"][q] = a
-            _save(bank, path)
-        logger.info("answer_bank: learned %r → %r", q, a)
+            conn = db.get_connection()
+            conn.execute(
+                "INSERT INTO learned_answers (question, answer, source, updated_at) "
+                "VALUES (?, ?, ?, datetime('now')) "
+                "ON CONFLICT(question) DO UPDATE SET answer=excluded.answer, "
+                "source=excluded.source, updated_at=excluded.updated_at",
+                (q, a, source),
+            )
+            conn.commit()
+        logger.info("answer_bank: learned %r → %r (%s)", q, a, source)
         return True
     except Exception as exc:
         logger.error("answer_bank.learn(%r) failed: %s", question, exc)
         return False
+    finally:
+        if conn is not None:
+            conn.close()
