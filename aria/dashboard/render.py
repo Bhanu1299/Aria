@@ -136,9 +136,9 @@ def _needs_me(mdl: dict) -> str:
     block("Form fields marked needs_me", n["fields"], field_item, _down(srcs, "aria_db"))
     block("Rows marked Needs human", n["needs_human"],
           lambda i: f'{_job_label(i["job"])} <span class="muted small">({e(i["where"])})</span>', _down(srcs, "sheet"))
-    block(f"Drafts not sent after {m.DRAFT_STALE_DAYS} days", n["stale_drafts"],
+    block(f"Drafts not sent after {m.DRAFT_STALE_DAYS} days (last {m.NEEDS_ME_WINDOW_DAYS})", n["stale_drafts"],
           lambda d: thread_item(d | {"id": d["thread_id"]}, f'draft from {_date(d["created"])}'), _down(srcs, "gmail"))
-    block(f"Sent, no reply after {m.FOLLOW_UP_DAYS} days — follow-up due", n["follow_ups"],
+    block(f"Sent, no reply after {m.FOLLOW_UP_DAYS} days — follow-up due (last {m.NEEDS_ME_WINDOW_DAYS})", n["follow_ups"],
           lambda t: thread_item(t, f'sent {_date(t["sent"])}'), _down(srcs, "gmail"))
     block("Bounced emails", n["bounces"], lambda t: thread_item(t, f'bounced {_date(t["bounced"])}'),
           _down(srcs, "gmail"))
@@ -243,7 +243,8 @@ th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap}#jobs th
 .chips{display:flex;flex-wrap:wrap;gap:6px}.chip{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
 .chip.ok{color:var(--ok)}.chip.bad{color:var(--bad);border-color:var(--bad)}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-.card{border:1px solid var(--line);border-radius:6px;padding:10px 12px}.card ul{margin:0;padding-left:18px}
+.card{border:1px solid var(--line);border-radius:6px;padding:10px 12px;overflow-wrap:anywhere;min-width:0}
+td{overflow-wrap:anywhere}.card ul{margin:0;padding-left:18px}
 .card li{margin:3px 0}.count{color:var(--muted);font-weight:400}
 .stats{display:flex;flex-wrap:wrap;gap:12px}.stat{min-width:150px;border:1px solid var(--line);border-radius:6px;padding:10px 12px}
 .stat .v{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}.stat .l{color:var(--muted);font-size:12px}

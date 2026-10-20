@@ -22,12 +22,14 @@ FOUND, APPLYING, FILLED, APPLIED, CONTACT, EMAIL, DRAFT, SENT, REPLIED, OUTCOME 
 
 DRAFT_STALE_DAYS = 2
 FOLLOW_UP_DAYS = 7
+NEEDS_ME_WINDOW_DAYS = 60   # older drafts / unanswered sends aren't actionable any more
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _FREEMAIL = {"gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com",
              "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com", "ymail.com"}
-_AUTOMATED = re.compile(r"amazonses\.com$|user-subscription\.com$|(^|\.)bounce\.|mailer-daemon|"
-                        r"^no-?reply@|^notifications?@", re.I)
+_AUTOMATED = re.compile(r"amazonses\.com$|user-subscription\.com$|[@.]bounces?\.|mailer-daemon|"
+                        r"^no-?reply@|^notifications?@|[@.]inbound\.", re.I)
+_REPLY_SUBJECT = re.compile(r"(?i)^\s*(re|fwd?|fw)\s*:")
 _SUFFIXES = re.compile(r"\b(inc|llc|ltd|corp|corporation|co|company|technologies|technology|labs|group|"
                        r"holdings|the)\b\.?", re.I)
 _NO_CONTACT = re.compile(r"(?i)^(via |no |none|n/?a|-|tbd|apply|ats|email draft|draft|gmail draft|inferred)")
@@ -357,7 +359,7 @@ def build(sources: dict, now: Optional[datetime] = None) -> dict:
 def _thread_info(t: dict, me: str) -> Optional[dict]:
     """Outreach thread: its first message is mine, not a reply, to a company address."""
     msgs = t.get("messages", [])
-    if not msgs or not msgs[0]["from_me"] or msgs[0]["is_reply"]:
+    if not msgs or not msgs[0]["from_me"] or msgs[0]["is_reply"] or _REPLY_SUBJECT.match(msgs[0]["subject"]):
         return None
     to = next((a for a in msgs[0]["to"] if a != me and is_company_address(a)), "")
     if not to:
@@ -438,13 +440,15 @@ def needs_me(model: dict) -> dict:
                                       "review": last.get("review_path", "")})
         if job.status.lower() == "needs human":
             out["needs_human"].append({"job": job, "where": ", ".join(job.sheet_refs)})
+    window = timedelta(days=NEEDS_ME_WINDOW_DAYS)
     for d in model["drafts"]:
-        if now - d["created"] > timedelta(days=DRAFT_STALE_DAYS):
+        if timedelta(days=DRAFT_STALE_DAYS) < now - d["created"] <= window:
             out["stale_drafts"].append(d)
     for t in model["threads"]:
         if t["bounced"]:
-            out["bounces"].append(t)
-        elif not t["replied"] and now - t["sent"] > timedelta(days=FOLLOW_UP_DAYS):
+            if now - t["bounced"] <= window:
+                out["bounces"].append(t)
+        elif not t["replied"] and timedelta(days=FOLLOW_UP_DAYS) < now - t["sent"] <= window:
             out["follow_ups"].append(t)
     out["follow_ups"].sort(key=lambda t: t["sent"])
     return out
