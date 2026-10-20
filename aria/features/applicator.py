@@ -18,6 +18,7 @@ import logging
 import time
 from pathlib import Path
 
+import aria.features.answer_bank as answer_bank
 import aria.web.agent_browser as agent_browser
 import aria.web.computer_use as computer_use
 import aria.web.dom_browser as dom_browser
@@ -150,6 +151,7 @@ def run_application(job: dict, voice_capture, transcriber, speaker) -> str:
                 logger.info("Voice answer for %r: %r", field_name, answer)
 
                 if answer.strip():
+                    answer_bank.learn(field_name, answer)
                     try:
                         computer_use.execute({"action": "type", "text": answer.strip()})
                         time.sleep(0.5)
