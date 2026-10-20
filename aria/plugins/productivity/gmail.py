@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _NOT_SETUP_MSG = f"Google isn't connected yet. Run: {google_auth.SETUP_CMD}"
 _AUTH_EXPIRED_MSG = f"Google auth expired or is missing permissions. Run: {google_auth.SETUP_CMD}"
 _RATE_LIMIT_MSG = "Gmail is rate-limited. Try again in a minute."
-_SCOPES = [google_auth.GMAIL_MODIFY, google_auth.GMAIL_LABELS]
+_SCOPES = [google_auth.GMAIL_MODIFY, google_auth.GMAIL_LABELS, google_auth.GMAIL_COMPOSE]
 
 
 class GmailClient:
@@ -172,6 +172,39 @@ class GmailClient:
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
             svc.users().messages().send(userId="me", body={"raw": raw}).execute()
             return "Sent."
+        except Exception as exc:
+            return _handle_api_error(exc)
+
+    def create_draft(self, to: str, subject: str, body: str, cc: str = "", reply_to_id: str = "") -> str:
+        """Save a draft in Gmail. Never sends. reply_to_id threads it as a reply to that email."""
+        if not self.is_configured():
+            return _NOT_SETUP_MSG
+        svc = self._get_service()
+        if svc is None:
+            return _AUTH_EXPIRED_MSG
+        try:
+            msg = MIMEText(body)
+            message: dict = {}
+            if reply_to_id:
+                orig = svc.users().messages().get(
+                    userId="me", id=reply_to_id, format="metadata",
+                    metadataHeaders=["From", "Subject", "Message-ID"],
+                ).execute()
+                headers = {h["name"]: h["value"] for h in orig.get("payload", {}).get("headers", [])}
+                to = to or headers.get("From", "")
+                subject = subject or "Re: " + headers.get("Subject", "")
+                if headers.get("Message-ID"):
+                    msg["In-Reply-To"] = headers["Message-ID"]
+                    msg["References"] = headers["Message-ID"]
+                if orig.get("threadId"):
+                    message["threadId"] = orig["threadId"]
+            msg["to"] = to
+            msg["subject"] = subject
+            if cc:
+                msg["cc"] = cc
+            message["raw"] = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            svc.users().drafts().create(userId="me", body={"message": message}).execute()
+            return f"Draft saved for {to}: {subject}. It's in your Gmail drafts; nothing was sent."
         except Exception as exc:
             return _handle_api_error(exc)
 
