@@ -273,7 +273,7 @@ def test_imessage_recent_reads_text_and_attributed_body(tmp_path):
 
 def test_gmail_recent_messages_pages_and_skips_known(tmp_path):
     from aria.plugins.productivity.gmail import GmailClient
-    client = GmailClient()
+    client = GmailClient("personal")
     svc = MagicMock()
     pages = [{"messages": [{"id": "a"}, {"id": "b"}], "nextPageToken": "t"},
              {"messages": [{"id": "c"}]}]

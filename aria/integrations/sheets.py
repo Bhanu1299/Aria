@@ -16,6 +16,8 @@ Rows move when the sheet is sorted, so set_status() re-finds the job by
 (Company, Role) when the given row no longer holds it.
 
 Raises SheetError (str is safe to speak) — callers turn it into a reply.
+
+Always the jobs Google account (GOOGLE_JOBS_ACCOUNT) — never the personal one.
 """
 from __future__ import annotations
 
@@ -97,7 +99,8 @@ class JobSheet:
             raise SheetError("No job sheet configured. Set MUSE_SHEET_ID in .env.")
         if self._service is None:
             try:
-                self._service = google_auth.build_service("sheets", "v4", [google_auth.SPREADSHEETS])
+                self._service = google_auth.build_service(
+                    "sheets", "v4", [google_auth.SPREADSHEETS], account=google_auth.JOBS)
             except google_auth.GoogleAuthError as exc:
                 raise SheetError(str(exc)) from exc
         return self._service.spreadsheets().values()

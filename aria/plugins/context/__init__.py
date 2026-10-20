@@ -106,7 +106,7 @@ def _default_syncer(store):
     from aria.plugins.messaging.imessage import iMessageClient
     from aria.plugins.productivity.gcal import CalendarClient
     from aria.plugins.productivity.gmail import GmailClient
-    return ContextSync(store, gmail=GmailClient(), calendar=CalendarClient(),
+    return ContextSync(store, gmail=GmailClient("personal"), calendar=CalendarClient(),
                        imessage=iMessageClient(), read_contacts=read_contacts)
 
 

@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import httpx
 
-from aria.llm import meter
+from aria.llm import autostart, meter
 from aria.llm.base import GatewayError, GatewayUnavailable, LLMResponse, Provider, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -109,12 +109,24 @@ def _float_header(headers: httpx.Headers, name: str) -> float:
         return 0.0
 
 
+def _send(client: httpx.Client, payload: dict) -> httpx.Response:
+    """POST, starting GateLLM on demand if it's down (one retry)."""
+    try:
+        return client.post("/v1/chat/completions", json=payload)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        if not autostart.ensure_running(str(client.base_url)):
+            raise GatewayUnavailable(f"GateLLM not reachable at {client.base_url}: {exc}") from exc
+    try:
+        return client.post("/v1/chat/completions", json=payload)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise GatewayUnavailable(f"GateLLM not reachable at {client.base_url}: {exc}") from exc
+
+
 def _post(client: httpx.Client, payload: dict) -> tuple[dict, dict]:
     """POST one chat completion. → (response json, meta). Tallies the meter."""
     try:
-        resp = client.post("/v1/chat/completions", json=payload)
-    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-        raise GatewayUnavailable(f"GateLLM not reachable at {client.base_url}: {exc}") from exc
+        with autostart.in_flight():
+            resp = _send(client, payload)
     except httpx.TransportError as exc:
         raise GatewayError(f"GateLLM transport error: {exc}") from exc
     if resp.status_code >= 400:

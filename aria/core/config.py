@@ -36,14 +36,21 @@ BROWSER_TIMEOUT: int = int(os.getenv("BROWSER_TIMEOUT", "30"))
 # ---------------------------------------------------------------------------
 
 GATEWAY_URL: str = os.getenv("ARIA_GATEWAY_URL", "http://127.0.0.1:8000")
+# Aria starts GateLLM on the first LLM call that finds it down, and stops it
+# after GATEWAY_IDLE_SECONDS without calls (aria/llm/autostart.py).
+GATEWAY_AUTOSTART: bool = os.getenv("ARIA_GATEWAY_AUTOSTART", "1") != "0"
+GATEWAY_DIR: str = os.path.expanduser(os.getenv("ARIA_GATEWAY_DIR", "~/GateLLM"))
+GATEWAY_IDLE_SECONDS: int = int(os.getenv("ARIA_GATEWAY_IDLE_SECONDS", "600"))
 
 # ---------------------------------------------------------------------------
-# Google + job sheet. GOOGLE_ACCOUNT pre-selects the account on the consent
-# screen (python -m aria.setup google). Tab names are configurable because the
-# sheet has other tabs Aria must not touch.
+# Google + job sheet. Two accounts (aria/integrations/google_auth.py):
+# GOOGLE_ACCOUNT is the personal assistant account, GOOGLE_JOBS_ACCOUNT the job
+# pipeline's (sheet, outreach drafts). Setup pre-selects and verifies each.
+# Tab names are configurable because the sheet has other tabs Aria must not touch.
 # ---------------------------------------------------------------------------
 
 GOOGLE_ACCOUNT: str = os.getenv("GOOGLE_ACCOUNT", "")
+GOOGLE_JOBS_ACCOUNT: str = os.getenv("GOOGLE_JOBS_ACCOUNT", "")
 MUSE_SHEET_ID: str = os.getenv("MUSE_SHEET_ID", "")
 MUSE_SHEET_TAB: str = os.getenv("MUSE_SHEET_TAB", "Sheet1")
 MUSE_APPLIED_TAB: str = os.getenv("MUSE_APPLIED_TAB", "Applied")
