@@ -153,7 +153,7 @@ def settings_tab(providers: Optional[list], tiers: Optional[dict], error: str = 
             + (' <button class="remove">Remove</button>' if p["has_key"] else "") +
             ' <button class="test">Test</button></td><td class="result small"></td></tr>')
     out = ['<p class="muted small">Keys are written only to GateLLM’s <code>.env</code> (chmod 600), then GateLLM reloads. '
-           'The browser only ever sees a masked key. Not supported by GateLLM yet: Google (no adapter).</p>',
+           'The browser only ever sees a masked key. Test makes one tiny call on the provider’s cheapest model.</p>',
            '<div class="tablewrap"><table id="providers"><thead><tr><th>Provider</th><th>Key</th><th></th><th></th></tr>'
            f'</thead><tbody>{"".join(rows)}</tbody></table></div>']
     if tiers:
