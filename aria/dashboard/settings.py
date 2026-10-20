@@ -24,7 +24,7 @@ import aria.core.config as config
 logger = logging.getLogger(__name__)
 
 PROVIDER_LABELS = {"openai": "OpenAI", "anthropic": "Anthropic", "groq": "Groq", "deepseek": "DeepSeek",
-                   "moonshot": "Moonshot (Kimi)"}
+                   "moonshot": "Moonshot (Kimi)", "google": "Google (Gemini)"}
 _KEY_OK = re.compile(r"^[A-Za-z0-9_\-.:/+=]{8,512}$")
 _ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 _TIER_LINE = re.compile(r"^(\s+)([A-Za-z0-9_\-]+)(\s*:\s*)\[(.*)\](\s*(?:#.*)?)$")
