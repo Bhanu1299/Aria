@@ -54,11 +54,10 @@ def test_format_spoken_results_missing_location_and_posted():
 
 def test_parse_query_success():
     import aria.features.jobs as jobs
-    mock_response = MagicMock()
-    mock_response.choices[0].message.content = '{"role": "software engineer", "location": "New York"}'
+    mock_response = MagicMock(text='{"role": "software engineer", "location": "New York"}')
 
-    with patch.object(jobs, "_get_client") as mock_client:
-        mock_client.return_value.chat.completions.create.return_value = mock_response
+    with patch.object(jobs, "llm_client") as mock_client:
+        mock_client.complete.return_value = mock_response
         role, location = jobs._parse_query("find me software engineer jobs in New York")
 
     assert role == "software engineer"
@@ -67,7 +66,7 @@ def test_parse_query_success():
 
 def test_parse_query_groq_failure_falls_back_to_raw_query():
     import aria.features.jobs as jobs
-    with patch.object(jobs, "_get_client", side_effect=RuntimeError("API down")):
+    with patch.object(jobs.llm_client, "complete", side_effect=RuntimeError("API down")):
         role, location = jobs._parse_query("find backend jobs remote")
 
     assert role == "find backend jobs remote"
@@ -76,11 +75,10 @@ def test_parse_query_groq_failure_falls_back_to_raw_query():
 
 def test_parse_query_bad_json_falls_back():
     import aria.features.jobs as jobs
-    mock_response = MagicMock()
-    mock_response.choices[0].message.content = "not json"
+    mock_response = MagicMock(text="not json")
 
-    with patch.object(jobs, "_get_client") as mock_client:
-        mock_client.return_value.chat.completions.create.return_value = mock_response
+    with patch.object(jobs, "llm_client") as mock_client:
+        mock_client.complete.return_value = mock_response
         role, location = jobs._parse_query("some query")
 
     assert role == "some query"
@@ -100,10 +98,8 @@ def test_search_jobs_deduplicates():
          "posted": "1 day ago", "url": "https://li.com/2", "platform": "LinkedIn"},
     ]
     with patch.object(jobs, "_parse_query", return_value=("SWE", "NYC")), \
-         patch.object(jobs, "_get_search_url", return_value="https://example.com"), \
-         patch.object(jobs, "_extract_jobs_from_page", side_effect=[
-             duplicated[:2], duplicated[2:]
-         ]):
+         patch.object(jobs, "_search_linkedin", return_value=duplicated), \
+         patch.object(jobs, "_search_indeed", return_value=[]):
         results = jobs.search_jobs("find me SWE jobs in NYC")
 
     titles_companies = [(r["title"], r["company"]) for r in results]
@@ -115,7 +111,8 @@ def test_search_jobs_deduplicates():
 def test_search_jobs_returns_empty_when_all_sources_fail():
     import aria.features.jobs as jobs
     with patch.object(jobs, "_parse_query", return_value=("SWE", "NYC")), \
-         patch.object(jobs, "_get_search_url", return_value=None):
+         patch.object(jobs, "_search_linkedin", return_value=[]), \
+         patch.object(jobs, "_search_indeed", return_value=[]):
         results = jobs.search_jobs("find me SWE jobs")
 
     assert results == []

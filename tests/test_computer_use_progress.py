@@ -5,62 +5,11 @@ tests/test_computer_use_progress.py — TDD tests for progress_fn callback
 in computer_use.research_loop() and run_loop().
 """
 
-import sys
-import types
 import unittest
 from unittest.mock import MagicMock, patch, call
 
 
-# ---------------------------------------------------------------------------
-# Minimal stubs so that importing computer_use doesn't need real dependencies
-# ---------------------------------------------------------------------------
-
-def _stub_module(name: str, **attrs) -> types.ModuleType:
-    mod = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(mod, k, v)
-    return mod
-
-
-# Playwright / browser stubs
-_playwright_stub = _stub_module("playwright")
-_playwright_sync = _stub_module("playwright.sync_api", sync_playwright=MagicMock())
-sys.modules.setdefault("playwright", _playwright_stub)
-sys.modules.setdefault("playwright.sync_api", _playwright_sync)
-
-# sounddevice stub
-sys.modules.setdefault("sounddevice", _stub_module("sounddevice"))
-
-# agent_browser stub
-_ab = _stub_module("agent_browser", run=MagicMock(), navigate=MagicMock())
-sys.modules.setdefault("agent_browser", _ab)
-
-# dom_browser stub — get_dom_snapshot returns minimal html + interactive_count > 5
-_dom_browser = _stub_module(
-    "dom_browser",
-    get_dom_snapshot=MagicMock(return_value=("<html>PAGE TEXT: hi</html>", 10)),
-    save_debug_screenshot=MagicMock(),
-)
-sys.modules.setdefault("dom_browser", _dom_browser)
-
-# groq stub
-sys.modules.setdefault("groq", _stub_module("groq", Groq=MagicMock()))
-
-# anthropic stub
-sys.modules.setdefault("anthropic", _stub_module("anthropic", Anthropic=MagicMock()))
-
-# config stub
-_config = _stub_module(
-    "config",
-    GROQ_API_KEY="test-key",
-    ANTHROPIC_API_KEY="",
-    SCREENSHOT_QUALITY=75,
-    SCREENSHOT_MAX_WIDTH=1280,
-)
-sys.modules.setdefault("config", _config)
-
-# Now import the module under test
-import aria.web.computer_use as computer_use  # noqa: E402
+import aria.web.computer_use as computer_use
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +47,8 @@ class TestProgressFnCalledOnEachStep(unittest.TestCase):
             patch.object(computer_use, "execute", MagicMock()),
             patch.object(computer_use, "_human_sleep", MagicMock()),
             patch.object(computer_use, "agent_browser") as mock_ab,
+            patch.object(computer_use.dom_browser, "get_dom_snapshot",
+                         return_value=("PAGE TEXT: hi", 10)),
         ):
             mock_ab.navigate = MagicMock()
             result = computer_use.research_loop(
@@ -119,17 +70,20 @@ class TestProgressFnCalledOnEachStep(unittest.TestCase):
             nonlocal call_count
             call_count += 1
 
-        # research_loop treats first 'stuck' as continue (groq_consecutive_stucks<2),
-        # so we need a navigate action after to trigger the done path.
-        # Simpler: provide stuck x2 then done — loop returns after 2nd stuck with partial data.
-        side_effects = [_STUCK_ACTION, _STUCK_ACTION, _NAV_ACTION, _DONE_ACTION]
-        decide_mock = MagicMock(side_effect=side_effects)
+        # Two stucks with no data escalate research_loop to the Claude decider,
+        # which then navigates (one progress message) and finishes.
+        decide_mock = MagicMock(side_effect=[_STUCK_ACTION, _STUCK_ACTION])
+        claude_mock = MagicMock(side_effect=[_NAV_ACTION, _DONE_ACTION])
 
         with (
             patch.object(computer_use, "_dom_research_decide", decide_mock),
+            patch.object(computer_use, "_claude_research_decide", claude_mock),
+            patch.object(computer_use, "take_screenshot", MagicMock(return_value="b64")),
             patch.object(computer_use, "execute", MagicMock()),
             patch.object(computer_use, "_human_sleep", MagicMock()),
             patch.object(computer_use, "agent_browser") as mock_ab,
+            patch.object(computer_use.dom_browser, "get_dom_snapshot",
+                         return_value=("PAGE TEXT: hi", 10)),
         ):
             mock_ab.navigate = MagicMock()
             computer_use.research_loop(
@@ -158,6 +112,8 @@ class TestProgressFnNoneDoesNotCrash(unittest.TestCase):
             patch.object(computer_use, "execute", MagicMock()),
             patch.object(computer_use, "_human_sleep", MagicMock()),
             patch.object(computer_use, "agent_browser") as mock_ab,
+            patch.object(computer_use.dom_browser, "get_dom_snapshot",
+                         return_value=("PAGE TEXT: hi", 10)),
         ):
             mock_ab.navigate = MagicMock()
             # Must not raise
@@ -182,6 +138,8 @@ class TestProgressFnNoneDoesNotCrash(unittest.TestCase):
             patch.object(computer_use, "execute", MagicMock()),
             patch.object(computer_use, "_human_sleep", MagicMock()),
             patch.object(computer_use, "agent_browser") as mock_ab,
+            patch.object(computer_use.dom_browser, "get_dom_snapshot",
+                         return_value=("PAGE TEXT: hi", 10)),
         ):
             mock_ab.navigate = MagicMock()
             result = computer_use.research_loop(
