@@ -270,33 +270,51 @@ rows.forEach(function(r){tb.appendChild(r)})})})})();
 """
 
 
+TAB_NAMES = [("today", "Today"), ("answers", "My answers"), ("applications", "Applications"), ("live", "Live run"),
+             ("costs", "Costs"), ("settings", "Settings"), ("health", "Data health")]
+TAB_SUBS = {"today": "what needs you now", "answers": "everything Aria fills into forms — edits save to your answer bank",
+            "applications": "one row per company, roles nested; click a role for its timeline",
+            "live": "current or last pipeline run, from Aria's run log",
+            "costs": "from GateLLM's per-call log + Aria's flight log",
+            "settings": "LLM providers and tier models",
+            "health": "sources, unmatched records and gaps in the data"}
+
+
 def page(mdl: dict, tabs: Optional[dict] = None, token: str = "") -> str:
-    """tabs: {"live": html, "costs": html, "settings": html} (each already guarded)."""
+    """tabs: {key: html} for every TAB_NAMES key (each already guarded)."""
     from aria.dashboard import tabs as tabmod
     srcs = mdl["sources"]
     tabs = tabs or {}
-    pipeline = "".join([
-        _section("Funnel", lambda: _funnel(mdl), "jobs that reached each stage; a job sits at its furthest stage with evidence", "funnel"),
-        _section("Needs me", lambda: _needs_me(mdl), "", "needs"),
-        _section("All jobs", lambda: _jobs_table(mdl), f"{len(mdl['jobs'])} jobs", "jobs-section"),
-        _section("This week", lambda: _week(mdl), "", "week"),
-        _section("Cost", lambda: _cost(mdl), "LLM spend recorded in aria.db application_runs", "cost"),
-    ])
-    names = [("pipeline", "Pipeline"), ("live", "Live run"), ("costs", "LLM costs"), ("settings", "Settings")]
-    nav = "".join(f'<a href="#{k}">{e(v)}</a>' for k, v in names)
-    panes = [f'<div class="tab" id="pipeline-tab">{pipeline}</div>']
-    subs = {"live": "current or last pipeline run, from Aria's run log",
-            "costs": "from GateLLM's per-call log + Aria's flight log",
-            "settings": "LLM providers and tier models — the only place this dashboard writes"}
-    for key, label in names[1:]:
+    down = [SOURCE_LABELS.get(k, k) for k, v in srcs.items() if v is not None and not v.ok]
+    warn = (f' <a class="downwarn" href="#health">{len(down)} source{"s" if len(down) != 1 else ""} down: '
+            f'{e(", ".join(down))}</a>') if down else ""
+    nav = "".join(f'<a href="#{k}">{e(v)}</a>' for k, v in TAB_NAMES)
+    panes = []
+    for key, label in TAB_NAMES:
         content = tabs.get(key, _no_data("not loaded"))
-        panes.append(f'<div class="tab" id="{key}-tab"><section><h2>{e(label)} <span class="sub">{e(subs[key])}</span></h2>'
+        panes.append(f'<div class="tab" id="{key}-tab"><section><h2>{e(label)} <span class="sub">{e(TAB_SUBS[key])}</span></h2>'
                      f'{content}</section></div>')
     meta = f'<meta name="dashboard-token" content="{e(token)}">' if token else ""
+    from aria.dashboard import answers as ans, applications as apps
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}<title>Job Pipeline</title>'
             f'<style>{CSS}{tabmod.TABS_CSS}</style></head><body><header><h1>Job pipeline</h1>'
             f'<p class="muted small">Loaded {mdl["now"]:%Y-%m-%d %H:%M}. Gmail and the sheet are cached for 5 minutes. '
-            f'Only the Settings tab writes (GateLLM keys and tiers).</p>'
-            f'{_sources_bar(srcs)}<nav class="tabs">{nav}</nav></header><main>{"".join(panes)}</main>'
-            f'<script>{tabmod.TABS_JS}{JS}{tabmod.LIVE_JS}{tabmod.SETTINGS_JS}</script></body></html>')
+            f'Writes only: your answer bank (My answers) and GateLLM keys (Settings).{warn}</p>'
+            f'<nav class="tabs">{nav}</nav></header><main>{"".join(panes)}</main>'
+            f'<script>{tabmod.TABS_JS}{JS}{tabmod.LIVE_JS}{tabmod.SETTINGS_JS}{ans.JS}{apps.JS}</script></body></html>')
+
+
+def today_extras(mdl: dict) -> str:
+    """Funnel + this week, kept under Today."""
+    return (_section("Funnel", lambda: _funnel(mdl), "jobs that reached each stage; a job sits at its furthest stage with evidence", "funnel")
+            + _section("This week", lambda: _week(mdl), "", "week"))
+
+
+def all_jobs_table(mdl: dict) -> str:
+    return ('<details class="flat"><summary>Flat table of all jobs (searchable, sortable)</summary>'
+            + _section("All jobs", lambda: _jobs_table(mdl), f"{len(mdl['jobs'])} jobs", "jobs-section") + "</details>")
+
+
+def pipeline_cost(mdl: dict) -> str:
+    return _section("Pipeline runs (aria.db)", lambda: _cost(mdl), "LLM spend recorded per application run", "cost")

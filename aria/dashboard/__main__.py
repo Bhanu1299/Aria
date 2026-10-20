@@ -6,7 +6,12 @@ Endpoints:
   POST /api/settings/key    {provider, key|null}    add / replace / remove a GateLLM key
   POST /api/settings/test   {provider}              one tiny call through GateLLM
   POST /api/settings/tier   {tier, models: [...]}   edit a tier's model chain
+  POST /api/answers         {op, ...}               answer-bank edits (My answers tab)
+  GET  /review-img?f=x.png  a review screenshot / field crop from ~/.aria/reviews
   GET  /health
+
+The only writes: GateLLM keys/tiers (settings.py) and the answer bank (answers.py →
+aria.features.answer_bank). Everything else is read-only.
 
 Every request must carry a Host of 127.0.0.1/localhost on our port (DNS rebinding);
 POSTs also need this process's random token (in the page) and, if the browser sends an
@@ -17,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import secrets
 import sys
 import threading
@@ -31,35 +37,45 @@ MAX_BODY = 16 * 1024
 
 
 def render_page(token: str = "") -> str:
-    from aria.dashboard import costs, model, render, sources, tabs
-    from aria.dashboard import settings as st
-    from aria.observability import run_log
+    from aria.dashboard import render, sources
     try:
-        srcs = sources.load_all()
-        mdl = model.build(srcs)
-        built = {}
-
-        def guard(key: str, fn: Callable[[], str]) -> None:
-            try:
-                built[key] = fn()
-            except Exception as exc:
-                logger.exception("dashboard: %s tab failed", key)
-                built[key] = render._no_data(f"{type(exc).__name__}: {exc}")
-
-        guard("live", lambda: tabs.live_tab(run_log.read_runs(10)))
-
-        def costs_html() -> str:
-            calls = costs.fetch_calls()
-            summary = costs.summarize(calls["calls"], costs.fetch_flight(), mdl["now"],
-                                      applied_jobs=model.cost(mdl)["applied"])
-            return tabs.costs_tab(summary, calls["via"])
-        guard("costs", costs_html)
-        guard("settings", lambda: tabs.settings_tab(st.providers(), st.tiers()))
-        return render.page(mdl, built, token)
+        return page_from(sources.load_all(), token=token)
     except Exception as exc:  # last resort: never a blank 500
         logger.exception("dashboard: page failed")
         return ("<!doctype html><meta charset=utf-8><title>Job Pipeline</title>"
                 f"<p>The dashboard failed to build: {render.e(exc)}</p>")
+
+
+def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = None, flight: Optional[list] = None,
+              runs: Optional[list] = None) -> str:
+    """Every tab from already-loaded sources (tests pass fixtures here). Each tab is guarded."""
+    from aria.dashboard import answers, applications, costs, health, model, render, tabs, today
+    from aria.dashboard import settings as st
+    from aria.observability import run_log
+    mdl = model.build(srcs, now)
+    built = {}
+
+    def guard(key: str, fn: Callable[[], str]) -> None:
+        try:
+            built[key] = fn()
+        except Exception as exc:
+            logger.exception("dashboard: %s tab failed", key)
+            built[key] = render._no_data(f"{type(exc).__name__}: {exc}")
+
+    guard("today", lambda: today.render(mdl) + render.today_extras(mdl))
+    guard("answers", lambda: answers.render(srcs.get("reviews")))
+    guard("applications", lambda: applications.render(mdl) + render.all_jobs_table(mdl))
+    guard("health", lambda: health.render(mdl))
+    guard("live", lambda: tabs.live_tab(run_log.read_runs(10) if runs is None else runs))
+
+    def costs_html() -> str:
+        got = calls if calls is not None else costs.fetch_calls()
+        summary = costs.summarize(got["calls"], costs.fetch_flight() if flight is None else flight, mdl["now"],
+                                  applied_jobs=model.cost(mdl)["applied"])
+        return tabs.costs_tab(summary, got["via"]) + render.pipeline_cost(mdl)
+    guard("costs", costs_html)
+    guard("settings", lambda: tabs.settings_tab(st.providers(), st.tiers()))
+    return render.page(mdl, built, token)
 
 
 def runs_json() -> dict:
@@ -68,8 +84,17 @@ def runs_json() -> dict:
 
 
 def settings_action(path: str, body: dict) -> tuple:
-    """(status, json) for a settings POST. The only route that writes."""
+    """(status, json) for a POST: GateLLM settings or answer-bank edits — the only writes."""
+    from aria.dashboard import answers
     from aria.dashboard import settings as st
+    if path == "/api/answers":
+        try:
+            return 200, answers.act(body)
+        except answers.AnswerError as exc:
+            return 400, {"error": str(exc)}
+        except Exception as exc:
+            logger.error("dashboard: answer edit failed: %s", type(exc).__name__)
+            return 500, {"error": f"failed: {type(exc).__name__}"}
     try:
         if path == "/api/settings/key":
             provider = str(body.get("provider") or "")
@@ -112,6 +137,8 @@ def make_handler(build: Callable[[], str], token: str, port_ref: list,
                 return self._send(200, "ok", "text/plain")
             if path == "/api/runs":
                 return self._send(200, json.dumps(runs()), "application/json")
+            if path == "/review-img":
+                return self._review_img()
             if path not in ("/", "/index.html"):
                 return self._send(404, "not found", "text/plain")
             self._send(200, build(), "text/html; charset=utf-8")
@@ -136,8 +163,20 @@ def make_handler(build: Callable[[], str], token: str, port_ref: list,
             status, out = act(path, body)
             self._send(status, json.dumps(out), "application/json")
 
+        def _review_img(self) -> None:
+            from urllib.parse import parse_qs, urlparse
+
+            from aria.features.applicator import REVIEWS_DIR
+            name = (parse_qs(urlparse(self.path).query).get("f") or [""])[0]
+            path = REVIEWS_DIR / name
+            if not re.fullmatch(r"[\w.-]+\.png", name) or not path.is_file():
+                return self._send(404, "not found", "text/plain")
+            self._send_bytes(200, path.read_bytes(), "image/png")
+
         def _send(self, code: int, body: str, ctype: str) -> None:
-            data = body.encode("utf-8")
+            self._send_bytes(code, body.encode("utf-8"), ctype)
+
+        def _send_bytes(self, code: int, data: bytes, ctype: str) -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))

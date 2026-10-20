@@ -9,6 +9,7 @@ Tables owned here:
   memory           — persistent key-value store (owned by memory.py)
   learned_answers  — form answers the user gave by voice / in review (features/answer_bank.py)
   application_runs — every apply-pipeline step: fill / submit / skip / error, with cost
+  answer_changes   — every edit to the answer bank (dashboard / review), for history + undo
 """
 
 from __future__ import annotations
@@ -77,6 +78,21 @@ CREATE TABLE IF NOT EXISTS application_runs (
 """
 
 
+_CREATE_ANSWER_CHANGES = """
+CREATE TABLE IF NOT EXISTS answer_changes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         TEXT    NOT NULL DEFAULT (datetime('now')),
+    target     TEXT    NOT NULL,          -- answer | learned | job | always_ask | salary_floor
+    key        TEXT    NOT NULL,          -- canonical key, or the normalized question
+    job        TEXT    NOT NULL DEFAULT '',
+    old        TEXT,                      -- JSON value before (null = unset)
+    new        TEXT,                      -- JSON value after
+    source     TEXT    NOT NULL DEFAULT 'dashboard',
+    undone_by  INTEGER
+)
+"""
+
+
 def get_connection() -> sqlite3.Connection:
     """
     Open (creating if needed) ~/.aria/aria.db, ensure all tables exist,
@@ -92,5 +108,6 @@ def get_connection() -> sqlite3.Connection:
     conn.execute(_CREATE_FACTS)
     conn.execute(_CREATE_LEARNED_ANSWERS)
     conn.execute(_CREATE_APPLICATION_RUNS)
+    conn.execute(_CREATE_ANSWER_CHANGES)
     conn.commit()
     return conn

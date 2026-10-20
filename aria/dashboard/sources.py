@@ -3,13 +3,15 @@
   load_sheet()      Muse sheet tabs (current jobs + Applied), jobs Google account   cached 5 min
   load_gmail()      jobs Gmail: drafts + every thread with a sent message           cached 5 min
   load_aria_db()    aria.db application_runs + applications (opened read-only)
-  load_reviews(p)   needs_me field labels from review markdown files
+  load_reviews(p)   every review file (~/.aria/reviews/*.md + aria.db paths), parsed per
+                    section, plus the unlabeled-field captures (<review>.fields.json)
   load_coldstart()  Coldstart contact cache (its SQLite opened read-only)
 
 Nothing here writes: SQLite files are opened with mode=ro, Google APIs only get/list.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -239,33 +241,80 @@ def load_aria_db() -> Source:
     return _guard("aria.db", fetch_aria_db)
 
 
-_NEEDS_SECTION = re.compile(r"^## Needs you \(\d+\)\s*$", re.M)
+_SECTION_KEYS = {"Needs you": "needs_me", "Drafted by the LLM": "llm_draft", "Guessed by the LLM": "llm_guess",
+                 "From your answer bank": "bank", "Left empty": "skipped"}
+_TITLE = re.compile(r"^# Review: (.*) at (.*)$", re.M)
+_META = re.compile(r"^- \*\*(Form|Sheet row|Screenshot|Problem):\*\* (.*)$", re.M)
+
+
+def _cells(line: str) -> list[str]:
+    parts = re.split(r"(?<!\\)\|", line.strip().strip("|"))
+    return [c.strip().replace("\\|", "|") for c in parts]
+
+
+def parse_review(text: str) -> dict:
+    """A review markdown file → {role, company, form, row, screenshot, sections: {source: [rows]}}.
+    Rows: {field, value, required, note}; llm_draft rows carry the drafted text as value."""
+    out: dict = {"role": "", "company": "", "form": "", "row": None, "screenshot": "", "problem": "", "sections": {}}
+    m = _TITLE.search(text)
+    if m:
+        out["role"], out["company"] = m.group(1).strip(), m.group(2).strip()
+    for k, v in _META.findall(text):
+        key = {"Form": "form", "Sheet row": "row", "Screenshot": "screenshot", "Problem": "problem"}[k]
+        out[key] = int(v) if key == "row" and v.strip().isdigit() else v.strip()
+    current, draft = None, None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            title = re.sub(r"\s*\(\d+\)\s*$", "", line[3:]).split(":")[0].strip()
+            current = next((v for k, v in _SECTION_KEYS.items() if title.startswith(k)), None)
+            if current:
+                out["sections"].setdefault(current, [])
+            draft = None
+            continue
+        if current == "llm_draft":
+            if line.startswith("### "):
+                draft = {"field": line[4:].strip(), "value": "", "required": True, "note": ""}
+                out["sections"]["llm_draft"].append(draft)
+            elif draft is not None and line.startswith(">"):
+                draft["value"] = (draft["value"] + "\n" + line[1:].strip()).strip()
+            continue
+        if current and line.startswith("|"):
+            cells = _cells(line)
+            if not cells or cells[0] in ("Field", "") or set(cells[0]) <= {"-"}:
+                continue
+            cells += [""] * (4 - len(cells))
+            out["sections"][current].append({"field": cells[0].replace(" ✱", "").strip(), "value": cells[1],
+                                             "required": cells[2] == "yes", "note": cells[3]})
+    return out
 
 
 def parse_review_needs_me(text: str) -> list[str]:
     """Field labels in a review file's "## Needs you (N)" table."""
-    m = _NEEDS_SECTION.search(text)
-    if not m:
-        return []
-    fields = []
-    for line in text[m.end():].splitlines():
-        if line.startswith("## "):
-            break
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if not line.startswith("|") or not cells or cells[0] in ("Field", "") or set(cells[0]) <= {"-"}:
-            continue
-        fields.append(cells[0].replace(" ✱", "").strip())
-    return fields
+    return [r["field"] for r in parse_review(text)["sections"].get("needs_me", [])]
 
 
-def load_reviews(paths: list[str]) -> Source:
+def load_reviews(paths: list[str], reviews_dir: Optional[Path] = None) -> Source:
     def read() -> dict:
+        if reviews_dir is None:
+            from aria.features.applicator import REVIEWS_DIR
+            folder = REVIEWS_DIR
+        else:
+            folder = reviews_dir
+        every = set(paths) | ({str(p) for p in folder.glob("*.md")} if folder.exists() else set())
         out = {}
-        for p in paths:
+        for p in sorted(every):
+            path = Path(p)
             try:
-                out[p] = parse_review_needs_me(Path(p).read_text())
+                parsed = parse_review(path.read_text())
             except OSError:
-                out[p] = []
+                continue
+            parsed["path"], parsed["mtime"] = p, path.stat().st_mtime
+            sidecar = path.with_suffix(".fields.json")
+            try:
+                parsed["unlabeled"] = json.loads(sidecar.read_text()) if sidecar.exists() else None
+            except (OSError, ValueError):
+                parsed["unlabeled"] = None
+            out[p] = parsed
         return out
     return _guard("reviews", read)
 
@@ -291,6 +340,23 @@ def fetch_coldstart(path: Optional[Path] = None) -> dict:
     finally:
         conn.close()
     return {"contacts": contacts, "domains": domains}
+
+
+def coldstart_domain(domain: str, path: Optional[Path] = None) -> dict:
+    """One domain's cached row (provider, pattern) from Coldstart, read-only; {} if unknown."""
+    try:
+        if path is None:
+            import coldstart.config as cs_config
+            path = cs_config.db_path()
+        conn = _ro_connect(Path(path))
+        try:
+            row = conn.execute("SELECT domain, provider, catch_all, inferred_pattern FROM domains WHERE domain=?",
+                               (domain,)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else {}
+    except Exception:
+        return {}
 
 
 def load_coldstart() -> Source:

@@ -445,11 +445,14 @@ Hold **⌥ Space** and speak, or just say **"Aria"**.
 
 **Job applications:** "apply to the next job from Muse", "apply to row 14", "what's the next job on my list", then "submit it", "I submitted it" or "skip this job". Reviews are saved to `~/.aria/reviews/`.
 
-**Pipeline dashboard:** `venv/bin/python -m aria.dashboard` opens a local page (127.0.0.1) with four tabs:
-- **Pipeline** (read-only): every job and its stage from found to replied, a funnel, what needs you (empty form fields, stale drafts, follow-ups due, bounces), a searchable table, this week's numbers. Joins the Muse sheet, `aria.db`, Coldstart and the jobs Gmail; a source that's down shows "no data" instead of breaking the page.
-- **Live run** (read-only): the current or last 10 pipeline runs from `~/.aria/run_log.jsonl`, polled every 2 s: which job, each step's status and time, and why each sheet row was picked or skipped.
-- **LLM costs** (read-only): spend today / this week / all time, per job (every call: task, tier, model, tokens, cost), per task, escalations (small → frontier retries and GateLLM fallbacks, with the reason), cheapest and priciest jobs, cost per applied job. Every Aria LLM call sends its task, job and run to GateLLM, which logs one line per call (`GET /v1/calls`).
-- **Settings**, the only part that writes: add, replace, remove or test each GateLLM provider key (masked in the browser, written only to GateLLM's `.env`, chmod 600) and edit each tier's model chain in GateLLM's `config.yaml`; GateLLM reloads without a restart. Writes need the page's per-process token and a localhost Host/Origin.
+**Pipeline dashboard:** `venv/bin/python -m aria.dashboard` opens a local page (127.0.0.1) with seven tabs; it remembers the last one you had open.
+- **Today:** a one-line summary, then what to do now: replies to answer, interviews, bounces (with a suggested fix from Coldstart), follow-ups due, applications to finish, drafts to send, LinkedIn notes, deadlines in the next 3 days. Plus the funnel and this week's numbers.
+- **My answers:** everything Aria fills into forms, grouped (identity, contact, education, links, work preferences, salary rule, learned answers), each with its source. Edit inline; answer new questions from your reviews for all forms or one job; mark any answer "always ask me" so Aria never fills it alone; unlabeled fields show their type, nearby text and a screenshot crop. Every change is logged with undo, and `answer_bank.json` is backed up before the first write.
+- **Applications:** one row per company with its roles nested (so you don't contact a company twice), contact, channel, email + confidence, sent date, response and next action; click a role for its timeline. Filters: Needs action, Waiting, No contact yet (best fit first), Replied, Closed.
+- **Live run**, **Costs**, **Settings:** the current or last 10 pipeline runs, LLM spend per job / task / escalation from GateLLM's per-call log, and GateLLM provider keys and tier models.
+- **Data health:** source status, records that match no job (with the likely job), jobs missing a found date, contacts missing names, emails with no confidence.
+
+The dashboard writes in two places only: your answer bank (My answers) and GateLLM's keys and tiers (Settings). Writes need the page's per-process token and a localhost Host/Origin.
 
 **Reliability tools:**
 

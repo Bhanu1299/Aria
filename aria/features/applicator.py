@@ -207,7 +207,60 @@ def _write_review(job: dict, result, company: str, role: str) -> tuple:
     except Exception as exc:
         logger.warning("applicator: screenshot failed: %s", exc)
     md.write_text(build_summary(job, result, company, role, shot))
+    _capture_unlabeled(result, REVIEWS_DIR / f"{stem}.fields.json", stem)
     return str(md), shot
+
+
+_MACHINE_NAME = re.compile(r"^[\w-]+\[|^[\w-]*\d{3,}[\w-]*$|^(?:field|input|question)[_-]?\d+$", re.I)
+
+_FIELD_INFO_JS = """e => {
+  const box = e.closest('li, fieldset, .application-question, .field, .form-group, label') || e.parentElement;
+  const own = (e.value || '') + (e.innerText || '');
+  let near = ((box && box.innerText) || '').replace(own, '').replace(/\\s+/g, ' ').trim();
+  return {tag: e.tagName.toLowerCase(), type: e.type || '', placeholder: e.placeholder || '',
+          aria: e.getAttribute('aria-label') || '', nearby: near.slice(0, 300)};
+}"""
+
+
+def is_unlabeled(label: str) -> bool:
+    """A field whose 'label' is a machine name (cards[uuid][field0], q_12345)."""
+    return bool(_MACHINE_NAME.match((label or "").strip()))
+
+
+def _capture_unlabeled(result, out: Path, stem: str) -> None:
+    """For needs_me fields with no human label: field type, nearby text and a screenshot
+    crop, saved next to the review so the user can tell what the field is. Never raises."""
+    rows = [r for r in result.review if r.get("source") == "needs_me" and is_unlabeled(r.get("label") or r.get("name"))]
+    if not rows:
+        return
+    import json as _json
+
+    import aria.web.agent_browser as agent_browser
+
+    def grab(page) -> list:
+        found = []
+        for i, r in enumerate(rows):
+            entry = {"name": r.get("name", ""), "label": r.get("label", ""), "kind": r.get("kind", "")}
+            try:
+                name = (r.get("name") or "").replace('"', '\\"')
+                el = page.query_selector(f'[name="{name}"]') or page.query_selector(r.get("name") or "x")
+                if el is not None:
+                    entry.update(el.evaluate(_FIELD_INFO_JS))
+                    box = el.evaluate_handle("e => e.closest('li, fieldset, .application-question, .field, "
+                                             ".form-group, label') || e.parentElement").as_element() or el
+                    crop = REVIEWS_DIR / f"{stem}_field{i}.png"
+                    box.screenshot(path=str(crop))
+                    entry["crop"] = str(crop)
+            except Exception as exc:
+                entry["error"] = f"{type(exc).__name__}"
+            found.append(entry)
+        return found
+
+    try:
+        fields = agent_browser.run(grab, tab=result.tab)
+        out.write_text(_json.dumps(fields, indent=2))
+    except Exception as exc:
+        logger.warning("applicator: unlabeled-field capture failed: %s", exc)
 
 
 def spoken_result(result, company: str, role: str) -> str:
@@ -238,8 +291,7 @@ def _fill_linkedin(job: dict, voice_ask_fn) -> "ats.FillResult":
 
     result = ats.FillResult(ats="linkedin", identified="linkedin", form_url=job["url"])
     agent_browser.navigate(job["url"], settle_secs=5.0)
-    answers = answer_bank.load()["answers"]
-    context = {k: v for k, v in answers.items() if v not in (None, "") and not isinstance(v, dict)}
+    context = answer_bank.fillable_answers(answer_bank.load(), job)   # never always-ask answers
     context["resume_path"] = greenhouse.resume_path() or ""
     status, data = linkedin_applicator.run_linkedin_application(job, context, voice_ask_fn or (lambda _f: ""))
     if status != "confirm":

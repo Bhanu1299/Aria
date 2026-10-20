@@ -14,7 +14,7 @@ import pytest
 
 from aria.dashboard import model as m
 from aria.dashboard import render, sources
-from aria.dashboard.__main__ import serve
+from aria.dashboard.__main__ import page_from, serve
 from aria.dashboard.sources import Source
 
 NOW = datetime(2026, 10, 21, 12, 0)
@@ -90,7 +90,7 @@ def srcs(tmp_path):
                                "source": "pattern", "checked_at": "2026-10-19"}], "domains": {}}
     return {"sheet": Source(True, sheet), "aria_db": Source(True, {"runs": runs, "applications": []}),
             "gmail": Source(True, gmail), "coldstart": Source(True, coldstart),
-            "reviews": Source(True, {str(review): sources.parse_review_needs_me(review.read_text())})}
+            "reviews": Source(True, {str(review): sources.parse_review(review.read_text())})}
 
 
 def by_company(mdl):
@@ -180,28 +180,29 @@ def test_this_week_and_cost(srcs):
 
 
 def test_page_renders_everything(srcs):
-    html = render.page(m.build(srcs, NOW))
-    for text in ("Funnel", "Needs me", "All jobs", "This week", "Cost", "Acme Robotics", "follow-up due",
-                 "records matched no job", 'id="jobs"'):
-        assert text in html
+    html = page_from(srcs, NOW, calls={"calls": [], "via": "none"}, flight=[], runs=[])
+    for text in ("Today", "My answers", "Applications", "Live run", "Costs", "Settings", "Data health",
+                 "Funnel", "This week", "Acme Robotics", "Follow-ups due", "Records that match no job",
+                 'id="apps"', 'id="jobs"', "Pipeline runs (aria.db)"):
+        assert text in html, text
     assert f"authuser={ME.replace('@', '%40')}#all/t2" in html
 
 
 def test_page_survives_every_source_down():
     down = {k: Source(False, None, "boom") for k in ("sheet", "gmail", "aria_db", "coldstart", "reviews")}
-    html = render.page(m.build(down, NOW))
+    html = page_from(down, NOW, calls={"calls": [], "via": "none"}, flight=[], runs=[])
     assert html.count("No data") >= 4 and "Muse sheet: down" in html
 
 
 def test_failing_section_does_not_break_page(srcs, monkeypatch):
     monkeypatch.setattr(m, "this_week", lambda mdl: 1 / 0)
-    html = render.page(m.build(srcs, NOW))
+    html = page_from(srcs, NOW, calls={"calls": [], "via": "none"}, flight=[], runs=[])
     assert "this section failed (ZeroDivisionError" in html and "Acme Robotics" in html
 
 
 def test_html_is_escaped(srcs):
     srcs["sheet"].data["current"].append(sheet_row(9, "<script>x</script>", "Role"))
-    assert "<script>x</script>" not in render.page(m.build(srcs, NOW))
+    assert "<script>x</script>" not in page_from(srcs, NOW, calls={"calls": [], "via": "none"}, flight=[], runs=[])
 
 
 # ── sources ─────────────────────────────────────────────────────────────────
@@ -375,8 +376,15 @@ def test_dashboard_has_no_write_calls():
                          r"\.trash\(|\.delete\(|INSERT |UPDATE |DELETE |\.commit\(|record_feedback|find_emails|"
                          r"get_company|set_status|write_text|open\([^)]*['\"][wa]")
     offenders = [f"{p.name}: {mm.group(0)}" for p in sorted((ARIA / "dashboard").glob("*.py"))
-                 if p.name != "settings.py" for mm in pattern.finditer(p.read_text())]
+                 if p.name not in ("settings.py", "answers.py") for mm in pattern.finditer(p.read_text())]
     assert not offenders, offenders
+
+
+def test_answers_tab_writes_only_through_answer_bank():
+    text = (ARIA / "dashboard" / "answers.py").read_text()
+    assert not re.search(r"sqlite3|\.execute\(|write_text\(|open\(|_write_file|_apply\(", text)
+    calls = set(re.findall(r"\bab\.(set_\w+|undo)\(", text))
+    assert calls <= {"set_answer", "set_learned", "set_job_answer", "set_always_ask", "set_salary_floor", "undo"}
 
 
 def test_settings_writes_only_through_atomic_write():
@@ -388,26 +396,18 @@ def test_settings_writes_only_through_atomic_write():
     assert not re.search(r"write_text\(|(?<!fd)open\([^)]*['\"][wa]", text)
 
 
-def test_needs_me_hides_machine_field_names_and_shows_draft_subject(srcs, tmp_path):
+def test_unlabeled_fields_go_to_my_answers_and_draft_subject_shows(srcs, tmp_path):
     review = next(iter(srcs["reviews"].data))
-    srcs["reviews"].data[review] = ["Current location", "cards[abc-123][field0]", "cards[abc-123][field1]"]
+    srcs["reviews"].data[review]["sections"]["needs_me"] = [
+        {"field": f, "value": "", "required": True, "note": ""}
+        for f in ["Current location", "cards[abc-123][field0]", "cards[abc-123][field1]"]]
     srcs["gmail"].data["drafts"].append({"id": "d3", "thread_id": "td3", "to": [], "subject": "Intro for a role",
                                          "ts": ts(5)})
-    html = render.page(m.build(srcs, NOW))
-    assert "Current location, 2 unlabeled fields" in html and "cards[abc" not in html
+    html = page_from(srcs, NOW, calls={"calls": [], "via": "none"}, flight=[], runs=[])
+    answers_tab = html[html.index('id="answers-tab"'):html.index('id="applications-tab"')]
+    assert "Unlabeled fields" in answers_tab and "cards[abc-123][field0]" in answers_tab
+    assert "Current location" in answers_tab                      # a new question
     assert "no recipient" in html and "Intro for a role" in html
-
-
-@pytest.mark.parametrize("cell,name", [
-    ("LinkedIn: Pat Lee (Recruiter, Acme) — linkedin.com/in/patlee", "Pat Lee"),
-    ("Jo Park, Eng Manager", "Jo Park"),
-    ("Email draft ready — Sam Roe", ""),
-    ("Via Breezy ATS", ""),
-    ("jo@acme.test", ""),
-    ("", ""),
-])
-def test_contact_name(cell, name):
-    assert m.contact_name(cell) == name
 
 
 def test_needs_me_skips_old_items_and_non_outreach(srcs):

@@ -42,3 +42,11 @@ def _no_live_http(monkeypatch):
 def _run_log_in_tmp(tmp_path, monkeypatch):
     """Pipeline run events never land in the real ~/.aria/run_log.jsonl."""
     monkeypatch.setattr("aria.observability.run_log.LOG_PATH", tmp_path / "run_log.jsonl")
+
+
+@pytest.fixture(autouse=True)
+def _user_stores_in_tmp(tmp_path, monkeypatch):
+    """The real answer bank and aria.db are never read or written by a test
+    (tests that need their own path still patch it themselves)."""
+    monkeypatch.setattr("aria.features.answer_bank.BANK_PATH", tmp_path / "answer_bank.json")
+    monkeypatch.setattr("aria.state.db.DB_PATH", str(tmp_path / "aria.db"))
