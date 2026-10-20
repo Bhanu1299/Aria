@@ -473,13 +473,17 @@ main.py                 launcher shim → aria.app (so `python main.py` works)
 daily_check.py          reliability CLI (checklist · report · wake)
 aria/
   app.py                wiring + command lifecycle (the only god allowed)
-  setup.py              `python -m aria.setup google`: one-time account setup
+  setup.py              `python -m aria.setup google [--account jobs]`: one-time account setup
+  dashboard/            `python -m aria.dashboard`: read-only pipeline page on 127.0.0.1 —
+                        sources (sheet · aria.db · reviews · Coldstart · Gmail, never written) ·
+                        model (match by apply link else company+role; stage = furthest evidence) · render
   core/                 agent.py (tool loop) · tool.py (registry) ·
                         plugin.py (contract) · compact.py · config.py · paths.py
   dispatch/             dispatcher · rules + patterns.json · parse (durations, times)
   llm/                  GateLLM client: GatewayProvider (agent) · gateway_client() · meter ·
+                        autostart (start GateLLM on demand, stop when idle) ·
                         tasks.py (TASK_TIERS: the only place tiers are chosen)
-  integrations/         google_auth (one OAuth token, scope tracking) · sheets (job sheet)
+  integrations/         google_auth (personal + jobs OAuth tokens, never mixed; scope tracking) · sheets (job sheet)
   plugins/              drop-in capability packs (apply, core, context, media, messaging,
                         memory, productivity, screen, health, system)
   voice/                voice_capture · transcriber · speaker (+ThinkingAck) ·
