@@ -105,6 +105,7 @@ def _read_screen_impl(url: str, query: str) -> str:
     client = _get_client()
     response = client.chat.completions.create(
         model=_MODEL,
+        task="page_vision",
         messages=[
             {"role": "system", "content": _VISION_SYSTEM},
             {

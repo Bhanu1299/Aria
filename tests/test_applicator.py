@@ -275,10 +275,11 @@ def _tool():
 
 def test_apply_job_next_row_url_and_errors(monkeypatch, env):
     seen = []
-    monkeypatch.setattr(applicator, "run_application", lambda job, progress_fn=None, voice_ask_fn=None:
+    monkeypatch.setattr(applicator, "run_application", lambda job, progress_fn=None, voice_ask_fn=None, run=None:
                         seen.append(job) or "filled")
     monkeypatch.setattr(sheets, "get_next_job", lambda: dict(JOB))
     monkeypatch.setattr(sheets, "get_job", lambda row: dict(JOB, row=row) if row == 12 else None)
+    monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: [dict(JOB)]})())
     tool = _tool()
     assert tool.execute({}) == "filled" and seen[-1]["row"] == 7
     assert tool.execute({"row": 12}) == "filled" and seen[-1]["row"] == 12
@@ -300,3 +301,43 @@ def test_submit_is_not_an_agent_tool():
     ApplyPlugin().register(reg)
     names = {t for t in ("apply_job", "job_from_sheet", "submit_application", "submit_job") if reg.get(t)}
     assert names == {"apply_job", "job_from_sheet"}
+
+
+# ── run log (live dashboard) ────────────────────────────────────────────────
+
+def test_apply_run_logs_steps_decisions_and_labels_llm_calls(monkeypatch, env):
+    from aria.llm import context as llm_context
+    from aria.observability import run_log
+    seen_labels = []
+
+    def fill(job, progress_fn=None):
+        seen_labels.append(llm_context.current())
+        return FillResult(ats="greenhouse", form_url=FORM, title="ML Engineer", company="Acme",
+                          review=list(REVIEW), filled=dict(FILLED), tab="apply")
+    monkeypatch.setattr(applicator.ats, "fill_application", fill)
+    skipped = dict(JOB, row=6, company="Old Co", status="Applied", alignment="2")
+    monkeypatch.setattr(sheets, "get_next_job", lambda: dict(JOB))
+    monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: [skipped, dict(JOB)]})())
+    _tool().execute({})
+    [run] = run_log.read_runs()
+    assert run["trigger"] == "apply_job" and run["status"] == "filled"
+    assert run["job"] == {"company": "Acme", "role": "ML Engineer", "row": 7}
+    steps = {s["step"]: s for s in run["steps"]}
+    assert steps["read sheet"]["status"] == "ok" and "picked row 7" in steps["read sheet"]["detail"]
+    assert steps["fill form"]["status"] == "ok" and "need you" in steps["fill form"]["detail"]
+    assert steps["update sheet"]["status"] == "ok" and "In review" in steps["update sheet"]["detail"]
+    assert steps["find email"]["status"] == "not in this run"
+    picked = [d for d in run["decisions"] if d["picked"]]
+    assert [d["row"] for d in picked] == [7] and any("picked:" in r for r in picked[0]["reasons"])
+    assert any("Status: Applied" in r for d in run["decisions"] if not d["picked"] for r in d["reasons"])
+    assert seen_labels[0]["job"] == "Acme | ML Engineer | row 7" and seen_labels[0]["run"] == run["id"]
+    assert llm_context.current() == {}                       # labels cleared after the run
+
+
+def test_skip_is_its_own_run(env):
+    from aria.observability import run_log
+    env["store"][applicator.PENDING_KEY] = {"job": dict(JOB), "ats": "greenhouse", "review_path": ""}
+    applicator.skip_pending()
+    run = run_log.read_runs()[0]
+    assert run["trigger"] == "skip" and run["status"] == "skipped"
+    assert {s["step"]: s["status"] for s in run["steps"]}["update sheet"] == "ok"

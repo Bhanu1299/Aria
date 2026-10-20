@@ -370,12 +370,22 @@ def test_server_binds_localhost_and_serves():
 # ── guard: the dashboard never writes ───────────────────────────────────────
 
 def test_dashboard_has_no_write_calls():
+    """Only settings.py may write (GateLLM .env + config.yaml); everything else is read-only."""
     pattern = re.compile(r"batchUpdate|\.update\(|\.append\(spreadsheetId|\.send\(|\.create\(|\.modify\(|"
                          r"\.trash\(|\.delete\(|INSERT |UPDATE |DELETE |\.commit\(|record_feedback|find_emails|"
                          r"get_company|set_status|write_text|open\([^)]*['\"][wa]")
     offenders = [f"{p.name}: {mm.group(0)}" for p in sorted((ARIA / "dashboard").glob("*.py"))
-                 for mm in pattern.finditer(p.read_text())]
+                 if p.name != "settings.py" for mm in pattern.finditer(p.read_text())]
     assert not offenders, offenders
+
+
+def test_settings_writes_only_through_atomic_write():
+    text = (ARIA / "dashboard" / "settings.py").read_text()
+    writes = re.findall(r"(?<!def )_atomic_write\(([^,]+),", text)
+    assert sorted(set(w.strip() for w in writes)) == ["path"]
+    assert set(re.findall(r"^\s+path = (\w+\(\))", text, re.M)) <= {"env_path()", "config_path()"}
+    # the one raw write is os.fdopen inside _atomic_write
+    assert not re.search(r"write_text\(|(?<!fd)open\([^)]*['\"][wa]", text)
 
 
 def test_needs_me_hides_machine_field_names_and_shows_draft_subject(srcs, tmp_path):

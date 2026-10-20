@@ -148,6 +148,7 @@ def _vision_ask(b64: str, prompt: str) -> str:
         client = _get_client()
         response = client.chat.completions.create(
             model=_VISION_MODEL,
+            task="job_listing_vision",
             messages=[
                 {
                     "role": "user",

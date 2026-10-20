@@ -474,14 +474,17 @@ daily_check.py          reliability CLI (checklist · report · wake)
 aria/
   app.py                wiring + command lifecycle (the only god allowed)
   setup.py              `python -m aria.setup google [--account jobs]`: one-time account setup
-  dashboard/            `python -m aria.dashboard`: read-only pipeline page on 127.0.0.1 —
+  dashboard/            `python -m aria.dashboard`: pipeline page on 127.0.0.1 —
                         sources (sheet · aria.db · reviews · Coldstart · Gmail, never written) ·
-                        model (match by apply link else company+role; stage = furthest evidence) · render
+                        model (match by apply link else company+role; stage = furthest evidence) · render ·
+                        tabs (Live run · LLM costs · Settings) · costs (GateLLM call log + flight log) ·
+                        settings (the ONLY writer: GateLLM .env keys + config.yaml tiers, then reload)
   core/                 agent.py (tool loop) · tool.py (registry) ·
                         plugin.py (contract) · compact.py · config.py · paths.py
   dispatch/             dispatcher · rules + patterns.json · parse (durations, times)
   llm/                  GateLLM client: GatewayProvider (agent) · gateway_client() · meter ·
                         autostart (start GateLLM on demand, stop when idle) ·
+                        context (task / job / run labels → X-Gateway-* headers on every call) ·
                         tasks.py (TASK_TIERS: the only place tiers are chosen)
   integrations/         google_auth (personal + jobs OAuth tokens, never mixed; scope tracking) · sheets (job sheet)
   plugins/              drop-in capability packs (apply, core, context, media, messaging,
@@ -499,7 +502,7 @@ aria/
                         greenhouse · answers · submit) · answer_bank · jobs · briefing · media ·
                         mac_controller · coder · scenes · summarizer · tips
   system/               sleep_guard · prevent_sleep
-  observability/        flight_recorder · wake_stats
+  observability/        flight_recorder · wake_stats · run_log (pipeline steps + pick reasons → Live run tab)
   skills/               legacy local skills (see project state)
 training/               custom wake-word model pipeline (record → train → onnx)
 tests/                  ~900 tests (no live network); tests/daily_questions.json drives the
