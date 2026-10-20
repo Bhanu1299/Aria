@@ -10,8 +10,9 @@ File: ~/.aria/answer_bank.json (outside the repo; template: answer_bank.example.
     }
 
 lookup(label, options=None, job=None) → Answer | None. Order:
-    1. exact alias          normalized label == an alias of a canonical key
-    2. exact learned        a question the user answered before, word for word
+    1. exact learned        a question the user answered before, word for word
+                            (its key's bank value still wins if it has one)
+    2. exact alias          normalized label == an alias or answer key name
     3. pattern              built-in regex per key (e.g. /sponsor/ → sponsorship) —
                             real forms phrase these a hundred ways
     4. fuzzy                rapidfuzz token_sort_ratio >= 90 over aliases + learned
@@ -56,8 +57,17 @@ DEFAULT_ALIASES: dict[str, list[str]] = {
     "linkedin": ["linkedin", "linkedin profile", "linkedin url", "linkedin profile url"],
     "github": ["github", "github url", "github profile"],
     "website": ["website", "portfolio", "personal website", "portfolio url", "website url"],
+    "preferred_name": ["preferred name", "preferred first name"],
     "location": ["location", "city", "current location", "location city"],
-    "address": ["address", "street address", "current address", "home address", "mailing address"],
+    "address": ["address", "current address", "home address", "mailing address"],
+    "address_line1": ["address line 1", "street address", "street address line 1", "address 1", "street"],
+    "city": ["city", "town", "city town"],
+    "state": ["state", "state province", "province", "region"],
+    "zip": ["zip", "zip code", "postal code", "zip postal code", "postcode"],
+    "country": ["country", "country of residence"],
+    "school": ["school", "university", "college", "school name", "university name"],
+    "degree": ["degree", "degree type", "highest degree", "highest level of education"],
+    "current_company": ["current company", "current employer", "most recent employer"],
     "grad_date": ["graduation date", "expected graduation date", "graduation year"],
     "relocation": ["willing to relocate", "are you willing to relocate"],
     "sponsorship": ["sponsorship", "visa sponsorship", "do you require sponsorship"],
@@ -71,6 +81,7 @@ DEFAULT_ALIASES: dict[str, list[str]] = {
     "eeo.hispanic_latino": ["are you hispanic latino", "hispanic latino"],
     "eeo.veteran": ["veteran status", "protected veteran status"],
     "eeo.disability": ["disability status"],
+    "eeo.pronouns": ["pronouns", "preferred pronouns", "your pronouns"],
 }
 
 # Step 3. Checked in order — more specific keys first (hispanic before race).
@@ -166,8 +177,19 @@ def _identity_answers() -> dict:
     return {k: str(v).strip() for k, v in out.items() if str(v or "").strip()}
 
 
+# A key with no value of its own may use another key's value (same fact, other name).
+_SAME_AS = {"full_name": "legal_name", "legal_name": "full_name", "preferred_name": "first_name"}
+
+
 def _value(bank: dict, key: str) -> Optional[str]:
     """The stored value for a canonical key, or None if unset / placeholder."""
+    val = _own_value(bank, key)
+    if val is None and key in _SAME_AS:
+        val = _own_value(bank, _SAME_AS[key])
+    return val
+
+
+def _own_value(bank: dict, key: str) -> Optional[str]:
     node = bank["answers"]
     for part in key.split("."):
         node = node.get(part) if isinstance(node, dict) else None
@@ -250,17 +272,33 @@ def choose_option(value: str, options: Sequence[str]) -> Optional[str]:
 # Lookup
 # ---------------------------------------------------------------------------
 
+def _key_label(key: str) -> str:
+    return normalize(key.split(".")[-1].replace("_", " "))
+
+
+def _answer_keys(node: dict, prefix: str = "") -> list[str]:
+    keys = []
+    for k, v in node.items():
+        full = f"{prefix}{k}"
+        keys.extend(_answer_keys(v, full + ".") if isinstance(v, dict) else [full])
+    return keys
+
+
 def _aliases(bank: dict) -> dict[str, str]:
-    """normalized alias → canonical key (file aliases override defaults)."""
+    """normalized alias → canonical key. Later layers win:
+    default key names < default variants < file aliases < the file's own answer keys
+    (so a label that IS a key name, e.g. "City", goes to that key, not another key's alias)."""
     out: dict[str, str] = {}
     for key in DEFAULT_ALIASES:
-        out[normalize(key.split(".")[-1].replace("_", " "))] = key
+        out[_key_label(key)] = key
     for key, variants in DEFAULT_ALIASES.items():
         for v in variants:
             out[normalize(v)] = key
     for key, variants in bank.get("aliases", {}).items():
         for v in variants or []:
             out[normalize(v)] = key
+    for key in _answer_keys(bank.get("answers", {})):
+        out[_key_label(key)] = key
     return out
 
 
@@ -300,33 +338,54 @@ def lookup(
         return None
 
 
-def _lookup(bank: dict, label: str, options, job) -> Optional[Answer]:
-    q = normalize(label)
-    if not q:
-        return None
+def _match(bank: dict, q: str) -> tuple[Optional[str], Optional[str], float, str]:
+    """(canonical key, learned question, score, how) for a normalized label — no values read."""
     aliases = _aliases(bank)
     learned = {normalize(k): k for k in bank["learned"]}
-
-    # 1. exact alias
-    if q in aliases:
-        return _resolve(bank, aliases[q], q, 100.0, options, job)
-    # 2. exact learned
     if q in learned:
-        return _learned(bank, learned[q], q, 100.0, options)
-    # 3. built-in pattern
+        return aliases.get(q), learned[q], 100.0, "learned"
+    if q in aliases:
+        return aliases[q], None, 100.0, "alias"
     for key, pattern in DEFAULT_PATTERNS:
         if re.search(pattern, q):
-            return _resolve(bank, key, pattern, 100.0, options, job)
-    # 4. fuzzy over aliases + learned questions
+            return key, None, 100.0, "pattern"
     choices = {f"a:{a}": a for a in aliases}
     choices.update({f"l:{n}": n for n in learned})
     best = process.extractOne(q, choices, scorer=fuzz.token_sort_ratio)
     if best and best[1] >= FUZZY_THRESHOLD:
         tag = best[2]
         if tag.startswith("a:"):
-            return _resolve(bank, aliases[tag[2:]], tag[2:], best[1], options, job)
-        return _learned(bank, learned[tag[2:]], tag[2:], best[1], options)
+            return aliases[tag[2:]], None, best[1], "fuzzy"
+        return None, learned[tag[2:]], best[1], "fuzzy"
+    return None, None, 0.0, ""
+
+
+def _lookup(bank: dict, label: str, options, job) -> Optional[Answer]:
+    q = normalize(label)
+    if not q:
+        return None
+    key, question, score, _how = _match(bank, q)
+    if key:
+        found = _resolve(bank, key, q, score, options, job)
+        if found:
+            return found
+    if question:
+        return _learned(bank, question, question, score, options)
     return None
+
+
+def matched_key(label: str, path: Path = BANK_PATH) -> Optional[str]:
+    """The canonical key a label maps to, even when the user hasn't answered it yet.
+
+    Lets callers tell "a question we know but have no answer for" (leave it for
+    the user) apart from "a question we've never seen". Never raises.
+    """
+    try:
+        q = normalize(label)
+        return _match(load(path), q)[0] if q else None
+    except Exception as exc:
+        logger.error("answer_bank.matched_key(%r) failed: %s", label, exc)
+        return None
 
 
 def learn(question: str, answer: str, path: Path = BANK_PATH) -> bool:
