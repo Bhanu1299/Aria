@@ -6,3 +6,6 @@ Saved public Greenhouse job pages (fetched 2026-10-19) for parser tests — no n
 - anthropic_jobboards.html pay_ranges ($190,000–$230,000) and "Why Anthropic?" textarea
 
 Refresh: curl -sL -A "<browser UA>" -o <file> <url>
+
+Third-party browser keys in each page's `window.ENV` (Google Picker, reCAPTCHA, Dropbox, Rollbar, ...)
+are replaced with REDACTED; tests/test_ats.py fails if a key-like string reappears.

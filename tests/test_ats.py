@@ -409,3 +409,11 @@ def test_upload_confirmed_by_filename_chip_when_input_is_gone():
     assert (row["value"], row["source"]) == ("Alex_Resume.pdf", "bank")
     missing = gh.confirm_uploads({"resume": None}, plans, "Resume/CV Attach Dropbox")
     assert gh.build_review(plans, missing)[0]["source"] == "needs_me"
+
+
+def test_fixtures_carry_no_keys_or_tokens():
+    pattern = re.compile(r'AIza[0-9A-Za-z_-]{20,}|GOCSPX|sk-[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|ya29\.|'
+                         r'"[A-Z0-9_]*(?:KEY|TOKEN|SECRET|DSN|PASSWORD)[A-Z0-9_]*":"(?!REDACTED")[^"]+"')
+    for path in FIX.glob("*.html"):
+        hit = pattern.search(path.read_text())
+        assert hit is None, f"{path.name}: {hit.group(0)[:40]}"
