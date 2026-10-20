@@ -249,13 +249,10 @@ def parse_salary_range(text: str) -> Optional[tuple[int, int]]:
 
 
 def salary_answer(salary_range: Optional[Sequence[int]], floor: int = DEFAULT_SALARY_FLOOR) -> Optional[str]:
-    """User's rule: low end >= floor → floor; otherwise the posting's range; no range → None (review)."""
+    """User's rule: the posting's low end, never below the floor; no range → None (review)."""
     if not salary_range:
         return None
-    low, high = int(salary_range[0]), int(salary_range[1])
-    if low >= floor:
-        return str(floor)
-    return f"{low}-{high}"
+    return str(max(int(salary_range[0]), floor))
 
 
 def _salary_for(bank: dict, job: Optional[dict]) -> Optional[str]:

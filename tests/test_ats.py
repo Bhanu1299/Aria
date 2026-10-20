@@ -399,3 +399,13 @@ def test_plan_without_gateway_leaves_llm_fields_for_the_user():
     assert (plans["Why Anthropic?"].source, plans["Why Anthropic?"].note) == ("needs_me", "LLM gateway was down")
     assert spy.guess_calls == [] and spy.draft_calls == []
     assert plans["First Name"].source == "bank"
+
+
+def test_upload_confirmed_by_filename_chip_when_input_is_gone():
+    f = gh.FormField("resume", "Resume/CV", "file", True)
+    plans = [gh.Planned(f, "/Users/me/Downloads/Alex_Resume.pdf", "bank")]
+    values = gh.confirm_uploads({"resume": None}, plans, "Resume/CV\nAlex_Resume.pdf ×\nCover Letter")
+    row = gh.build_review(plans, values)[0]
+    assert (row["value"], row["source"]) == ("Alex_Resume.pdf", "bank")
+    missing = gh.confirm_uploads({"resume": None}, plans, "Resume/CV Attach Dropbox")
+    assert gh.build_review(plans, missing)[0]["source"] == "needs_me"
