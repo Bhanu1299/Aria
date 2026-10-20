@@ -97,7 +97,7 @@ def summarize(page_text: str, query: str, instructions: str = "") -> str:
     try:
         resp = llm_client.complete(
             messages=[{"role": "user", "content": user_content}],
-            tier="fast",
+            task="summarize",
             system=_WEB_SYSTEM_PROMPT,
             max_tokens=300,
         )
@@ -156,7 +156,7 @@ def answer_knowledge(query: str) -> str:
     try:
         resp = llm_client.complete(
             messages=[{"role": "user", "content": query}],
-            tier="fast",
+            task="summarize",
             system=knowledge_system_prompt,
             max_tokens=300,
         )

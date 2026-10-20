@@ -84,6 +84,7 @@ from aria.core.tool import ToolRegistry
 from aria.core.agent import Agent
 from aria.core.plugin import PluginContext
 from aria.dispatch import Dispatcher, RuleSet
+from aria.features import applicator
 import aria.plugins as plugin_packs
 import aria.observability.flight_recorder as flight_recorder
 
@@ -470,7 +471,8 @@ def main():
             print(f"[Aria] Fast path disabled — patterns failed to load: {exc}")
     _dispatcher = Dispatcher(
         _registry, _agent, _rules,
-        pre_handlers=[("jobs_followup", _check_jobs_followup)],
+        pre_handlers=[("apply_followup", applicator.handle_followup),
+                      ("jobs_followup", _check_jobs_followup)],
     )
 
     # 6b''. GateLLM is the only path to an LLM — say so up front if it's down.

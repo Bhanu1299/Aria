@@ -17,6 +17,7 @@ Never raises.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import logging
 import os
 import threading
@@ -82,6 +83,8 @@ def record(transcript: str, answer: str, duration: float,
                 "tokens_in": int(usage.get("tokens_in", 0)),
                 "tokens_out": int(usage.get("tokens_out", 0)),
             }
+            if usage.get("escalations"):
+                entry["usage"]["escalations"] = int(usage["escalations"])
         with _LOCK:
             os.makedirs(os.path.dirname(_LOG_PATH), exist_ok=True)
             _rotate_if_needed()
@@ -102,8 +105,58 @@ def _rotate_if_needed() -> None:
         pass
 
 
-def read_recent(days: int = 7) -> list:
-    """Entries from the last `days` days, oldest first. Never raises."""
+def record_job(row, company: str, role: str, stage: str, ats: str = "",
+               usage: dict | None = None, ok: bool = True, note: str = "") -> None:
+    """One job-pipeline step (filled / submitted / skipped / error), keyed by sheet row,
+    with the LLM spend it caused. Kept apart from voice commands (kind="job"). Never raises."""
+    try:
+        u = usage or {}
+        entry = {
+            "kind": "job",
+            "ts": time.time(),
+            "date": datetime.now().isoformat(timespec="seconds"),
+            "row": row,
+            "company": company,
+            "role": role,
+            "stage": stage,
+            "ats": ats,
+            "ok": bool(ok),
+            "note": (note or "")[:300],
+            "usage": {
+                "cost_usd": round(float(u.get("cost_usd", 0.0)), 6),
+                "tokens_in": int(u.get("tokens_in", 0)),
+                "tokens_out": int(u.get("tokens_out", 0)),
+                "calls": int(u.get("calls", 0)),
+                "escalations": int(u.get("escalations", 0)),
+            },
+        }
+        with _LOCK:
+            os.makedirs(os.path.dirname(_LOG_PATH), exist_ok=True)
+            _rotate_if_needed()
+            with open(_LOG_PATH, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        logger.debug("flight_recorder.record_job failed: %s", exc)
+
+
+def job_summary(days: int = 7) -> dict:
+    """{"runs": n, "submitted": n, "cost_usd": total, "by_row": {row: cost}} for job entries."""
+    runs = [e for e in read_recent(days, include_jobs=True) if e.get("kind") == "job"]
+    by_row: dict = {}
+    for e in runs:
+        key = str(e.get("row") if e.get("row") is not None else e.get("company", "?"))
+        by_row[key] = round(by_row.get(key, 0.0) + float((e.get("usage") or {}).get("cost_usd") or 0.0), 6)
+    return {
+        "runs": sum(1 for e in runs if e.get("stage") == "filled"),
+        "submitted": sum(1 for e in runs if e.get("stage") == "submitted"),
+        "cost_usd": round(sum(by_row.values()), 6),
+        "by_row": by_row,
+    }
+
+
+def read_recent(days: int = 7, include_jobs: bool = False) -> list:
+    """Voice-command entries from the last `days` days, oldest first (job-pipeline
+    entries only with include_jobs). Never raises."""
     cutoff = time.time() - days * 86400
     entries = []
     try:
@@ -113,7 +166,7 @@ def read_recent(days: int = 7) -> list:
                     e = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
-                if e.get("ts", 0) >= cutoff:
+                if e.get("ts", 0) >= cutoff and (include_jobs or e.get("kind") != "job"):
                     entries.append(e)
     except FileNotFoundError:
         pass

@@ -14,6 +14,7 @@ Public API:
 
 from __future__ import annotations
 from aria.llm import gateway_client
+from aria.llm.tasks import tier_for
 
 import json
 import logging
@@ -818,7 +819,7 @@ def read_screen_region(app_name: str) -> str:
 
         client = _get_client()
         response = client.chat.completions.create(
-            model="vision",
+            model=tier_for("mac_vision"),
             messages=[
                 {
                     "role": "user",
@@ -943,7 +944,7 @@ def _sub_classify(transcript: str) -> dict:
     """Use Groq to extract structured action/target/params from transcript."""
     client = _get_client()
     response = client.chat.completions.create(
-        model="small",
+        model=tier_for("mac_text"),
         messages=[
             {"role": "system", "content": _SUB_CLASSIFY_SYSTEM},
             {"role": "user", "content": transcript.strip()},

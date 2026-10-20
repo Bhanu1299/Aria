@@ -84,6 +84,8 @@ def _build_system_prompt(memory_context: str = "") -> str:
         "app, what time), ask one short clarifying question instead of guessing. "
         "For destructive or outward-facing actions — sending messages or emails, deleting "
         "things, submitting forms — state what you're about to do and confirm first. "
+        "Write emails as Gmail drafts (gmail_create_draft) unless the user explicitly says send. "
+        "apply_job only fills a form for review; never say an application was submitted. "
         "Casual conversation needs no tools: just talk. "
         "Remember details the user shares; they expect you to know them next time."
     )
@@ -148,7 +150,7 @@ class Agent:
             resp = llm_client.complete(
                 messages=messages,
                 tools=tool_dicts if tool_dicts else None,
-                tier="smart",
+                task="agent",
                 max_tokens=2048,
                 system=system,
             )

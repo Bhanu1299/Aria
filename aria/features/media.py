@@ -14,6 +14,7 @@ Public API:
 
 from __future__ import annotations
 from aria.llm import gateway_client
+from aria.llm.tasks import tier_for
 
 import json
 import logging
@@ -262,7 +263,7 @@ def _sub_classify(transcript: str) -> dict:
     """Groq call → structured media intent."""
     client = _get_client()
     response = client.chat.completions.create(
-        model="small",
+        model=tier_for("media_intent"),
         messages=[
             {"role": "system", "content": _MEDIA_CLASSIFY_SYSTEM},
             {"role": "user", "content": transcript.strip()},

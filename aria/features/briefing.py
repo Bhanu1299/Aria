@@ -288,7 +288,7 @@ def build_briefing() -> str:
         prompt = _BRIEFING_PROMPT.format(**results, time_of_day=_time_of_day())
         resp = llm_client.complete(
             messages=[{"role": "user", "content": "Give me my briefing."}],
-            tier="fast",
+            task="briefing",
             system=prompt,
             max_tokens=500,
         )

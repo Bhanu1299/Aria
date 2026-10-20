@@ -26,10 +26,11 @@ from urllib.parse import urlencode
 import aria.web.agent_browser as agent_browser
 import aria.web.computer_use as computer_use
 from aria.llm import llm_client
+from aria.llm.tasks import tier_for
 
 logger = logging.getLogger(__name__)
 
-_VISION_MODEL = "vision"  # GateLLM tier
+_VISION_MODEL = tier_for("job_listing_vision")  # aria/llm/tasks.py
 _SETTLE_JOBS = 5.0     # seconds to wait after LinkedIn Jobs loads (SPA-heavy)
 
 
@@ -112,7 +113,7 @@ def _parse_query(query: str) -> tuple[str, str]:
     try:
         resp = llm_client.complete(
             messages=[{"role": "user", "content": query}],
-            tier="fast",
+            task="job_query_parse",
             system=(
                 "You are Aria — Bhanu's personal AI. "
                 "Extract job search intent. Return JSON only — no markdown, no extras. "

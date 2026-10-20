@@ -147,8 +147,9 @@ sequenceDiagram
 
 ### LLM tiers via GateLLM (`aria/llm/`)
 
-Every completion names a tier, not a model, and goes to GateLLM, which owns the
-provider chain (fallback, retries, model quirks, pricing):
+Every completion names a **task**. `TASK_TIERS` (`aria/llm/tasks.py`) maps the
+task to a GateLLM tier, and GateLLM owns the provider chain (fallback, retries,
+model quirks, pricing):
 
 ```mermaid
 flowchart TB
@@ -179,14 +180,17 @@ Failure behavior is explicit. Connection refused raises `GatewayUnavailable`, an
 the agent speaks "I can't reach the LLM gateway". An HTTP error raises
 `GatewayError`. There is no direct-provider fallback in Aria.
 
-| Aria tier | GateLLM tier | chain (in GateLLM config.yaml) | used for |
-|---|---|---|---|
-| `smart` | `frontier` | Claude Sonnet → GPT → Kimi → GPT-OSS 120B | the Agent loop |
-| `cheap` / `fast` | `small` | GPT-OSS 120B (Groq) → DeepSeek → GPT mini → Claude Haiku | classifiers, extractors |
-| — | `vision` | Qwen3.8-27B (Groq) → Claude Haiku → Claude Sonnet | screenshots, page reading |
+| GateLLM tier | chain (in GateLLM config.yaml) | tasks (examples from `TASK_TIERS`) |
+|---|---|---|
+| `frontier` | Claude Sonnet → GPT → Kimi → GPT-OSS 120B | `agent`, `coder`, `form_free_text` |
+| `small` | GPT-OSS 120B (Groq) → DeepSeek → GPT mini → Claude Haiku | `form_short_answer`, `job_query_parse`, extractors, summaries |
+| `vision` | Qwen3.8-27B (Groq) → Claude Haiku → Claude Sonnet | `screen_qa`, `page_vision`, `browser_vision_decide` |
 
-Modules that build OpenAI-format messages (vision, classifiers, computer use)
-use `gateway_client().chat.completions.create(model="vision", …)`. Every call
+Agent-style calls use `llm_client.complete(…, task="…")`. Modules that build
+OpenAI-format messages (vision, classifiers, computer use) use
+`gateway_client().chat.completions.create(model=tier_for("…"), …)`. Where a small
+answer can be checked in code, `llm_client.complete_checked` validates it and
+escalates once to frontier. Every call
 is tallied in `aria.llm.meter`; the dispatcher snapshots it per command, so the
 flight log's cost covers LLM calls made inside tools too.
 
@@ -346,6 +350,93 @@ flowchart LR
 The wake-word listener runs under a supervisor loop: crashes restart with
 exponential backoff and are logged — it cannot die silently.
 
+## Operating rules: the job pipeline and everything after it
+
+These rules govern the job-application work and every later phase. They live
+here so the code can be checked against them.
+
+### The full loop
+
+| # | Step | Owner | Status |
+|---|---|---|---|
+| 1 | Muse writes job rows to the sheet (`Sheet1`; blank Status = new) | Muse | in use |
+| 2 | Find the people behind a posting: posting → search API → LinkedIn browse (read-only, low volume) | Aria | planned |
+| 3 | Find their emails, cache-first by company domain | Coldstart | planned |
+| 4 | Fill the application and **stop for the user's review** | Aria | built: Greenhouse adapter, generic fallback |
+| 5 | Create Gmail **drafts**: Aria never sends | Aria | draft tool built; outreach writing planned |
+
+Aria owns every runtime step. Claude is one model behind GateLLM, not a
+component of the pipeline.
+
+### Step 4 in detail: apply → review → submit
+
+```mermaid
+flowchart LR
+    V["apply to the next job from Muse"] --> R["dispatcher rule → apply_job"]
+    R --> S["sheet: next blank-Status row"]
+    S --> D{"detect ATS<br/>(code)"}
+    D -->|Greenhouse| G["schema from page JSON<br/>answer bank → needs_me → small guess → frontier draft"]
+    D -->|other| C["generic browser loop<br/>never-submit goal"]
+    G & C --> RV["review: screenshot + markdown<br/>sheet → In review · cost → flight log"]
+    RV --> U{"your words<br/>(pre-handler, not a tool)"}
+    U -->|submit it| SB["learn corrections → click form's submit<br/>→ verify → Applied"]
+    U -->|skip this job| SK["Skipped"]
+    U -->|I submitted it| SB2["Applied"]
+```
+
+- `aria/features/applicator.py` is the single entry point. `aria/features/ats/` holds
+  detection, the Greenhouse adapter, the two LLM tasks and the submit helper.
+- The form stays open in its own browser tab (`agent_browser` tab `"apply"`), so
+  other tools can't navigate it away while it waits for review.
+- Submitting is not an agent tool. Only the dispatcher pre-handler, triggered by
+  the user's own words, can click submit, and it refuses if the open tab isn't
+  the reviewed form.
+- Every step writes `aria.db.application_runs` and a flight-log job entry with
+  that job's LLM cost, keyed by sheet row. `daily_check.py report` prints
+  per-row spend.
+
+### Storage split
+
+| Store | Holds | Never holds |
+|---|---|---|
+| Google Sheet | the user's view: Status, Who to contact, Outreach, Updates | caches, logs |
+| Coldstart SQLite | contact cache, email pattern per domain, verification results | application state |
+| Aria `~/.aria/aria.db` | applications log, learned form answers (`learned_answers`), run and cost history | contacts |
+
+Data is not duplicated across stores. Only what the user needs to see is synced
+into the sheet. The hand-written answer seed (`~/.aria/answer_bank.json`) is
+input that the user edits; anything Aria learns goes to `aria.db`.
+
+### Code first, LLMs write and judge
+
+Code finds, parses and fills. These are pure code with no LLM: sheet
+read/write, dedupe, status, URL → domain, ATS detection, Greenhouse standard
+fields, answer-bank lookups, the salary rule, dates, regex parsing of
+"Name - Title - Company | LinkedIn" titles, title-keyword contact ranking, email
+permutations, MX/SMTP checks, caching, reply detection and follow-up timing.
+
+An LLM is allowed only for:
+- **small:** unknown short form fields; parse/rank fallbacks when regex fails or ties; reply classification
+- **frontier:** "why us" and other free-text answers; outreach emails
+- **vision:** only when the DOM fails
+
+Legal and personal facts (sponsorship, work authorization, demographics,
+agreements and consents) are never guessed. An unanswered one is left empty
+and flagged `needs_me`.
+
+### Model routing
+
+- No LLM call decides routing. Each call site names a **task**, and
+  `TASK_TIERS` in `aria/llm/tasks.py` maps it to `small`, `frontier` or `vision`.
+  That table is the one place to tune tiers. Guard tests fail the build if a call
+  site hard-codes a tier or uses a task that isn't in the table.
+- Escalation (`llm_client.complete_checked`): run the task's tier, validate the
+  output in code (schema, non-empty, option in the allowed list, length), and on
+  failure retry **once** on frontier. Escalations are counted in `aria.llm.meter`
+  and land in the flight log.
+- GateLLM only does fallback chains, retries and cost. Cost is logged per job,
+  keyed by sheet row, to the flight log.
+
 ## Design invariants
 
 These are enforced, not aspirational:
@@ -382,11 +473,14 @@ main.py                 launcher shim → aria.app (so `python main.py` works)
 daily_check.py          reliability CLI (checklist · report · wake)
 aria/
   app.py                wiring + command lifecycle (the only god allowed)
+  setup.py              `python -m aria.setup google`: one-time account setup
   core/                 agent.py (tool loop) · tool.py (registry) ·
                         plugin.py (contract) · compact.py · config.py · paths.py
   dispatch/             dispatcher · rules + patterns.json · parse (durations, times)
-  llm/                  GateLLM client: GatewayProvider (agent) · gateway_client() · meter
-  plugins/              drop-in capability packs (core, context, media, messaging,
+  llm/                  GateLLM client: GatewayProvider (agent) · gateway_client() · meter ·
+                        tasks.py (TASK_TIERS: the only place tiers are chosen)
+  integrations/         google_auth (one OAuth token, scope tracking) · sheets (job sheet)
+  plugins/              drop-in capability packs (apply, core, context, media, messaging,
                         memory, productivity, screen, health, system)
   voice/                voice_capture · transcriber · speaker (+ThinkingAck) ·
                         hotkey · wake_word (3 backends, restart supervisor) ·
@@ -397,13 +491,14 @@ aria/
   screen/               screen_qa · selection — screen intelligence
   state/                memory · db · session_notes · memory_extractor ·
                         auto_dream · away_summary — the memory layers
-  features/             jobs · briefing · media · mac_controller · coder ·
-                        scenes · summarizer · applicators · tips
+  features/             applicator (apply → review → submit) · ats/ (detect ·
+                        greenhouse · answers · submit) · answer_bank · jobs · briefing · media ·
+                        mac_controller · coder · scenes · summarizer · tips
   system/               sleep_guard · prevent_sleep
   observability/        flight_recorder · wake_stats
   skills/               legacy local skills (see project state)
 training/               custom wake-word model pipeline (record → train → onnx)
-tests/                  ~550 tests; tests/daily_questions.json drives the
+tests/                  ~900 tests (no live network); tests/daily_questions.json drives the
                         daily voice checklist
 ```
 

@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import aria.core.plugin as _plugin_base
 from aria.core.tool import ToolDescriptor, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-_NOT_SETUP_MSG = "Google isn't connected yet. Run: python -m aria.setup gmail"
+_NOT_SETUP_MSG = "Google isn't connected yet. Run: python -m aria.setup google"
 
 
 def _str_prop(desc: str) -> dict:
@@ -23,17 +24,45 @@ def _bool_prop(desc: str) -> dict:
     return {"type": "boolean", "description": desc}
 
 
+_SEND_YES = re.compile(r"(?:yes|yeah|yep|yup|sure|confirm(?:ed)?|go ahead|send it|send)(?:[ ,]+(?:please|send it|send|go ahead|do it))*")
+_SEND_NO = re.compile(r"\b(?:no|nope|don'?t|do not|cancel|stop|wait|hold on|not yet|draft)\b")
+
+
+def is_send_confirmation(reply: str) -> bool:
+    """A clear spoken yes, and nothing that sounds like no."""
+    q = re.sub(r"[^\w\s',]", " ", (reply or "").lower()).strip(" ,")
+    q = re.sub(r"\s+", " ", q)
+    return bool(q) and not _SEND_NO.search(q) and bool(_SEND_YES.fullmatch(q))
+
+
 class ProductivityPlugin(_plugin_base.PluginBase):
 
     requires_agent = True  # cron jobs run their prompts through the live Agent
 
-    def __init__(self, agent=None, speaker=None) -> None:
+    def __init__(self, agent=None, speaker=None, voice_capture=None, transcriber=None) -> None:
         self._agent = agent
         self._speaker = speaker
+        self._voice_capture = voice_capture
+        self._transcriber = transcriber
 
     @classmethod
     def from_context(cls, ctx) -> "ProductivityPlugin":
-        return cls(agent=ctx.agent, speaker=ctx.speaker)
+        return cls(agent=ctx.agent, speaker=ctx.speaker,
+                   voice_capture=ctx.voice_capture, transcriber=ctx.transcriber)
+
+    def _confirm_send(self, prompt: str) -> bool:
+        """Spoken yes/no before anything leaves the outbox. No voice stack → False."""
+        if not (self._speaker and self._voice_capture and self._transcriber):
+            return False
+        try:
+            self._speaker.say(prompt)
+            wav = self._voice_capture.record_once(max_seconds=5)
+            if wav is None:
+                return False
+            return is_send_confirmation(self._transcriber.transcribe(wav))
+        except Exception as exc:
+            logger.warning("gmail: send confirmation failed: %s", exc)
+            return False
 
     def register(self, registry: ToolRegistry) -> None:
         from aria.plugins.productivity.gmail import GmailClient
@@ -52,6 +81,7 @@ class ProductivityPlugin(_plugin_base.PluginBase):
 
         registry.register(self._gmail_list(gmail))
         registry.register(self._gmail_read(gmail))
+        registry.register(self._gmail_create_draft(gmail))
         registry.register(self._gmail_send(gmail))
         registry.register(self._gmail_reply(gmail))
         registry.register(self._calendar_list(cal))
@@ -116,16 +146,48 @@ class ProductivityPlugin(_plugin_base.PluginBase):
             execute=execute,
         )
 
-    def _gmail_send(self, client) -> ToolDescriptor:
+    def _gmail_create_draft(self, client) -> ToolDescriptor:
         def execute(params: dict) -> str:
-            return client.send_message(
-                params["to"], params["subject"], params["body"],
-                params.get("cc", ""),
+            return client.create_draft(
+                params.get("to", ""), params.get("subject", ""), params["body"],
+                params.get("cc", ""), params.get("reply_to_id", ""),
             )
 
         return ToolDescriptor(
+            name="gmail_create_draft",
+            description=(
+                "Save an email as a Gmail DRAFT — never sends. The default for writing any email: "
+                "outreach, recruiter or cold emails, follow-ups, 'write/draft an email to ...'. "
+                "Set reply_to_id (from gmail_list) to draft a reply in that thread."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "to": _str_prop("Recipient email address"),
+                    "subject": _str_prop("Email subject"),
+                    "body": _str_prop("Email body text"),
+                    "cc": _str_prop("CC address (optional)"),
+                    "reply_to_id": _str_prop("Email ID to reply to (optional)"),
+                },
+                "required": ["body"],
+            },
+            execute=execute,
+        )
+
+    def _gmail_send(self, client) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            to, subject, body, cc = params["to"], params["subject"], params["body"], params.get("cc", "")
+            if not self._confirm_send(f"Send the email to {to}, subject {subject}? Say yes to send."):
+                return "Not sent. " + client.create_draft(to, subject, body, cc)
+            return client.send_message(to, subject, body, cc)
+
+        return ToolDescriptor(
             name="gmail_send",
-            description="Send a new email via Gmail.",
+            description=(
+                "SEND an email — only when the user explicitly says to send it. Aria asks them to "
+                "confirm out loud first; without a spoken yes it saves a draft instead. For writing "
+                "or drafting an email use gmail_create_draft."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -141,11 +203,18 @@ class ProductivityPlugin(_plugin_base.PluginBase):
 
     def _gmail_reply(self, client) -> ToolDescriptor:
         def execute(params: dict) -> str:
-            return client.reply_message(params["email_id"], params["body"])
+            email_id, body = params["email_id"], params["body"]
+            if not self._confirm_send("Send that reply? Say yes to send."):
+                return "Not sent. " + client.create_draft("", "", body, reply_to_id=email_id)
+            return client.reply_message(email_id, body)
 
         return ToolDescriptor(
             name="gmail_reply",
-            description="Reply to an email (preserves thread). Use after gmail_list/gmail_read.",
+            description=(
+                "SEND a reply (preserves thread) — only when the user explicitly says to send it. "
+                "Aria asks them to confirm out loud first; without a spoken yes it saves the reply "
+                "as a draft. To draft a reply use gmail_create_draft with reply_to_id."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {

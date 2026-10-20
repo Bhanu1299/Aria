@@ -56,6 +56,13 @@
     {"id": "app_quit", "tool": "system_control", "params": {"action": "quit_app", "app_name": "{app_name}"},
      "regex": "(?:quit|close|exit) (?!my |the |a |this |that |it |all |every |full ?screen)(?!.*\\band\\b)(?P<app_name>[a-z0-9][a-z0-9 &'+-]{0,30})"},
 
+    {"id": "apply_next_job", "tool": "apply_job", "params": {},
+     "regex": "apply (?:to|for) (?:the )?next (?:job|one|role|position)(?: (?:from|on|in) (?:muse|the muse sheet|my (?:job )?(?:list|sheet)|the sheet))?"},
+    {"id": "apply_sheet_row", "tool": "apply_job", "params": {"row": "{row:int}"},
+     "regex": "apply (?:to|for) (?:the job (?:in|on) )?(?:sheet )?row (?P<row>\\d{1,4})"},
+    {"id": "next_job_from_sheet", "tool": "job_from_sheet", "params": {},
+     "regex": "(?:(?:what's|what is|whats|get|get me|give me|show me|read me|pull up|tell me) )?(?:the )?next job(?: (?:from|on|in) (?:muse|the muse sheet|my (?:job )?(?:list|sheet)|the sheet))?"},
+
     {"id": "time_now", "tool": "clock", "params": {"what": "time"},
      "regex": "what time is it(?: now| right now)?|(?:what's|what is|whats) the time(?: now| right now)?|tell me the time|do you have the time|current time"},
     {"id": "date_today", "tool": "clock", "params": {"what": "date"},

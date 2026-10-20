@@ -31,10 +31,11 @@ from pathlib import Path
 import aria.web.agent_browser as agent_browser
 import aria.web.dom_browser as dom_browser
 from aria.llm import llm_client
+from aria.llm.tasks import tier_for
 
 logger = logging.getLogger(__name__)
 
-_VISION_MODEL = "vision"  # GateLLM tier
+_VISION_MODEL = tier_for("browser_vision_decide")  # aria/llm/tasks.py
 _SCREENSHOT_PATH = "/tmp/aria_cu.jpg"
 _ACTION_SLEEP = 1.2  # base — actual sleep randomised via _human_sleep()
 
@@ -222,7 +223,7 @@ def _dom_decide(
     try:
         resp = llm_client.complete(
             messages=[{"role": "user", "content": user_text}],
-            tier="fast",
+            task="browser_dom_decide",
             system=_CU_DOM_SYSTEM,
             max_tokens=150,
         )
@@ -286,7 +287,7 @@ def _dom_research_decide(
     try:
         resp = llm_client.complete(
             messages=[{"role": "user", "content": user_text}],
-            tier="fast",
+            task="browser_dom_decide",
             system=_CU_DOM_GENERAL_SYSTEM,
             max_tokens=300,
         )
@@ -506,8 +507,8 @@ def _research_decide(
         return {"action": "stuck", "reason": f"Groq error: {exc}"}
 
 
-# Escalation model, by GateLLM model id (not a tier: it must accept images).
-_CLAUDE_MODEL = "claude-sonnet-5-5"
+# Escalation model (aria/llm/tasks.py): an explicit model id — it must accept images.
+_CLAUDE_MODEL = tier_for("browser_vision_escalate")
 
 
 def _claude_research_decide(
