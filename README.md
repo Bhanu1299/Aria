@@ -398,13 +398,16 @@ cp .env.example .env                       # ARIA_GATEWAY_URL (default http://12
 cp identity.example.json identity.json     # your name and profile (stays local, gitignored)
 ```
 
-**Job applications (optional).** Copy the answer template and fill in your answers. Anything left as `null` or `<placeholder>` is left for you on every form. Then connect Google once; one token covers Gmail, Calendar and Sheets:
+**Job applications (optional).** Copy the answer template and fill in your answers. Anything left as `null` or `<placeholder>` is left for you on every form. Then connect Google. Aria keeps two accounts apart: a personal one for the assistant (Gmail, Calendar) and a jobs one for the pipeline (the sheet, outreach drafts). Job code only ever uses the jobs token:
 
 ```bash
 cp answer_bank.example.json ~/.aria/answer_bank.json   # your answers, outside the repo
 # .env: MUSE_SHEET_ID=<your sheet id>, MUSE_SHEET_TAB=Sheet1
+#       GOOGLE_ACCOUNT=<personal address>, GOOGLE_JOBS_ACCOUNT=<jobs address>
 # OAuth client (Desktop app) → ~/.aria/credentials/google_client_secret.json
-venv/bin/python -m aria.setup google
+venv/bin/python -m aria.setup google                  # personal
+venv/bin/python -m aria.setup google --account jobs   # jobs
+venv/bin/python -m aria.setup google --status         # which account each tool uses
 ```
 
 **LLM gateway.** Aria sends every LLM call to an OpenAI-compatible gateway at `ARIA_GATEWAY_URL`. I run GateLLM, where provider keys (Groq, Anthropic, …) live in the gateway's own `.env`:
@@ -412,6 +415,8 @@ venv/bin/python -m aria.setup google
 ```bash
 cd ~/GateLLM && .venv/bin/uvicorn llm_gateway.api.app:app --port 8000
 ```
+
+Aria starts the gateway itself on the first LLM call if it isn't running (`ARIA_GATEWAY_DIR`, default `~/GateLLM`) and stops it after 10 idle minutes (`ARIA_GATEWAY_IDLE_SECONDS`); `ARIA_GATEWAY_AUTOSTART=0` turns that off.
 
 Any gateway that serves `/v1/chat/completions` with the model names `small`, `frontier` and `vision` works. Without one, the direct commands (timers, reminders, volume, apps, math) still work.
 
@@ -439,6 +444,8 @@ python main.py --login gmail      # one-time logins: gmail, google, linkedin
 Hold **⌥ Space** and speak, or just say **"Aria"**.
 
 **Job applications:** "apply to the next job from Muse", "apply to row 14", "what's the next job on my list", then "submit it", "I submitted it" or "skip this job". Reviews are saved to `~/.aria/reviews/`.
+
+**Pipeline dashboard:** `venv/bin/python -m aria.dashboard` opens a local, read-only page (127.0.0.1) with every job and its stage, from found to replied: a funnel, what needs you (empty form fields, stale drafts, follow-ups due, bounces), a searchable table, this week's numbers and LLM cost. It joins the Muse sheet, `aria.db`, Coldstart and the jobs Gmail; a source that's down shows "no data" instead of breaking the page.
 
 **Reliability tools:**
 
