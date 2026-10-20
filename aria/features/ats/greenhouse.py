@@ -294,7 +294,7 @@ def build_profile(job: dict) -> str:
     bank = answer_bank.load()
     lines = []
     for k, v in bank["answers"].items():
-        if k in ("eeo", "salary_rule") or v in (None, "") or isinstance(v, dict):
+        if k in ("eeo", "salary_rule", "resume_path") or v in (None, "") or isinstance(v, dict):
             continue
         if not str(v).startswith("<"):
             lines.append(f"{k}: {v}")
@@ -390,6 +390,18 @@ def plan(
             p.source = "needs_me" if p.field.required else "skipped"
             p.note = "draft failed"
     return plans
+
+
+def confirm_uploads(dom_values: dict, plans: list, page_text: str) -> dict:
+    """Greenhouse swaps the file <input> for a filename chip after an upload, so an
+    uploaded file can read back as missing. The filename on the page counts as proof."""
+    out = dict(dom_values)
+    for p in plans:
+        if p.field.kind == "file" and p.value and not out.get(p.field.name):
+            name = Path(p.value).name
+            if name in (page_text or ""):
+                out[p.field.name] = name
+    return out
 
 
 def build_review(plans: list, dom_values: dict) -> list:
@@ -641,7 +653,8 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None) -> Gree
                         _fill_one(page, p)
                     except Exception as exc:
                         logger.warning("greenhouse: retry %s failed: %s", p.field.name, exc)
-            return page.evaluate(_READBACK_JS, [p.field.name for p in plans])
+            values = page.evaluate(_READBACK_JS, [p.field.name for p in plans])
+            return confirm_uploads(values, plans, page.inner_text("body"))
 
         dom_values = agent_browser.run(_fill_all, tab=TAB)
         result.review = build_review(plans, dom_values)

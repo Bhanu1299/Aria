@@ -213,9 +213,10 @@ def test_parse_salary_range(text, expected):
 
 
 @pytest.mark.parametrize("rng,expected", [
-    ((128000, 256000), "120000"),       # low end >= floor → floor
+    ((128000, 256000), "128000"),       # posting's low end
     ((120000, 150000), "120000"),       # boundary
-    ((100000, 140000), "100000-140000"),  # below floor → posting's range
+    ((100000, 140000), "120000"),       # low end below the floor → floor
+    ((90000, 110000), "120000"),        # whole range below the floor → still the floor
     (None, None),                       # no range → leave for review
 ])
 def test_salary_answer(rng, expected):
@@ -225,7 +226,7 @@ def test_salary_answer(rng, expected):
 def test_salary_label_uses_job_description(bank_file):
     job = {"description": "Compensation: $130,000 - $160,000"}
     a = look("What are your salary expectations?", bank_file, job=job)
-    assert (a.key, a.value) == ("salary_rule", "120000")
+    assert (a.key, a.value) == ("salary_rule", "130000")
 
 
 def test_salary_without_range_is_left_for_review(bank_file):
@@ -273,7 +274,7 @@ def test_null_answer_is_unset(tmp_path, monkeypatch):
     path = tmp_path / "bank.json"
     path.write_text(json.dumps({"answers": {"sponsorship": None, "salary_rule": "text rule"}}))
     assert ab.lookup("Will you now or in the future require sponsorship?", path=path) is None
-    assert ab.lookup("Desired salary", path=path, job={"description": "$130k - $150k"}).value == "120000"
+    assert ab.lookup("Desired salary", path=path, job={"description": "$130k - $150k"}).value == "130000"
 
 
 def test_name_falls_back_to_legal_name(tmp_path, monkeypatch):
