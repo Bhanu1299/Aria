@@ -398,3 +398,17 @@ def test_needs_me_hides_machine_field_names_and_shows_draft_subject(srcs, tmp_pa
 ])
 def test_contact_name(cell, name):
     assert m.contact_name(cell) == name
+
+
+def test_needs_me_skips_old_items_and_non_outreach(srcs):
+    g = srcs["gmail"].data
+    g["drafts"].append({"id": "old", "thread_id": "to", "to": ["a@acme.test"], "subject": "x", "ts": ts(400)})
+    g["threads"] += [thread("t6", "hr@vandelay.test", "Full-Stack Engineer — Seeker", sent_days=90),
+                     thread("t7", "x1@bounce.shop.test", "unsubscribe", sent_days=10),
+                     thread("t8", "abc@inbound.relay.test", "Re: a message", sent_days=10),
+                     thread("t9", "pm@hooli.test", "Re: Platform Engineer", sent_days=10)]
+    mdl = m.build(srcs, NOW)
+    n = m.needs_me(mdl)
+    assert [d["id"] for d in n["stale_drafts"]] == ["d1"]
+    assert [t["id"] for t in n["follow_ups"]] == ["t1"]
+    assert not {"t7", "t8", "t9"} & {t["id"] for t in mdl["threads"]}
