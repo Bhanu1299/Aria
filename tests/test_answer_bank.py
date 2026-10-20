@@ -222,3 +222,53 @@ def test_linkedin_bank_answer_uses_lookup(monkeypatch):
     monkeypatch.setattr(li.answer_bank, "lookup",
                         lambda label, job=None: ab.Answer("sponsorship", "Yes", "bank", "sponsor"))
     assert li._bank_answer("Do you require sponsorship?", {}) == "Yes"
+
+
+# ── the user's own keys ─────────────────────────────────────────────────────
+
+def test_answer_key_names_are_aliases_and_beat_cross_key_aliases(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "IDENTITY_JSON", tmp_path / "none.json")
+    path = tmp_path / "bank.json"
+    path.write_text(json.dumps({
+        "answers": {"city": "Springfield", "location": "Springfield, IL", "zip": "10001",
+                    "school": "State University", "eeo": {"pronouns": "he/him"}},
+        "aliases": {"location": ["city", "where are you based"]},
+    }))
+    assert ab.lookup("City", path=path).value == "Springfield"
+    assert ab.lookup("Location (City)", path=path).value == "Springfield, IL"
+    assert ab.lookup("Where are you based?", path=path).value == "Springfield, IL"
+    assert ab.lookup("Zip / Postal Code", path=path).value == "10001"
+    assert ab.lookup("University", path=path).value == "State University"
+    assert ab.lookup("Pronouns", path=path).value == "he/him"
+
+
+def test_null_answer_is_unset(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "IDENTITY_JSON", tmp_path / "none.json")
+    path = tmp_path / "bank.json"
+    path.write_text(json.dumps({"answers": {"sponsorship": None, "salary_rule": "text rule"}}))
+    assert ab.lookup("Will you now or in the future require sponsorship?", path=path) is None
+    assert ab.lookup("Desired salary", path=path, job={"description": "$130k - $150k"}).value == "120000"
+
+
+def test_name_falls_back_to_legal_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "IDENTITY_JSON", tmp_path / "none.json")
+    path = tmp_path / "bank.json"
+    path.write_text(json.dumps({"answers": {"legal_name": "Alex Jordan Rivera", "first_name": "Alex Jordan"}}))
+    assert ab.lookup("Name", path=path).value == "Alex Jordan Rivera"
+    assert ab.lookup("Preferred Name", path=path).value == "Alex Jordan"
+
+
+def test_learned_answer_used_when_matched_key_is_unset(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "IDENTITY_JSON", tmp_path / "none.json")
+    path = tmp_path / "bank.json"
+    path.write_text(json.dumps({"answers": {"sponsorship": None}}))
+    q = "Will you now or in the future require sponsorship?"
+    assert ab.lookup(q, path=path) is None
+    ab.learn(q, "Yes", path=path)
+    assert ab.lookup(q, path=path).value == "Yes"
+
+
+def test_matched_key_ignores_values(bank_file):
+    assert ab.matched_key("Are you willing to relocate?", path=bank_file) == "relocation"   # blank value
+    assert ab.matched_key("Desired salary", path=bank_file) == "salary_rule"
+    assert ab.matched_key("What's your favorite movie?", path=bank_file) is None
