@@ -10,9 +10,9 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 **Hold ⌥ Space or just say "Aria", ask for something, and keep working.**
-Aria plans, uses tools, browses, reads your mail and messages, controls your Mac, and answers out loud.
+Aria plans, uses tools, browses, reads your mail and messages, controls your Mac, fills in job applications for your review, and answers out loud.
 
-[How it works](#-how-a-command-flows) · [Architecture deep dive](ARCHITECTURE.md) · [Setup](#-setup) · [Run it](#-run)
+[How it works](#-how-a-command-flows) · [Job applications](#-job-applications-fill-stop-you-decide) · [Architecture deep dive](ARCHITECTURE.md) · [Setup](#-setup) · [Run it](#-run)
 
 </div>
 
@@ -37,6 +37,7 @@ aria:  "Anytime."
 
 | | |
 |---|---|
+| 💼 **Job applications that stop for review** | Say "apply to the next job" and Aria takes the next row from your job sheet, fills the Greenhouse form, and **stops**: you get a screenshot, a review of every field and where each answer came from, and a status update in the sheet. Nothing is submitted until you say "submit it". Visa, work-authorization and demographic questions are never guessed. [How it works](#-job-applications-fill-stop-you-decide) |
 | 🧭 **Fast path before the LLM** | Timers, reminders, volume, apps and math answer in **under 2 ms with zero tokens**, instead of a 0.3–2 s model round trip. One dispatcher sends everything else to the agent, and both paths call the same tools. Modeled on how Siri routes requests, which I worked out from the files it ships. |
 | 🚪 **One gateway, every LLM call** | Agent turns, vision, classifiers and browser automation all go through [GateLLM](#6--reach-the-llm-one-gateway-for-every-call), an LLM gateway I built as a separate project. It handles provider fallback, retries, model quirks and per-call cost, so Aria imports no provider SDK, and a test fails if one sneaks back in. |
 | 🧰 **50+ tools, 9 drop-in plugins** | Web, apps, system, media, screen, messaging, memory, productivity and cross-app context. Add a capability by dropping a folder in; no core edits. |
@@ -178,7 +179,7 @@ Restart, and the agent can control your lights. Plugins that need the agent itse
 
 Aria has no provider SDKs. Every LLM call goes over HTTP to **GateLLM**, an OpenAI-compatible gateway I built as a separate project: provider adapters, per-model circuit breakers, retries with backoff, a total deadline per request, and cost accounting, covered by 96 tests. That covers agent turns, screen and page vision, the media and Mac-control classifiers, session notes, browser automation, and the browser agent's Claude escalation ([client code](aria/llm/providers/gateway.py)).
 
-Aria asks for a tier, and the gateway picks the model, falls back across providers when one fails, and returns the cost in a response header:
+Each call site names a **task** (`form_short_answer`, `screen_qa`, `agent`, …), and one table, `TASK_TIERS` in [`aria/llm/tasks.py`](aria/llm/tasks.py), maps it to a tier. That table is the only place tiers are chosen, and a test fails if a call site hard-codes one. The gateway then picks the model, falls back across providers when one fails, and returns the cost in a response header:
 
 ```mermaid
 flowchart TB
@@ -215,11 +216,13 @@ flowchart TB
     class TIER,REL,Q,COST key
 ```
 
-| Aria asks for | GateLLM tier | Chain (cheapest first) | Used for |
-|---|---|---|---|
-| `smart` | `frontier` | Claude Sonnet → GPT → Kimi → GPT-OSS 120B | the agent loop |
-| `cheap` / `fast` | `small` | GPT-OSS 120B (Groq) → DeepSeek → GPT mini → Claude Haiku | classifiers, extractors |
-| `vision` | `vision` | Qwen3.8-27B (Groq) → Claude Haiku → Claude Sonnet | screenshots, page reading |
+| GateLLM tier | Chain (cheapest first) | Tasks (examples) |
+|---|---|---|
+| `frontier` | Claude Sonnet → GPT → Kimi → GPT-OSS 120B | the agent loop, coding, "why us?" answers |
+| `small` | GPT-OSS 120B (Groq) → DeepSeek → GPT mini → Claude Haiku | classifiers, extractors, unknown short form fields |
+| `vision` | Qwen3.8-27B (Groq) → Claude Haiku → Claude Sonnet | screenshots, page reading |
+
+When a small model's answer can be checked in code (valid JSON, an option that's actually in the dropdown, a sane length), `complete_checked` checks it and, on failure, retries once on frontier. Each escalation is counted in the flight log.
 
 The agent writes Anthropic-style history (`tool_use` / `tool_result` blocks). The client translates it to OpenAI format on the way out, so whichever vendor serves a request, including one that takes over mid-task, gets history it accepts. Model IDs, prices and quirks live in the gateway's config, not in Aria. One example of a quirk: gpt-oss returns an empty answer at small token budgets unless `reasoning_effort` is set to `low`.
 
@@ -288,6 +291,61 @@ A 28-question, 17-category spoken checklist covers every capability. The report 
 
 ---
 
+## 💼 Job applications: fill, stop, you decide
+
+```text
+you:   "Aria, apply to the next job from Muse"
+aria:  "Opening the Greenhouse application. Found 26 fields. Filling 18 fields."
+aria:  "Greenhouse form filled for Commercial Policy Lead at Discord. 4 fields need you.
+        Say submit it when you're ready."           ← the form stays open in its own tab
+you:   "skip this job"                               ← or "submit it", or "I submitted it"
+aria:  "Skipped Commercial Policy Lead at Discord."
+```
+
+<sub>Aria's lines are from a live run on Discord's real posting, started from its URL. Reading the next row from the sheet is tested against a mocked Sheets API.</sub>
+
+The job sheet (a Google Sheet that another tool keeps filled with roles) is the queue. Aria works through it one row at a time and never submits on its own.
+
+```mermaid
+flowchart LR
+    SH["Google Sheet<br/>next row with a blank Status"] --> DT{"which ATS?<br/>(code)"}
+    DT -->|Greenhouse| GH["read the form's own JSON<br/>labels · types · every option"]
+    DT -->|other| GN["generic browser agent<br/>same never-submit rule"]
+    GH --> AN["answer each field"]
+    AN --> FL["fill · read every value back"]
+    GN --> RV
+    FL --> RV["review<br/>screenshot · summary · sheet → In review"]
+    RV --> YOU{"your words"}
+    YOU -->|"submit it"| SB["learn your edits → submit → verify<br/>sheet → Applied"]
+    YOU -->|"skip this job"| SK["sheet → Skipped"]
+
+    classDef key fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:2px
+    class AN,YOU key
+```
+
+**How each field gets its answer**, cheapest and safest first:
+
+| Source | When | Marked in the review as |
+|---|---|---|
+| Your answer bank | A local file of your answers, matched by exact label, a question you've answered before, a built-in pattern ("sponsor" → sponsorship), then fuzzy match (≥ 90). Values are mapped onto the form's real options, e.g. "No, I do not have a disability" → "No, I do not have a disability and have not had one in the past". | `bank` |
+| You | Questions the bank knows but you left empty on purpose (sponsorship, work authorization), agreements and consents, and EEO questions with no stored answer. **These are never sent to an LLM.** | `needs_me` |
+| Small model | Required short questions the bank has never seen, in one batched call. The output is checked in code, and anything that isn't one of the field's options is rejected. | `llm_guess` |
+| Frontier model | "Why do you want to work here?" style essays, written from your profile and the job description. | `llm_draft` |
+
+**Engineering decisions**
+
+- **Code reads the form; LLMs only write.** Greenhouse pages carry their full form schema as JSON: every label, field type, required flag, dropdown option and pay range. Aria parses that instead of screenshotting or asking a model to read the page. The live page drops the JSON after it loads, so Aria fetches it with a plain HTTP request, and the browser DOM supplies the few inputs it doesn't list.
+- **Submitting is not something an LLM can choose.** There is no submit tool for the agent. "submit it", "I submitted it" and "skip this job" are caught by plain code in front of the dispatcher. A test checks that the form filler only ever clicks a field's own input or one of its dropdown options. Before submitting, Aria checks that the open tab is still the form you reviewed.
+- **Everything is checked against the page.** After filling, Aria reads every value back from the DOM, and the review shows what's actually on the form, not what was planned. When you say "submit it", answers you corrected by hand are saved, so the same question is answered your way next time.
+- **Cost per job.** Each step writes a run record and its LLM cost, keyed by sheet row; `daily_check.py report` shows spend per row.
+- **Email is drafts-first.** Aria writes Gmail drafts. Sending needs a spoken "yes" after Aria reads out the recipient and subject; anything else saves a draft. The job pipeline can't send email at all, which a test enforces.
+
+**Verified so far.** The parser is tested against four saved real Greenhouse postings (Conviva, Discord, Faraday Future, Anthropic). Live runs on real postings filled and read back 18 fields on Discord's form, uploaded the resume on Faraday Future's, and left both submit buttons untouched. The first live run also caught a real bug: the location autocomplete typed "Buffalo" and took the first suggestion, *Buffalo City, South Africa*. It now accepts only an exact city-and-state match, and otherwise leaves the field for you.
+
+**Status:** Greenhouse has a dedicated filler. Lever, Ashby and Workday are recognized and go through the generic browser agent. Finding recruiters and writing outreach are next.
+
+---
+
 ## 🧭 Design principles
 
 These are enforced in code, not aspirations:
@@ -298,6 +356,8 @@ These are enforced in code, not aspirations:
 4. **Local-first, one way out.** Only LLM completions leave the machine, and every one goes through the gateway.
 5. **Voice is the UI.** Short spoken answers, and long work is acknowledged out loud.
 6. **Measure, then fix.** Reliability work starts from the flight log, not guesses.
+7. **Code first; LLMs write and judge.** Parsing, matching, routing and status changes are plain code. Models are called for writing and for judgment calls, at a tier set in one table.
+8. **Irreversible steps need your words.** Submitting an application or sending an email can't be triggered by a model, only by what you say.
 
 ---
 
@@ -311,9 +371,10 @@ These are enforced in code, not aspirations:
 | **Control your Mac** | Open and quit apps, media playback, volume, brightness, dark mode, wifi, bluetooth, screenshots, lock (instant, no LLM) |
 | **Timers and reminders** | Named countdown timers, Reminders.app with due times ("tomorrow at 9", "in 20 minutes"), today's agenda (instant, no LLM) |
 | **Message people** | iMessage and WhatsApp, always confirming before sending (Slack, Telegram and Discord are stubbed for later) |
-| **Run your day** | Morning briefing, Gmail, Google Calendar, cron-scheduled prompts |
+| **Run your day** | Morning briefing, Gmail (drafts by default; sending needs a spoken yes), Google Calendar, cron-scheduled prompts |
 | **Know your people** | Cross-app timeline for any person or topic |
-| **Job hunt** | Searches LinkedIn and Indeed, tracks applications, helps fill forms |
+| **Apply to jobs** | Works through your job sheet, fills Greenhouse applications, stops for your review, submits only on "submit it", and keeps the sheet's status up to date |
+| **Job search** | Searches LinkedIn and Indeed and reads listings aloud |
 | **Remember** | Vector memory with periodic consolidation |
 | **Write code** | Agentic coding tasks by voice |
 | **Report on itself** | Reads its own flight log and tells you how it's doing |
@@ -335,6 +396,15 @@ playwright install chromium
 
 cp .env.example .env                       # ARIA_GATEWAY_URL (default http://127.0.0.1:8000)
 cp identity.example.json identity.json     # your name and profile (stays local, gitignored)
+```
+
+**Job applications (optional).** Copy the answer template and fill in your answers. Anything left as `null` or `<placeholder>` is left for you on every form. Then connect Google once; one token covers Gmail, Calendar and Sheets:
+
+```bash
+cp answer_bank.example.json ~/.aria/answer_bank.json   # your answers, outside the repo
+# .env: MUSE_SHEET_ID=<your sheet id>, MUSE_SHEET_TAB=Sheet1
+# OAuth client (Desktop app) → ~/.aria/credentials/google_client_secret.json
+venv/bin/python -m aria.setup google
 ```
 
 **LLM gateway.** Aria sends every LLM call to an OpenAI-compatible gateway at `ARIA_GATEWAY_URL`. I run GateLLM, where provider keys (Groq, Anthropic, …) live in the gateway's own `.env`:
@@ -368,6 +438,8 @@ python main.py --login gmail      # one-time logins: gmail, google, linkedin
 
 Hold **⌥ Space** and speak, or just say **"Aria"**.
 
+**Job applications:** "apply to the next job from Muse", "apply to row 14", "what's the next job on my list", then "submit it", "I submitted it" or "skip this job". Reviews are saved to `~/.aria/reviews/`.
+
 **Reliability tools:**
 
 ```bash
@@ -386,7 +458,8 @@ python daily_check.py wake          # is the wake engine healthy? threshold tips
 | Wake word | Porcupine · custom-trained ONNX · openWakeWord (auto-selected) |
 | Routing | Regex dispatcher with typed slot parsers (durations, times), then a tool-calling agent |
 | LLMs | Every call via GateLLM (OpenAI-compatible): Claude, Groq GPT-OSS + Qwen vision, and more behind tiers |
-| Browser | Playwright: headless fetcher + DOM-first agent browser on one worker thread, vision fallback |
+| Browser | Playwright: headless fetcher + DOM-first agent browser on one worker thread (named tabs), vision fallback |
+| Applications | Greenhouse form schema from the page's JSON, rapidfuzz answer matching, Google Sheets API |
 | Memory | ChromaDB + sentence-transformers, SQLite, session cache |
 | Context index | SQLite + FTS5, identities linked via macOS Contacts |
 | Voice I/O | sounddevice, macOS `say` (interruptible) |
@@ -401,8 +474,11 @@ aria/
   app.py              wiring + command lifecycle
   dispatch/           the one path: dispatcher, patterns.json rules, slot parsers
   core/               agent loop, tool registry, plugin contract, task list, sub-agents, compaction
-  llm/                GateLLM client (agent provider + OpenAI-shaped client), usage meter
-  plugins/            core · context · media · messaging · memory · productivity · screen · health · system
+  llm/                GateLLM client, usage meter, tasks.py (TASK_TIERS: every call's tier)
+  integrations/       Google auth (one token, scope tracking), job sheet
+  features/           applicator (apply → review → submit), ats/ (detect, greenhouse, answers,
+                      submit), answer_bank, job search, briefing, media, coder, ...
+  plugins/            apply · core · context · media · messaging · memory · productivity · screen · health · system
   voice/              capture, transcriber, speaker, hotkey, wake word, follow-up window
   web/                headless fetcher, agent browser, DOM-first computer use, search, vision
   screen/             screen Q&A, highlighted-text explanations
@@ -411,17 +487,18 @@ aria/
   ui/                 menu bar, overlays, listening indicator
 scripts/              Aria.app builder, VAD calibration
 training/             custom wake-word pipeline (record → train → ONNX)
-tests/                ~650 tests + the daily voice checklist
+tests/                ~900 tests (no network) + the daily voice checklist
 ```
 
 The full design, with more diagrams, is in **[ARCHITECTURE.md](ARCHITECTURE.md)**. Troubleshooting is in [HOW_TO_RUN.md](HOW_TO_RUN.md).
 
 ## 🧪 Testing
 
-- **Unit:** pure logic such as VAD thresholds, end-phrase detection, provider message translation, identity linking and report building.
+- **Unit:** pure logic such as VAD thresholds, end-phrase detection, provider message translation, identity linking, report building, answer matching and the salary rule.
 - **Contract:** every tool returns a string and never raises, and plugins load from a bare context.
 - **Routing:** a table of real phrasings pinned to the tool each must hit, or to "goes to the agent", plus slot parsers tested against a fixed clock.
-- **Guard tests:** scans that fail if any tool still uses pre-refactor imports, or if any module imports a provider SDK instead of going through the gateway.
+- **Saved real pages:** four real Greenhouse postings, with third-party keys redacted, pin the form parser, the answer planner and the review output.
+- **Guard tests:** scans that fail if any tool still uses pre-refactor imports, if any module imports a provider SDK instead of going through the gateway, if a call site hard-codes an LLM tier, if the job pipeline references a way to send email, if the form filler clicks anything but form fields, or if a fixture contains a key-like string.
 - **On-device:** the daily voice checklist exercises the real mic, TTS, screen permissions and focus behavior, the things mocks can't prove.
 
 ```bash
