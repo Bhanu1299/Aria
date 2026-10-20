@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable
 
 from aria.llm import meter
+from aria.llm import context
 from aria.llm.tasks import FRONTIER, tier_for
 
 from aria.llm.base import (
@@ -100,7 +101,10 @@ class LLMClient:
         if chain is None:
             logger.warning("[LLM] no chain for tier %r — using smart", tier)
             chain = self._chains["smart"]
-        return chain.complete(messages, tools, max_tokens, system)
+        # An enclosing task label (e.g. complete_checked's) wins over the bare tier.
+        label = task or (None if context.current().get("task") else f"tier:{tier}")
+        with context.scope(task=label):
+            return chain.complete(messages, tools, max_tokens, system)
 
     def complete_checked(
         self,
@@ -116,13 +120,16 @@ class LLMClient:
         escalation is counted in aria.llm.meter. Returns (last response, value | None).
         """
         tier = tier_for(task)
-        resp = self.complete(messages, tier=tier, max_tokens=max_tokens, system=system)
+        with context.scope(task=task):
+            resp = self.complete(messages, tier=tier, max_tokens=max_tokens, system=system)
         value = _validated(validate, resp)
         if value is not None or tier == FRONTIER:
             return resp, value
-        logger.warning("[LLM] task=%s: %s output failed validation — escalating to frontier", task, tier)
+        why = "gateway error" if resp.stop_reason == "error" else "output failed validation"
+        logger.warning("[LLM] task=%s: %s %s — escalating to frontier", task, tier, why)
         meter.add_escalation()
-        resp = self.complete(messages, tier=FRONTIER, max_tokens=max_tokens, system=system)
+        with context.scope(task=task, escalated_from=f"{tier}: {why}"):
+            resp = self.complete(messages, tier=FRONTIER, max_tokens=max_tokens, system=system)
         return resp, _validated(validate, resp)
 
 

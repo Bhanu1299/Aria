@@ -264,6 +264,7 @@ def _sub_classify(transcript: str) -> dict:
     client = _get_client()
     response = client.chat.completions.create(
         model=tier_for("media_intent"),
+        task="media_intent",
         messages=[
             {"role": "system", "content": _MEDIA_CLASSIFY_SYSTEM},
             {"role": "user", "content": transcript.strip()},

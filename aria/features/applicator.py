@@ -17,6 +17,8 @@ Failures → sheet "Needs human" + the reason in Updates.
 """
 from __future__ import annotations
 
+import contextlib
+import functools
 import logging
 import re
 import time
@@ -34,8 +36,9 @@ from aria.features import ats
 from aria.features.ats import greenhouse
 from aria.features.ats import submit as ats_submit
 from aria.integrations import sheets
+from aria.llm import context as llm_context
 from aria.llm import meter
-from aria.observability import flight_recorder
+from aria.observability import flight_recorder, run_log
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +93,24 @@ def _names(job: dict, result=None) -> tuple:
 # Records: sheet, aria.db, flight log
 # ---------------------------------------------------------------------------
 
+# The pipeline run in progress (one at a time): steps and its outcome go to run_log.
+_RUN: Optional[run_log.Run] = None
+_RUN_STATUS: dict = {}
+
+
+def _step(name: str):
+    return _RUN.step(name) if _RUN is not None else contextlib.nullcontext(run_log._Step())
+
+
 def _sheet_update(job: dict, status: str, note: str) -> str:
+    with _step("update sheet") as s:
+        err = _sheet_update_now(job, status, note)
+        s.detail = f"Status → {status}" + (f" — not updated: {err}" if err else "")
+        s.status = "error" if err else "ok"
+    return err
+
+
+def _sheet_update_now(job: dict, status: str, note: str) -> str:
     """Update the job's sheet row (if it came from the sheet). Returns an error string or ""."""
     if not job.get("row"):
         return ""
@@ -111,6 +131,7 @@ def _finish(job: dict, ats_name: str, stage: str, before: dict, ok: bool = True,
     """Cost of this step → flight log (keyed by sheet row) + aria.db application_runs."""
     usage = meter.since(before)
     company, role = _names(job)
+    _RUN_STATUS["status"] = stage if ok else "error"
     flight_recorder.record_job(job.get("row"), company, role, stage, ats_name, usage, ok, note)
     conn = None
     try:
@@ -233,13 +254,41 @@ def _fill_linkedin(job: dict, voice_ask_fn) -> "ats.FillResult":
     return result
 
 
+def _run_logged(run: run_log.Run, job: dict, fn: Callable[[], str]) -> str:
+    """Run fn as pipeline run `run` for `job`: steps + outcome logged, LLM calls labelled."""
+    global _RUN
+    company, role = _names(job)
+    run.job(company, role, job.get("row"))
+    prev, _RUN = _RUN, run
+    _RUN_STATUS.clear()
+    try:
+        with llm_context.job(run_log.job_label(company, role, job.get("row")), run.id):
+            out = fn()
+    finally:
+        _RUN = prev
+    run.finish(_RUN_STATUS.get("status", "no change"), out)
+    return out
+
+
 def run_application(
     job: dict,
     progress_fn: Optional[Callable[[str], None]] = None,
     voice_ask_fn: Optional[Callable[[str], str]] = None,
+    run: Optional[run_log.Run] = None,
 ) -> str:
     """Fill the application for a job (sheet row dict or {"url": ...}) and stop for review.
-    Returns one spoken sentence or two. Never submits, never raises."""
+    Returns one spoken sentence or two. Never submits, never raises. `run` continues a
+    pipeline run the caller started (e.g. after reading the sheet)."""
+    job = dict(job or {})
+    run = run or run_log.start("apply_job")
+    return _run_logged(run, job, lambda: _run_application(job, progress_fn, voice_ask_fn))
+
+
+def _run_application(
+    job: dict,
+    progress_fn: Optional[Callable[[str], None]],
+    voice_ask_fn: Optional[Callable[[str], str]],
+) -> str:
     say = progress_fn or (lambda _msg: None)
     before = meter.snapshot()
     job = dict(job or {})
@@ -257,12 +306,19 @@ def run_application(
             _finish(job, "", "error", before, ok=False, note=note)
             return f"{role} at {company} has no application link I can open, so I marked it Needs human."
 
-        result = _fill_linkedin(job, voice_ask_fn) if _is_linkedin(url) else ats.fill_application(job, say)
+        with _step("fill form") as step:
+            result = _fill_linkedin(job, voice_ask_fn) if _is_linkedin(url) else ats.fill_application(job, say)
+            n_need = result.count("needs_me") if result.review else 0
+            step.detail = (f"{_ATS_NAME.get(result.ats, result.ats or 'form')}: {len(result.filled or {})} filled, "
+                           f"{n_need} need you" + (f" — {result.error}" if result.error else ""))
+            step.status = "error" if result.error and not result.review else "ok"
         if not job.get("company") and result.company:
             job["company"] = result.company
         if not job.get("role") and result.title:
             job["role"] = result.title
         company, role = _names(job, result)
+        if _RUN is not None and (company, role) != _names({}):
+            _RUN.job(company, role, job.get("row"))
 
         if result.error and not result.review:
             _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, result.error)
@@ -318,6 +374,20 @@ def learn_corrections(filled: dict, now: dict) -> int:
     return count
 
 
+def _logged_followup(trigger: str):
+    """Log a review follow-up (submit / submitted by hand / skip) as its own short run."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper() -> str:
+            p = pending()
+            if not p:
+                return fn()
+            return _run_logged(run_log.start(trigger), dict(p["job"]), fn)
+        return wrapper
+    return deco
+
+
+@_logged_followup("submit")
 def submit_pending() -> str:
     p = pending()
     if not p:
@@ -364,6 +434,7 @@ def submit_pending() -> str:
         return "Something went wrong submitting. Check the browser before trying again."
 
 
+@_logged_followup("submitted by hand")
 def mark_submitted_by_hand() -> str:
     p = pending()
     if not p:
@@ -380,6 +451,7 @@ def mark_submitted_by_hand() -> str:
     return f"Marked {role} at {company} as applied." + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
 
 
+@_logged_followup("skip")
 def skip_pending() -> str:
     p = pending()
     if not p:

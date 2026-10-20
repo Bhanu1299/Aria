@@ -25,10 +25,43 @@ import aria.core.plugin as _plugin_base
 import aria.state.memory as memory
 from aria.core.tool import ToolDescriptor, ToolRegistry
 from aria.integrations import google_auth, sheets
+from aria.observability import run_log
 
 logger = logging.getLogger(__name__)
 
 CURRENT_JOB_KEY = "sheet_job"
+
+
+PICK_RULE = "first row from the top whose Status means not handled yet (blank / new / Not applied)"
+_MAX_DECISIONS = 40
+
+
+def pick_reasons(job: dict, picked: bool) -> list:
+    """Why a sheet row was picked or passed over: status, fit score, deadline, the rule."""
+    fields = job.get("fields") or {}
+    deadline = next((v for k, v in fields.items() if "deadline" in k.lower() and v), "")
+    reasons = [f"Status: {job.get('status') or 'blank'}",
+               f"fit {job.get('alignment')}/5" if job.get("alignment") else "no fit score",
+               f"deadline {deadline}" if deadline else "no deadline in the sheet"]
+    reasons.append(f"picked: {PICK_RULE}" if picked else "skipped: Status says it's already handled")
+    return reasons
+
+
+def read_next_job(run: "run_log.Run") -> Optional[dict]:
+    """Next sheet job, logging the read-sheet step and why each row above it was skipped."""
+    with run.step("read sheet") as s:
+        job = sheets.get_next_job()
+        try:  # best effort: the reasons never block the apply
+            rows = sheets.default_sheet().jobs()
+        except Exception as exc:
+            logger.warning("apply_job: couldn't list rows for pick reasons: %s", exc)
+            rows = [job] if job else []
+        cut = next((i for i, r in enumerate(rows) if job and r["row"] == job["row"]), len(rows) - 1)
+        for r in rows[max(0, cut + 1 - _MAX_DECISIONS):cut + 1]:
+            picked = bool(job) and r["row"] == job["row"]
+            run.decision(r["company"], r["role"], r["row"], picked, pick_reasons(r, picked))
+        s.detail = f"{len(rows)} rows; " + (f"picked row {job['row']}" if job else "no new rows")
+    return job
 
 
 def describe_job(job: dict) -> str:
@@ -123,24 +156,34 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 row = int(params["row"]) if params.get("row") not in (None, "") else None
             except (TypeError, ValueError):
                 return "That row number didn't make sense."
+            run = run_log.start("apply_job")
             try:
                 if url:
                     job = {"url": url, "company": "", "role": "", "row": None, "fields": {}}
+                    run.skip("read sheet", "you gave a URL")
                 elif row is not None:
-                    job = sheets.get_job(row)
+                    with run.step("read sheet") as s:
+                        job = sheets.get_job(row)
+                        s.detail = f"row {row} " + ("found" if job else "not found")
                     if job is None:
+                        run.finish("error", f"row {row} not found")
                         return f"Row {row} isn't a job in your sheet."
+                    run.decision(job["company"], job["role"], row, True, pick_reasons(job, True)[:3] + ["picked: you asked for this row"])
                 else:
-                    job = sheets.get_next_job()
+                    job = read_next_job(run)
                     if job is None:
+                        run.finish("no change", "no new rows")
                         return "There are no new jobs in your sheet — every row already has a status."
             except sheets.SheetError as exc:
+                run.finish("error", str(exc))
                 return str(exc)
             except Exception as exc:
                 logger.error("apply_job: reading the sheet failed: %s", exc)
+                run.finish("error", f"reading the sheet failed: {exc}")
                 return "I couldn't read your job sheet right now."
             memory.set_persistent(CURRENT_JOB_KEY, job)
-            return applicator.run_application(job, progress_fn=self._progress_fn(), voice_ask_fn=self._voice_ask)
+            return applicator.run_application(job, progress_fn=self._progress_fn(), voice_ask_fn=self._voice_ask,
+                                              run=run)
 
         return ToolDescriptor(
             name="apply_job",

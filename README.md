@@ -445,7 +445,11 @@ Hold **⌥ Space** and speak, or just say **"Aria"**.
 
 **Job applications:** "apply to the next job from Muse", "apply to row 14", "what's the next job on my list", then "submit it", "I submitted it" or "skip this job". Reviews are saved to `~/.aria/reviews/`.
 
-**Pipeline dashboard:** `venv/bin/python -m aria.dashboard` opens a local, read-only page (127.0.0.1) with every job and its stage, from found to replied: a funnel, what needs you (empty form fields, stale drafts, follow-ups due, bounces), a searchable table, this week's numbers and LLM cost. It joins the Muse sheet, `aria.db`, Coldstart and the jobs Gmail; a source that's down shows "no data" instead of breaking the page.
+**Pipeline dashboard:** `venv/bin/python -m aria.dashboard` opens a local page (127.0.0.1) with four tabs:
+- **Pipeline** (read-only): every job and its stage from found to replied, a funnel, what needs you (empty form fields, stale drafts, follow-ups due, bounces), a searchable table, this week's numbers. Joins the Muse sheet, `aria.db`, Coldstart and the jobs Gmail; a source that's down shows "no data" instead of breaking the page.
+- **Live run** (read-only): the current or last 10 pipeline runs from `~/.aria/run_log.jsonl`, polled every 2 s: which job, each step's status and time, and why each sheet row was picked or skipped.
+- **LLM costs** (read-only): spend today / this week / all time, per job (every call: task, tier, model, tokens, cost), per task, escalations (small → frontier retries and GateLLM fallbacks, with the reason), cheapest and priciest jobs, cost per applied job. Every Aria LLM call sends its task, job and run to GateLLM, which logs one line per call (`GET /v1/calls`).
+- **Settings**, the only part that writes: add, replace, remove or test each GateLLM provider key (masked in the browser, written only to GateLLM's `.env`, chmod 600) and edit each tier's model chain in GateLLM's `config.yaml`; GateLLM reloads without a restart. Writes need the page's per-process token and a localhost Host/Origin.
 
 **Reliability tools:**
 

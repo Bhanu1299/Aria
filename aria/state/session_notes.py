@@ -89,6 +89,7 @@ def extract(transcript: str, answer: str) -> str:
         )
         response = client.chat.completions.create(
             model=tier_for("session_notes"),
+            task="session_notes",
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},

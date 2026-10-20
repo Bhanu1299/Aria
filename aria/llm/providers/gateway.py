@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import httpx
 
-from aria.llm import autostart, meter
+from aria.llm import autostart, context, meter
 from aria.llm.base import GatewayError, GatewayUnavailable, LLMResponse, Provider, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -111,13 +111,14 @@ def _float_header(headers: httpx.Headers, name: str) -> float:
 
 def _send(client: httpx.Client, payload: dict) -> httpx.Response:
     """POST, starting GateLLM on demand if it's down (one retry)."""
+    headers = context.headers()  # task / job / run labels for GateLLM's per-call log
     try:
-        return client.post("/v1/chat/completions", json=payload)
+        return client.post("/v1/chat/completions", json=payload, headers=headers)
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         if not autostart.ensure_running(str(client.base_url)):
             raise GatewayUnavailable(f"GateLLM not reachable at {client.base_url}: {exc}") from exc
     try:
-        return client.post("/v1/chat/completions", json=payload)
+        return client.post("/v1/chat/completions", json=payload, headers=headers)
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise GatewayUnavailable(f"GateLLM not reachable at {client.base_url}: {exc}") from exc
 
@@ -216,12 +217,14 @@ class _Completions:
     def __init__(self, client: httpx.Client) -> None:
         self._client = client
 
-    def create(self, *, model: str, messages: list[dict], **params) -> SimpleNamespace:
+    def create(self, *, model: str, messages: list[dict], task: str | None = None, **params) -> SimpleNamespace:
         """Same call shape as openai/groq `chat.completions.create`; returns an object
-        with `.choices[0].message.content` and `.usage`."""
+        with `.choices[0].message.content` and `.usage`. `task` labels the call in
+        GateLLM's per-call log and is not sent to the model."""
         payload = {"model": model, "messages": messages,
                    **{k: v for k, v in params.items() if v is not None}}
-        data, meta = _post(self._client, payload)
+        with context.scope(task=task or f"model:{model}"):
+            data, meta = _post(self._client, payload)
         choices = [
             SimpleNamespace(
                 index=c.get("index", 0),

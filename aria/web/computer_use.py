@@ -396,6 +396,7 @@ def decide(
         client = _get_client()
         response = client.chat.completions.create(
             model=_VISION_MODEL,
+            task="browser_vision_decide",
             messages=[
                 {"role": "system", "content": _CU_SYSTEM},
                 {
@@ -479,6 +480,7 @@ def _research_decide(
         response = _with_retry(
             client.chat.completions.create,
             model=_VISION_MODEL,
+            task="browser_vision_decide",
             messages=[
                 {"role": "system", "content": _CU_GENERAL_SYSTEM},
                 {"role": "user", "content": [
@@ -549,6 +551,7 @@ def _claude_research_decide(
     try:
         response = _get_client().chat.completions.create(
             model=_CLAUDE_MODEL,
+            task="browser_vision_escalate",
             max_tokens=500,
             messages=[
                 {"role": "system", "content": _CU_GENERAL_SYSTEM},

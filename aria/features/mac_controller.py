@@ -820,6 +820,7 @@ def read_screen_region(app_name: str) -> str:
         client = _get_client()
         response = client.chat.completions.create(
             model=tier_for("mac_vision"),
+            task="mac_vision",
             messages=[
                 {
                     "role": "user",
@@ -945,6 +946,7 @@ def _sub_classify(transcript: str) -> dict:
     client = _get_client()
     response = client.chat.completions.create(
         model=tier_for("mac_text"),
+        task="mac_text",
         messages=[
             {"role": "system", "content": _SUB_CLASSIFY_SYSTEM},
             {"role": "user", "content": transcript.strip()},

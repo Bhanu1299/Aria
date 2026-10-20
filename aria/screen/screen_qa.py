@@ -129,6 +129,7 @@ def answer(query: str) -> str:
             b64 = base64.b64encode(f.read()).decode()
         resp = _get_client().chat.completions.create(
             model=_MODEL,
+            task="screen_qa",
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {
@@ -180,6 +181,7 @@ def explain_visual(query: str) -> str:
             b64 = base64.b64encode(f.read()).decode()
         resp = _get_client().chat.completions.create(
             model=_MODEL,
+            task="screen_qa",
             messages=[
                 {"role": "system", "content": _EXPLAIN_SYSTEM},
                 {
