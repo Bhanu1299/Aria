@@ -5,6 +5,7 @@ be reordered or added in the sheet. Duplicate header names are disambiguated in
 order: "Outreach", "Outreach" → "Outreach", "Outreach_2".
 
     get_next_job(status="new") → dict | None     first matching row, top to bottom
+    get_job(row) → dict | None
     set_status(row, status, note="", company=, role=)
 
 A blank Status cell counts as "new". Notes are appended to "Updates" as
@@ -183,6 +184,9 @@ class JobSheet:
                 return job
         return None
 
+    def get_job(self, row: int) -> Optional[dict]:
+        return next((j for j in self.jobs() if j["row"] == row), None)
+
     def set_status(
         self,
         row: int,
@@ -251,6 +255,10 @@ def default_sheet() -> JobSheet:
 
 def get_next_job(status: str = STATUS_NEW) -> Optional[dict]:
     return default_sheet().get_next_job(status)
+
+
+def get_job(row: int) -> Optional[dict]:
+    return default_sheet().get_job(row)
 
 
 def set_status(row: int, status: str, note: str = "", company: Optional[str] = None,

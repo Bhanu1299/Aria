@@ -59,6 +59,7 @@ _ATTESTATION = re.compile(
     r"\bprivacy\b|\bplease (?:read|review)\b|\bsignature\b|\bsign\b",
     re.I,
 )
+TAB = "apply"          # agent_browser tab the form stays open in for review
 _FORM_READY = '#application-form, #application_form, [id="first_name"]'
 
 
@@ -315,6 +316,7 @@ def plan(
     draft_fn: Callable = llm_answers.draft_long,
     resume: Optional[str] = None,
     progress_fn: Optional[Callable[[str], None]] = None,
+    llm_available: bool = True,
 ) -> list:
     job_ctx = {**job, "salary_range": form.salary_range or job.get("salary_range"),
                "description": form.description or job.get("description", "")}
@@ -361,6 +363,12 @@ def plan(
             continue
         if f.required:
             to_guess.append(p)
+
+    if not llm_available:
+        for p in to_guess + to_draft:
+            p.source = "needs_me" if p.field.required else "skipped"
+            p.note = "LLM gateway was down"
+        to_guess, to_draft = [], []
 
     if to_guess:
         guesses = guess_fn([{"name": p.field.name, "label": p.field.label, "options": p.field.options}
@@ -551,20 +559,31 @@ def _fetch_schema_html(url: str) -> str:
         return ""
 
 
+def _gateway_up() -> bool:
+    import aria.core.config as config
+    from aria.llm import check_health
+    return check_health(config.GATEWAY_URL) is None
+
+
 def _open(url: str, progress_fn) -> str:
     """Navigate to the form; return its live DOM HTML."""
-    agent_browser.navigate(url, settle_secs=2.5)
-    html = agent_browser.run(lambda page: page.content())
+    agent_browser.navigate(url, settle_secs=2.5, tab=TAB)
+    html = agent_browser.run(lambda page: page.content(), tab=TAB)
     form_url = greenhouse_form_url(url, html)
     if form_url != url:
         if progress_fn:
             progress_fn("It's an embedded Greenhouse form — opening it directly.")
-        agent_browser.navigate(form_url, settle_secs=2.5)
+        agent_browser.navigate(form_url, settle_secs=2.5, tab=TAB)
 
     def _ready(page):
         page.wait_for_selector(_FORM_READY, timeout=15000)
         return page.content()
-    return agent_browser.run(_ready)
+    return agent_browser.run(_ready, tab=TAB)
+
+
+def read_values(names: list) -> dict:
+    """Current DOM value of each field id in the review tab (None = not on the page)."""
+    return agent_browser.run(lambda page: page.evaluate(_READBACK_JS, list(names)), tab=TAB)
 
 
 @dataclass
@@ -574,6 +593,7 @@ class GreenhouseResult:
     company: str = ""
     description: str = ""
     review: list = field(default_factory=list)
+    filled: dict = field(default_factory=dict)   # name → {label, kind, value, source} as Aria filled it
     error: str = ""
 
 
@@ -584,7 +604,7 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None) -> Gree
     try:
         say("Opening the Greenhouse application.")
         html = _open(job["url"], progress_fn)
-        result.form_url = agent_browser.run(lambda page: page.url)
+        result.form_url = agent_browser.run(lambda page: page.url, tab=TAB)
         form = parse_form(html, _fetch_schema_html(result.form_url))
         result.title, result.company, result.description = form.title, form.company, form.description
         if not form.fields:
@@ -593,12 +613,16 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None) -> Gree
 
         unknown = [f for f in form.fields if f.kind in ("select", "multiselect") and not f.options]
         if unknown:
-            found = agent_browser.run(lambda page: {f.name: _read_options(page, f.name) for f in unknown})
+            found = agent_browser.run(lambda page: {f.name: _read_options(page, f.name) for f in unknown}, tab=TAB)
             for f in unknown:
                 f.options = found.get(f.name, [])
 
         say(f"Found {len(form.fields)} fields. Working out answers.")
-        plans = plan(form, job, build_profile(job), resume=resume_path(), progress_fn=progress_fn)
+        llm_up = _gateway_up()
+        if not llm_up:
+            say("The LLM gateway is down, so questions only it could answer are left for you.")
+        plans = plan(form, job, build_profile(job), resume=resume_path(), progress_fn=progress_fn,
+                     llm_available=llm_up)
         to_fill = [p for p in plans if p.value and p.source in ("bank", "llm_guess", "llm_draft")]
         say(f"Filling {len(to_fill)} fields.")
 
@@ -619,8 +643,13 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None) -> Gree
                         logger.warning("greenhouse: retry %s failed: %s", p.field.name, exc)
             return page.evaluate(_READBACK_JS, [p.field.name for p in plans])
 
-        dom_values = agent_browser.run(_fill_all)
+        dom_values = agent_browser.run(_fill_all, tab=TAB)
         result.review = build_review(plans, dom_values)
+        result.filled = {
+            p.field.name: {"label": p.field.label, "kind": p.field.kind,
+                           "value": dom_values.get(p.field.name) or "", "source": p.source}
+            for p in plans
+        }
     except Exception as exc:
         logger.error("greenhouse.fill failed: %s", exc)
         result.error = f"The Greenhouse form fill failed: {exc}"

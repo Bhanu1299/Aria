@@ -390,3 +390,12 @@ def test_review_shows_country_not_just_dial_code():
 def test_review_country_option_already_has_dial_code():
     f = gh.FormField("country", "Country", "select", True)
     assert gh.build_review([gh.Planned(f, "United States +1", "bank")], {"country": "+1"})[0]["value"] == "United States +1"
+
+
+def test_plan_without_gateway_leaves_llm_fields_for_the_user():
+    spy = Spy(guesses={"What is your highest completed degree?": "Master's"})
+    form = gh.parse_form(page("anthropic_jobboards"))
+    plans = {p.field.label: p for p in gh.plan(form, {}, "profile", spy.guess, spy.draft_fn, llm_available=False)}
+    assert (plans["Why Anthropic?"].source, plans["Why Anthropic?"].note) == ("needs_me", "LLM gateway was down")
+    assert spy.guess_calls == [] and spy.draft_calls == []
+    assert plans["First Name"].source == "bank"

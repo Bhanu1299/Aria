@@ -1,0 +1,302 @@
+"""tests/test_applicator.py — fill → review → submit/skip, sheet + aria.db + flight-log records."""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import aria.features.answer_bank as ab
+import aria.observability.flight_recorder as fr
+import aria.state.db as db
+from aria.core import paths
+from aria.features import applicator
+from aria.features.ats import FillResult
+from aria.features.ats import submit as ats_submit
+from aria.integrations import sheets
+from aria.llm import meter
+
+FORM = "https://job-boards.greenhouse.io/acme/jobs/1"
+JOB = {"row": 7, "company": "Acme", "role": "ML Engineer", "url": FORM, "location": "NYC", "fields": {}}
+
+REVIEW = [
+    {"name": "first_name", "label": "First Name", "kind": "text", "value": "Alex Jordan", "source": "bank", "required": True, "note": ""},
+    {"name": "q1", "label": "Do you require sponsorship?", "kind": "select", "value": "", "source": "needs_me", "required": True, "note": "no answer in your bank yet"},
+    {"name": "q2", "label": "Why Acme?", "kind": "textarea", "value": "Because agents.\nAnd evals.", "source": "llm_draft", "required": True, "note": ""},
+    {"name": "q3", "label": "Highest degree", "kind": "select", "value": "Master's", "source": "llm_guess", "required": True, "note": ""},
+    {"name": "web", "label": "Website", "kind": "text", "value": "", "source": "skipped", "required": False, "note": ""},
+]
+FILLED = {r["name"]: {"label": r["label"], "kind": r["kind"], "value": r["value"], "source": r["source"]} for r in REVIEW}
+
+
+@pytest.fixture(autouse=True)
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "aria.db"))
+    monkeypatch.setattr(fr, "_LOG_PATH", str(tmp_path / "flight.jsonl"))
+    monkeypatch.setattr(applicator, "REVIEWS_DIR", tmp_path / "reviews")
+    monkeypatch.setattr(paths, "IDENTITY_JSON", tmp_path / "identity.json")
+    monkeypatch.setattr(ab, "BANK_PATH", tmp_path / "answer_bank.json")
+    store = {}
+    monkeypatch.setattr(applicator.memory, "get_persistent", lambda k: store.get(k))
+    monkeypatch.setattr(applicator.memory, "set_persistent", lambda k, v: store.__setitem__(k, v))
+    sheet_calls = []
+    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None:
+                        sheet_calls.append((row, status, note)) or row)
+    applied = []
+    monkeypatch.setattr(applicator.tracker, "log_application", lambda *a: applied.append(a))
+    browser = {"url": FORM, "screens": []}
+
+    def fake_run(fn, tab=None):
+        class Page:
+            url = browser["url"]
+
+            def screenshot(self, path, full_page):
+                browser["screens"].append(path)
+                open(path, "wb").write(b"png")
+        return fn(Page())
+    import aria.web.agent_browser as agent_browser
+    monkeypatch.setattr(agent_browser, "run", fake_run)
+    return {"store": store, "sheet": sheet_calls, "applied": applied, "browser": browser, "tmp": tmp_path}
+
+
+def _fake_fill(monkeypatch, review=REVIEW, error="", cost=0.0123):
+    def fill(job, progress_fn=None):
+        meter.add({"cost_usd": cost, "tokens_in": 100, "tokens_out": 20})
+        return FillResult(ats="greenhouse", form_url=FORM, title="ML Engineer", company="Acme",
+                          review=list(review), filled=dict(FILLED), tab="apply", error=error)
+    monkeypatch.setattr(applicator.ats, "fill_application", fill)
+
+
+def _runs():
+    conn = db.get_connection()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM application_runs ORDER BY id")]
+    conn.close()
+    return rows
+
+
+# ── review artifacts ────────────────────────────────────────────────────────
+
+def test_summary_puts_needs_me_first_and_quotes_drafts():
+    result = FillResult(ats="greenhouse", form_url=FORM, review=REVIEW)
+    md = applicator.build_summary(JOB, result, "Acme", "ML Engineer", "/r/acme.png")
+    assert md.startswith("# Review: ML Engineer at Acme")
+    assert md.index("## Needs you (1)") < md.index("## Drafted by the LLM") < md.index("## Guessed by the LLM") \
+        < md.index("## From your answer bank") < md.index("## Left empty")
+    assert "> Because agents.\n> And evals." in md
+    assert "NOT submitted" in md and "Sheet row:** 7" in md
+
+
+def test_spoken_result():
+    result = FillResult(ats="greenhouse", review=REVIEW)
+    s = applicator.spoken_result(result, "Acme", "ML Engineer")
+    assert s.startswith("Greenhouse form filled for ML Engineer at Acme. 1 field needs you.")
+    assert "drafted 1 answer" in s and "submit it" in s
+
+
+# ── run_application ─────────────────────────────────────────────────────────
+
+def test_run_fills_reviews_and_records(monkeypatch, env):
+    _fake_fill(monkeypatch)
+    said = []
+    out = applicator.run_application(dict(JOB), progress_fn=said.append)
+    assert out.startswith("Greenhouse form filled for ML Engineer at Acme. 1 field needs you.")
+
+    pend = env["store"][applicator.PENDING_KEY]
+    assert pend["job"]["row"] == 7 and pend["tab"] == "apply" and pend["form_url"] == FORM
+    md = pend["review_path"]
+    assert md.endswith(".md") and "Needs you (1)" in open(md).read()
+    assert env["browser"]["screens"] and pend["screenshot"].endswith(".png")
+
+    row, status, note = env["sheet"][-1]
+    assert (row, status) == (7, sheets.STATUS_IN_REVIEW) and "1 field need" in note and "not submitted" in note
+
+    run = _runs()[-1]
+    assert (run["sheet_row"], run["stage"], run["needs_me"], run["ats"]) == (7, "filled", 1, "greenhouse")
+    assert run["cost_usd"] == pytest.approx(0.0123)
+    job_entry = json.loads(open(fr._LOG_PATH).read().splitlines()[-1])
+    assert (job_entry["kind"], job_entry["row"], job_entry["stage"]) == ("job", 7, "filled")
+    assert job_entry["usage"]["cost_usd"] == pytest.approx(0.0123)
+    assert env["applied"] == []                                        # nothing submitted
+
+
+def test_run_without_url_marks_needs_human(env):
+    out = applicator.run_application({"row": 3, "company": "GovStar", "role": "Dev", "url": "",
+                                      "apply_link": "Email resume to x@govstar.us"})
+    assert "Needs human" in out
+    assert env["sheet"][-1][:2] == (3, sheets.STATUS_NEEDS_HUMAN) and "Email resume" in env["sheet"][-1][2]
+    assert _runs()[-1]["stage"] == "error"
+
+
+def test_run_fill_error_marks_needs_human(monkeypatch, env):
+    _fake_fill(monkeypatch, review=[], error="I couldn't find any form fields on that page.")
+    out = applicator.run_application(dict(JOB))
+    assert "couldn't fill" in out
+    assert env["sheet"][-1][:2] == (7, sheets.STATUS_NEEDS_HUMAN)
+    assert applicator.PENDING_KEY not in env["store"]
+
+
+def test_url_only_job_never_touches_the_sheet(monkeypatch, env):
+    _fake_fill(monkeypatch)
+    out = applicator.run_application({"url": FORM, "company": "", "role": "", "row": None})
+    assert "ML Engineer at Acme" in out
+    assert env["sheet"] == []
+
+
+def test_run_never_raises(monkeypatch, env):
+    def boom(job, progress_fn=None):
+        raise RuntimeError("browser died")
+    monkeypatch.setattr(applicator.ats, "fill_application", boom)
+    assert "Needs human" in applicator.run_application(dict(JOB))
+
+
+# ── follow-ups: only the user's words ───────────────────────────────────────
+
+def _pending(env):
+    env["store"][applicator.PENDING_KEY] = {"job": {k: JOB[k] for k in ("row", "company", "role", "url")},
+                                             "ats": "greenhouse", "tab": "apply", "form_url": FORM,
+                                             "filled": dict(FILLED), "review_path": "/r/x.md"}
+
+
+def test_followup_ignored_without_pending(env):
+    assert applicator.handle_followup("submit it") is None
+
+
+@pytest.mark.parametrize("text", ["skip this song", "next track", "what's the weather", "submit the report to my boss"])
+def test_followup_ignores_other_commands(env, text):
+    _pending(env)
+    assert applicator.handle_followup(text) is None
+
+
+def test_submit_it_learns_corrections_submits_and_records(monkeypatch, env):
+    _pending(env)
+    monkeypatch.setattr(applicator.greenhouse, "read_values",
+                        lambda names: {"first_name": "Alex Jordan", "q1": "Yes", "q2": "Edited essay", "q3": "Master's"})
+    learned = []
+    monkeypatch.setattr(applicator.answer_bank, "learn", lambda q, a, source="user": learned.append((q, a, source)) or True)
+    monkeypatch.setattr(ats_submit, "submit", lambda tab: ats_submit.SubmitOutcome("submitted"))
+    out = applicator.handle_followup("Okay, submit it.")
+    assert out.startswith("Submitted ML Engineer at Acme.") and "saved 1 answer" in out
+    assert learned == [("Do you require sponsorship?", "Yes", "review")]     # essay (textarea) not learned
+    assert env["applied"] == [("Acme", "ML Engineer", "greenhouse", FORM, "applied")]
+    assert env["sheet"][-1][:2] == (7, sheets.STATUS_APPLIED)
+    assert env["store"][applicator.PENDING_KEY] is None
+    assert _runs()[-1]["stage"] == "submitted"
+
+
+def test_submit_refuses_when_form_is_not_open(monkeypatch, env):
+    _pending(env)
+    env["browser"]["url"] = "about:blank"
+    called = []
+    monkeypatch.setattr(ats_submit, "submit", lambda tab: called.append(tab))
+    assert "isn't open anymore" in applicator.handle_followup("submit it")
+    assert called == [] and env["applied"] == []
+
+
+def test_submit_invalid_keeps_review_open(monkeypatch, env):
+    _pending(env)
+    monkeypatch.setattr(applicator.greenhouse, "read_values", lambda names: {})
+    monkeypatch.setattr(ats_submit, "submit", lambda tab: ats_submit.SubmitOutcome("invalid", ["Resume/CV", "Sponsorship"]))
+    out = applicator.handle_followup("submit it")
+    assert "Still needed: Resume/CV, Sponsorship" in out
+    assert env["store"][applicator.PENDING_KEY] is not None and env["sheet"] == [] and env["applied"] == []
+
+
+def test_submit_unconfirmed_marks_needs_human(monkeypatch, env):
+    _pending(env)
+    monkeypatch.setattr(applicator.greenhouse, "read_values", lambda names: {})
+    monkeypatch.setattr(ats_submit, "submit", lambda tab: ats_submit.SubmitOutcome("unconfirmed"))
+    assert "Needs human" in applicator.handle_followup("submit it")
+    assert env["sheet"][-1][:2] == (7, sheets.STATUS_NEEDS_HUMAN) and env["applied"] == []
+
+
+def test_i_submitted_it(monkeypatch, env):
+    _pending(env)
+    monkeypatch.setattr(ats_submit, "page_confirms", lambda tab: True)
+    assert applicator.handle_followup("I submitted it") == "Marked ML Engineer at Acme as applied."
+    assert env["sheet"][-1][:2] == (7, sheets.STATUS_APPLIED) and "confirmation seen" in env["sheet"][-1][2]
+    assert len(env["applied"]) == 1
+
+
+def test_skip_this_job(env):
+    _pending(env)
+    assert applicator.handle_followup("skip this job") == "Skipped ML Engineer at Acme."
+    assert env["sheet"][-1][:2] == (7, sheets.STATUS_SKIPPED)
+    assert env["store"][applicator.PENDING_KEY] is None and env["applied"] == []
+
+
+def test_learn_corrections_ignores_unchanged_files_essays_and_dial_codes(monkeypatch):
+    learned = []
+    monkeypatch.setattr(applicator.answer_bank, "learn", lambda q, a, source="user": learned.append(q) or True)
+    filled = {
+        "a": {"label": "Phone", "kind": "text", "value": "+1-716"},
+        "b": {"label": "Resume", "kind": "file", "value": ""},
+        "c": {"label": "Why us", "kind": "textarea", "value": "x"},
+        "d": {"label": "Country", "kind": "select", "value": "United States +1"},
+        "e": {"label": "Start date", "kind": "text", "value": ""},
+    }
+    now = {"a": "+1-716", "b": "cv.pdf", "c": "y", "d": "+1", "e": "June 2026"}
+    assert applicator.learn_corrections(filled, now) == 1 and learned == ["Start date"]
+
+
+# ── submit helpers ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text,url,ok", [
+    ("Thank you for applying to Acme!", "", True),
+    ("Your application has been submitted.", "", True),
+    ("We've received your application", "", True),
+    ("Apply for this job", "https://job-boards.greenhouse.io/acme/jobs/1/confirmation", True),
+    ("Apply for this job  Submit application", FORM, False),
+])
+def test_is_confirmation(text, url, ok):
+    assert ats_submit.is_confirmation(text, url) is ok
+
+
+# ── flight log keeps jobs apart from voice commands ─────────────────────────
+
+def test_job_entries_stay_out_of_command_reports(env):
+    fr.record("what time is it", "3pm", 0.2, usage={"cost_usd": 0.0})
+    fr.record_job(7, "Acme", "ML Engineer", "filled", "greenhouse", {"cost_usd": 0.01, "calls": 2})
+    fr.record_job(7, "Acme", "ML Engineer", "submitted", "greenhouse", {"cost_usd": 0.002})
+    fr.record_job(9, "Beta", "SWE", "filled", "greenhouse", {"cost_usd": 0.03})
+    assert [e.get("transcript") for e in fr.read_recent(1)] == ["what time is it"]
+    s = fr.job_summary(1)
+    assert (s["runs"], s["submitted"]) == (2, 1)
+    assert s["by_row"] == {"7": 0.012, "9": 0.03} and s["cost_usd"] == pytest.approx(0.042)
+
+
+# ── apply_job tool ──────────────────────────────────────────────────────────
+
+def _tool():
+    from aria.core.tool import ToolRegistry
+    from aria.plugins.apply import ApplyPlugin
+    reg = ToolRegistry()
+    ApplyPlugin().register(reg)
+    return reg.get("apply_job")
+
+
+def test_apply_job_next_row_url_and_errors(monkeypatch, env):
+    seen = []
+    monkeypatch.setattr(applicator, "run_application", lambda job, progress_fn=None, voice_ask_fn=None:
+                        seen.append(job) or "filled")
+    monkeypatch.setattr(sheets, "get_next_job", lambda: dict(JOB))
+    monkeypatch.setattr(sheets, "get_job", lambda row: dict(JOB, row=row) if row == 12 else None)
+    tool = _tool()
+    assert tool.execute({}) == "filled" and seen[-1]["row"] == 7
+    assert tool.execute({"row": 12}) == "filled" and seen[-1]["row"] == 12
+    assert tool.execute({"row": 99}) == "Row 99 isn't a job in your sheet."
+    assert tool.execute({"url": FORM}) == "filled" and seen[-1]["url"] == FORM and seen[-1]["row"] is None
+    monkeypatch.setattr(sheets, "get_next_job", lambda: None)
+    assert "no new jobs" in tool.execute({})
+
+    def broken():
+        raise sheets.SheetError("Google isn't connected yet. Run: python -m aria.setup google")
+    monkeypatch.setattr(sheets, "get_next_job", broken)
+    assert "aria.setup google" in tool.execute({})
+
+
+def test_submit_is_not_an_agent_tool():
+    from aria.core.tool import ToolRegistry
+    from aria.plugins.apply import ApplyPlugin
+    reg = ToolRegistry()
+    ApplyPlugin().register(reg)
+    names = {t for t in ("apply_job", "job_from_sheet", "submit_application", "submit_job") if reg.get(t)}
+    assert names == {"apply_job", "job_from_sheet"}

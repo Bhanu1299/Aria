@@ -121,7 +121,7 @@ def _matched_transcripts(rows: list) -> set:
 _STATUS_TAG = {"pass": "[PASS]", "fail": "[FAIL]", "not_asked": "[ -- ]"}
 
 
-def print_routes(entries: list) -> None:
+def print_routes(entries: list, days: int = 7) -> None:
     """Dispatcher split: how many commands ran free (direct) vs. through the LLM."""
     if not entries:
         return
@@ -134,6 +134,11 @@ def print_routes(entries: list) -> None:
     ]
     print(f"Routes: {', '.join(parts)}")
     print(f"LLM spend: ${s['cost_usd']:.4f} over {s['tokens']:,} tokens (gateway-reported)")
+    from aria.observability.flight_recorder import job_summary
+    j = job_summary(days)
+    if j["runs"] or j["submitted"]:
+        per = ", ".join(f"row {r}: ${c:.4f}" for r, c in sorted(j["by_row"].items()))
+        print(f"Job applications: {j['runs']} filled, {j['submitted']} submitted, ${j['cost_usd']:.4f} ({per})")
 
 
 def print_report(rows: list, entries: list, days: int) -> int:
@@ -161,7 +166,7 @@ def print_report(rows: list, entries: list, days: int) -> int:
         f"Summary: {passed} passed, {len(failed)} failed, "
         f"{not_asked} not asked (of {len(rows)} questions)."
     )
-    print_routes(entries)
+    print_routes(entries, days)
 
     if failed:
         print("\nFailure detail:")
