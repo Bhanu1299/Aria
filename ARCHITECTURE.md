@@ -362,11 +362,38 @@ here so the code can be checked against them.
 | 1 | Muse writes job rows to the sheet (`Sheet1`; blank Status = new) | Muse | in use |
 | 2 | Find the people behind a posting: posting → search API → LinkedIn browse (read-only, low volume) | Aria | planned |
 | 3 | Find their emails, cache-first by company domain | Coldstart | planned |
-| 4 | Fill the application and **stop for the user's review** | Aria | in progress (Greenhouse) |
-| 5 | Create Gmail **drafts**: Aria never sends | Aria | planned |
+| 4 | Fill the application and **stop for the user's review** | Aria | built: Greenhouse adapter, generic fallback |
+| 5 | Create Gmail **drafts**: Aria never sends | Aria | draft tool built; outreach writing planned |
 
 Aria owns every runtime step. Claude is one model behind GateLLM, not a
 component of the pipeline.
+
+### Step 4 in detail: apply → review → submit
+
+```mermaid
+flowchart LR
+    V["apply to the next job from Muse"] --> R["dispatcher rule → apply_job"]
+    R --> S["sheet: next blank-Status row"]
+    S --> D{"detect ATS<br/>(code)"}
+    D -->|Greenhouse| G["schema from page JSON<br/>answer bank → needs_me → small guess → frontier draft"]
+    D -->|other| C["generic browser loop<br/>never-submit goal"]
+    G & C --> RV["review: screenshot + markdown<br/>sheet → In review · cost → flight log"]
+    RV --> U{"your words<br/>(pre-handler, not a tool)"}
+    U -->|submit it| SB["learn corrections → click form's submit<br/>→ verify → Applied"]
+    U -->|skip this job| SK["Skipped"]
+    U -->|I submitted it| SB2["Applied"]
+```
+
+- `aria/features/applicator.py` is the single entry point. `aria/features/ats/` holds
+  detection, the Greenhouse adapter, the two LLM tasks and the submit helper.
+- The form stays open in its own browser tab (`agent_browser` tab `"apply"`), so
+  other tools can't navigate it away while it waits for review.
+- Submitting is not an agent tool. Only the dispatcher pre-handler, triggered by
+  the user's own words, can click submit, and it refuses if the open tab isn't
+  the reviewed form.
+- Every step writes `aria.db.application_runs` and a flight-log job entry with
+  that job's LLM cost, keyed by sheet row. `daily_check.py report` prints
+  per-row spend.
 
 ### Storage split
 
@@ -464,13 +491,14 @@ aria/
   screen/               screen_qa · selection — screen intelligence
   state/                memory · db · session_notes · memory_extractor ·
                         auto_dream · away_summary — the memory layers
-  features/             jobs · answer_bank · applicators · briefing · media ·
+  features/             applicator (apply → review → submit) · ats/ (detect ·
+                        greenhouse · answers · submit) · answer_bank · jobs · briefing · media ·
                         mac_controller · coder · scenes · summarizer · tips
   system/               sleep_guard · prevent_sleep
   observability/        flight_recorder · wake_stats
   skills/               legacy local skills (see project state)
 training/               custom wake-word model pipeline (record → train → onnx)
-tests/                  ~800 tests (no live network); tests/daily_questions.json drives the
+tests/                  ~900 tests (no live network); tests/daily_questions.json drives the
                         daily voice checklist
 ```
 
