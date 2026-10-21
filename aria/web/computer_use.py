@@ -220,18 +220,32 @@ def _dom_decide(
             "\n\nPrevious actions already executed (do NOT repeat):\n"
             + "\n".join(lines)
         )
+    # Free-text answers make the JSON long — 150 tokens truncated it mid-string on a
+    # real Lever form. One retry covers the occasional malformed reply.
+    parsed: dict = {}
+    for attempt in (1, 2):
+        try:
+            resp = llm_client.complete(
+                messages=[{"role": "user", "content": user_text}],
+                task="browser_dom_decide",
+                system=_CU_DOM_SYSTEM,
+                max_tokens=800,
+            )
+            raw = resp.text.strip()
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw.strip())
+            raw = _extract_first_json(raw)
+            parsed = json.loads(raw)
+            break
+        except json.JSONDecodeError as exc:
+            if attempt == 2:
+                logger.error("_dom_decide failed (step %d): %s", step, exc)
+                return {"action": "stuck", "reason": f"LLM error: {exc}"}
+            logger.warning("_dom_decide: malformed JSON at step %d, retrying: %s", step, exc)
+        except Exception as exc:
+            logger.error("_dom_decide failed (step %d): %s", step, exc)
+            return {"action": "stuck", "reason": f"LLM error: {exc}"}
     try:
-        resp = llm_client.complete(
-            messages=[{"role": "user", "content": user_text}],
-            task="browser_dom_decide",
-            system=_CU_DOM_SYSTEM,
-            max_tokens=150,
-        )
-        raw = resp.text.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw.strip())
-        raw = _extract_first_json(raw)
-        parsed = json.loads(raw)
         if parsed.get("action") not in _VALID_DOM_FORM_ACTIONS:
             raise ValueError(f"Unknown action: {parsed.get('action')!r}")
         logger.info(
@@ -597,9 +611,22 @@ def execute(action: dict) -> None:
             page.locator(f'text="{_ct}"').first.click(timeout=3000)
         elif act == "type":
             if "selector" in action:
-                page.locator(action["selector"]).first.fill(
-                    action.get("text", ""), timeout=3000
+                loc = page.locator(action["selector"]).first
+                text = action.get("text", "")
+                # The model "types" into every field; dropdowns and file inputs can't be filled.
+                kind = loc.evaluate(
+                    "el => el.tagName === 'SELECT' ? 'select' : (el.type === 'file' ? 'file' : 'text')",
+                    timeout=3000,
                 )
+                if kind == "select":
+                    try:
+                        loc.select_option(label=text, timeout=3000)
+                    except Exception:
+                        loc.select_option(value=text, timeout=3000)
+                elif kind == "file":
+                    loc.set_input_files(text, timeout=3000)
+                else:
+                    loc.fill(text, timeout=3000)
             else:
                 # Type at cursor position — do NOT select-all first, as that
                 # destroys pre-filled values in LinkedIn Easy Apply fields.
