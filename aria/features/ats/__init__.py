@@ -1,6 +1,6 @@
 """features/ats — fill a job application form and stop for review. NEVER submits.
 
-fill_application(job, progress_fn) → FillResult
+fill_application(job, progress_fn, tab) → FillResult   (tab: the job's own agent_browser tab)
   detect() names an ATS with a deterministic adapter (Greenhouse) → that adapter.
   Otherwise → the generic see-think-act loop (computer_use.run_loop) under the same
   never-submit rule; its review lists the required fields still empty.
@@ -41,23 +41,26 @@ class FillResult:
         return sum(1 for r in self.review if r["source"] == source)
 
 
-def _generic(job: dict, progress_fn) -> FillResult:
+def _generic(job: dict, progress_fn, tab: Optional[str] = None) -> FillResult:
+    """computer_use / dom_browser call agent_browser with no tab, so the loop runs inside
+    use_tab(tab), keeping the caller's pause/stop gate."""
     import aria.web.agent_browser as agent_browser
     import aria.web.computer_use as computer_use
     import aria.web.dom_browser as dom_browser
 
-    result = FillResult(ats="generic", company=job.get("company", ""), title=job.get("role", ""))
+    result = FillResult(ats="generic", company=job.get("company", ""), title=job.get("role", ""), tab=tab)
     try:
-        agent_browser.navigate(job["url"], settle_secs=3.0)
-        context = answer_bank.fillable_answers(answer_bank.load(), job)   # never always-ask answers
-        goal = (
-            f"Fill out the job application form for {job.get('role', 'this role')} at "
-            f"{job.get('company', 'this company')} using the applicant answers in Context. "
-            f"Leave any field you have no answer for empty. {NEVER_SUBMIT}"
-        )
-        status, _data = computer_use.run_loop(goal, context, max_steps=30, progress_fn=progress_fn)
-        result.form_url = agent_browser.run(lambda page: page.url)
-        empty = dom_browser.find_empty_required_fields()
+        with agent_browser.use_tab(tab, gate=agent_browser.current_gate()):
+            agent_browser.navigate(job["url"], settle_secs=3.0)
+            context = answer_bank.fillable_answers(answer_bank.load(), job)   # never always-ask answers
+            goal = (
+                f"Fill out the job application form for {job.get('role', 'this role')} at "
+                f"{job.get('company', 'this company')} using the applicant answers in Context. "
+                f"Leave any field you have no answer for empty. {NEVER_SUBMIT}"
+            )
+            status, _data = computer_use.run_loop(goal, context, max_steps=30, progress_fn=progress_fn)
+            result.form_url = agent_browser.run(lambda page: page.url)
+            empty = dom_browser.find_empty_required_fields()
         result.review = [
             {"name": e.get("selector", ""), "label": e.get("label", ""), "kind": e.get("field_type", ""),
              "value": "", "source": "needs_me", "required": True, "note": "still empty"}
@@ -71,7 +74,8 @@ def _generic(job: dict, progress_fn) -> FillResult:
     return result
 
 
-def fill_application(job: dict, progress_fn: Optional[Callable[[str], None]] = None) -> FillResult:
+def fill_application(job: dict, progress_fn: Optional[Callable[[str], None]] = None,
+                     tab: Optional[str] = None) -> FillResult:
     url = (job or {}).get("url", "")
     if not url:
         return FillResult(error="That job has no application URL.")
@@ -80,19 +84,20 @@ def fill_application(job: dict, progress_fn: Optional[Callable[[str], None]] = N
     if not seen:                 # company career page — the ATS may be embedded in it
         try:
             import aria.web.agent_browser as agent_browser
-            agent_browser.navigate(url, settle_secs=2.5)
-            html = agent_browser.run(lambda page: page.content())
+            agent_browser.navigate(url, settle_secs=2.5, tab=tab)
+            html = agent_browser.run(lambda page: page.content(), tab=tab)
             seen = identify(url, html) or ""
         except Exception as exc:
             logger.warning("couldn't load %s to detect the ATS: %s", url, exc)
     if detect(url, html) == "greenhouse":
         from aria.features.ats import greenhouse
-        gh = greenhouse.fill(job, progress_fn)
+        gh_tab = tab or greenhouse.TAB
+        gh = greenhouse.fill(job, progress_fn, tab=gh_tab)
         return FillResult(ats="greenhouse", identified=seen, form_url=gh.form_url, title=gh.title,
                           company=gh.company, description=gh.description, review=gh.review,
-                          filled=gh.filled, tab=greenhouse.TAB, error=gh.error)
+                          filled=gh.filled, tab=gh_tab, error=gh.error)
     if progress_fn and seen:
         progress_fn(f"That's a {seen.title()} form — I don't have a dedicated filler yet, so I'll do it step by step.")
-    result = _generic(job, progress_fn)
+    result = _generic(job, progress_fn, tab)
     result.identified = seen
     return result

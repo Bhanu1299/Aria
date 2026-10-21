@@ -10,8 +10,9 @@ import threading
 from typing import Optional
 
 
-class Stopped(Exception):
-    """The user said stop: end the run, leave every tab open."""
+class Stopped(BaseException):
+    """The user said stop: end the run, leave every tab open. A BaseException so the
+    fillers' broad `except Exception` blocks can't swallow it mid-form."""
 
 
 class RunControl:

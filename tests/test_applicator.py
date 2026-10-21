@@ -11,6 +11,7 @@ import aria.state.db as db
 from aria.core import paths
 from aria.features import applicator
 from aria.features.ats import FillResult
+from aria.features.applying import control, tabs
 from aria.features.ats import submit as ats_submit
 from aria.integrations import sheets
 from aria.llm import meter
@@ -35,9 +36,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(applicator, "REVIEWS_DIR", tmp_path / "reviews")
     monkeypatch.setattr(paths, "IDENTITY_JSON", tmp_path / "identity.json")
     monkeypatch.setattr(ab, "BANK_PATH", tmp_path / "answer_bank.json")
-    store = {}
-    monkeypatch.setattr(applicator.memory, "get_persistent", lambda k: store.get(k))
-    monkeypatch.setattr(applicator.memory, "set_persistent", lambda k, v: store.__setitem__(k, v))
+    monkeypatch.setattr(tabs, "REGISTRY_PATH", tmp_path / "apply_tabs.json")
     sheet_calls = []
     monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None:
                         sheet_calls.append((row, status, note)) or row)
@@ -47,6 +46,9 @@ def env(tmp_path, monkeypatch):
 
     def fake_run(fn, tab=None):
         class Page:
+            def is_closed(self):
+                return False
+
             url = browser["url"]
 
             def screenshot(self, path, full_page):
@@ -55,15 +57,19 @@ def env(tmp_path, monkeypatch):
         return fn(Page())
     import aria.web.agent_browser as agent_browser
     monkeypatch.setattr(agent_browser, "run", fake_run)
-    return {"store": store, "sheet": sheet_calls, "applied": applied, "browser": browser, "tmp": tmp_path}
+    return {"sheet": sheet_calls, "applied": applied, "browser": browser, "tmp": tmp_path}
 
 
 def _fake_fill(monkeypatch, review=REVIEW, error="", cost=0.0123):
-    def fill(job, progress_fn=None):
+    seen_tabs = []
+
+    def fill(job, progress_fn=None, tab=None):
+        seen_tabs.append(tab)
         meter.add({"cost_usd": cost, "tokens_in": 100, "tokens_out": 20})
         return FillResult(ats="greenhouse", form_url=FORM, title="ML Engineer", company="Acme",
-                          review=list(review), filled=dict(FILLED), tab="apply", error=error)
+                          review=list(review), filled=dict(FILLED), tab=tab, error=error)
     monkeypatch.setattr(applicator.ats, "fill_application", fill)
+    return seen_tabs
 
 
 def _runs():
@@ -94,17 +100,19 @@ def test_spoken_result():
 
 # ── run_application ─────────────────────────────────────────────────────────
 
-def test_run_fills_reviews_and_records(monkeypatch, env):
-    _fake_fill(monkeypatch)
+def test_run_fills_into_its_own_tab_and_records(monkeypatch, env):
+    seen_tabs = _fake_fill(monkeypatch)
     said = []
     out = applicator.run_application(dict(JOB), progress_fn=said.append)
     assert out.startswith("Greenhouse form filled for ML Engineer at Acme. 1 field needs you.")
 
-    pend = env["store"][applicator.PENDING_KEY]
-    assert pend["job"]["row"] == 7 and pend["tab"] == "apply" and pend["form_url"] == FORM
-    md = pend["review_path"]
+    [entry] = tabs.live()
+    assert seen_tabs == [entry["id"]]                                  # filled in the job's own tab
+    assert entry["state"] == tabs.FILLED and entry["row"] == 7 and entry["form_url"] == FORM
+    assert entry["needs_me"] == ["Do you require sponsorship?"] and entry["ats"] == "greenhouse"
+    md = entry["review_path"]
     assert md.endswith(".md") and "Needs you (1)" in open(md).read()
-    assert env["browser"]["screens"] and pend["screenshot"].endswith(".png")
+    assert env["browser"]["screens"] and entry["screenshot"].endswith(".png")
 
     row, status, note = env["sheet"][-1]
     assert (row, status) == (7, sheets.STATUS_IN_REVIEW) and "1 field need" in note and "not submitted" in note
@@ -118,20 +126,29 @@ def test_run_fills_reviews_and_records(monkeypatch, env):
     assert env["applied"] == []                                        # nothing submitted
 
 
+def test_run_uses_the_entry_it_is_given(monkeypatch, env):
+    seen_tabs = _fake_fill(monkeypatch)
+    entry = tabs.add(dict(JOB))
+    applicator.run_application(dict(JOB), entry=entry)
+    assert seen_tabs == [entry["id"]] and [e["id"] for e in tabs.live()] == [entry["id"]]
+
+
 def test_run_without_url_marks_needs_human(env):
     out = applicator.run_application({"row": 3, "company": "GovStar", "role": "Dev", "url": "",
                                       "apply_link": "Email resume to x@govstar.us"})
     assert "Needs human" in out
     assert env["sheet"][-1][:2] == (3, sheets.STATUS_NEEDS_HUMAN) and "Email resume" in env["sheet"][-1][2]
     assert _runs()[-1]["stage"] == "error"
+    assert tabs.live() == []                                           # no tab for a job with no link
 
 
-def test_run_fill_error_marks_needs_human(monkeypatch, env):
+def test_run_fill_error_marks_needs_human_tab_stays_open(monkeypatch, env):
     _fake_fill(monkeypatch, review=[], error="I couldn't find any form fields on that page.")
     out = applicator.run_application(dict(JOB))
     assert "couldn't fill" in out
     assert env["sheet"][-1][:2] == (7, sheets.STATUS_NEEDS_HUMAN)
-    assert applicator.PENDING_KEY not in env["store"]
+    [entry] = tabs.live()
+    assert entry["state"] == tabs.OPEN and "form fields" in entry["note"]
 
 
 def test_url_only_job_never_touches_the_sheet(monkeypatch, env):
@@ -142,85 +159,102 @@ def test_url_only_job_never_touches_the_sheet(monkeypatch, env):
 
 
 def test_run_never_raises(monkeypatch, env):
-    def boom(job, progress_fn=None):
+    def boom(job, progress_fn=None, tab=None):
         raise RuntimeError("browser died")
     monkeypatch.setattr(applicator.ats, "fill_application", boom)
     assert "Needs human" in applicator.run_application(dict(JOB))
 
 
-# ── follow-ups: only the user's words ───────────────────────────────────────
-
-def _pending(env):
-    env["store"][applicator.PENDING_KEY] = {"job": {k: JOB[k] for k in ("row", "company", "role", "url")},
-                                             "ats": "greenhouse", "tab": "apply", "form_url": FORM,
-                                             "filled": dict(FILLED), "review_path": "/r/x.md"}
-
-
-def test_followup_ignored_without_pending(env):
-    assert applicator.handle_followup("submit it") is None
-
-
-@pytest.mark.parametrize("text", ["skip this song", "next track", "what's the weather", "submit the report to my boss"])
-def test_followup_ignores_other_commands(env, text):
-    _pending(env)
-    assert applicator.handle_followup(text) is None
+def test_stop_mid_fill_leaves_tab_open_and_propagates(monkeypatch, env):
+    def stopped(job, progress_fn=None, tab=None):
+        raise control.Stopped()
+    monkeypatch.setattr(applicator.ats, "fill_application", stopped)
+    with pytest.raises(control.Stopped):
+        applicator.run_application(dict(JOB))
+    [entry] = tabs.live()
+    assert entry["state"] == tabs.OPEN and "stopped" in entry["note"]
+    assert env["sheet"] == []                                          # a stop is not Needs human
 
 
-def test_submit_it_learns_corrections_submits_and_records(monkeypatch, env):
-    _pending(env)
+# ── after review: only the user's words reach these ─────────────────────────
+
+def _entry(env, **kw):
+    e = tabs.add(dict(JOB), ats="greenhouse")
+    fields = dict(state=tabs.FILLED, form_url=FORM, filled=dict(FILLED), review_path="/r/x.md")
+    fields.update(kw)
+    return tabs.update(e["id"], **fields)
+
+
+def test_submit_entry_learns_corrections_and_sets_submitted_without_sheet_write(monkeypatch, env):
+    e = _entry(env)
     monkeypatch.setattr(applicator.greenhouse, "read_values",
-                        lambda names: {"first_name": "Alex Jordan", "q1": "Yes", "q2": "Edited essay", "q3": "Master's"})
+                        lambda names, tab=None: {"first_name": "Alex Jordan", "q1": "Yes", "q2": "Edited essay",
+                                                 "q3": "Master's"})
     learned = []
     monkeypatch.setattr(applicator.answer_bank, "learn", lambda q, a, source="user": learned.append((q, a, source)) or True)
-    monkeypatch.setattr(ats_submit, "submit", lambda tab: ats_submit.SubmitOutcome("submitted"))
-    out = applicator.handle_followup("Okay, submit it.")
+    clicked = []
+    monkeypatch.setattr(ats_submit, "submit", lambda tab: clicked.append(tab) or ats_submit.SubmitOutcome("submitted"))
+    out = applicator.submit_entry(e)
     assert out.startswith("Submitted ML Engineer at Acme.") and "saved 1 answer" in out
+    assert clicked == [e["id"]]
     assert learned == [("Do you require sponsorship?", "Yes", "review")]     # essay (textarea) not learned
     assert env["applied"] == [("Acme", "ML Engineer", "greenhouse", FORM, "applied")]
-    assert env["sheet"][-1][:2] == (7, sheets.STATUS_APPLIED)
-    assert env["store"][applicator.PENDING_KEY] is None
+    assert env["sheet"] == []                                                # Applied waits for "done"
+    got = tabs.get(e["id"])
+    assert (got["state"], got["submitted_by"]) == (tabs.SUBMITTED, "aria")
     assert _runs()[-1]["stage"] == "submitted"
 
 
 def test_submit_refuses_when_form_is_not_open(monkeypatch, env):
-    _pending(env)
+    e = _entry(env)
     env["browser"]["url"] = "about:blank"
     called = []
     monkeypatch.setattr(ats_submit, "submit", lambda tab: called.append(tab))
-    assert "isn't open anymore" in applicator.handle_followup("submit it")
+    assert "isn't open anymore" in applicator.submit_entry(e)
     assert called == [] and env["applied"] == []
 
 
-def test_submit_invalid_keeps_review_open(monkeypatch, env):
-    _pending(env)
-    monkeypatch.setattr(applicator.greenhouse, "read_values", lambda names: {})
+def test_submit_invalid_keeps_tab_filled(monkeypatch, env):
+    e = _entry(env)
+    monkeypatch.setattr(applicator.greenhouse, "read_values", lambda names, tab=None: {})
     monkeypatch.setattr(ats_submit, "submit", lambda tab: ats_submit.SubmitOutcome("invalid", ["Resume/CV", "Sponsorship"]))
-    out = applicator.handle_followup("submit it")
+    out = applicator.submit_entry(e)
     assert "Still needed: Resume/CV, Sponsorship" in out
-    assert env["store"][applicator.PENDING_KEY] is not None and env["sheet"] == [] and env["applied"] == []
+    assert tabs.get(e["id"])["state"] == tabs.FILLED and env["sheet"] == [] and env["applied"] == []
 
 
-def test_submit_unconfirmed_marks_needs_human(monkeypatch, env):
-    _pending(env)
-    monkeypatch.setattr(applicator.greenhouse, "read_values", lambda names: {})
+def test_submit_unconfirmed_stays_filled_for_done_to_ask(monkeypatch, env):
+    e = _entry(env)
+    monkeypatch.setattr(applicator.greenhouse, "read_values", lambda names, tab=None: {})
     monkeypatch.setattr(ats_submit, "submit", lambda tab: ats_submit.SubmitOutcome("unconfirmed"))
-    assert "Needs human" in applicator.handle_followup("submit it")
-    assert env["sheet"][-1][:2] == (7, sheets.STATUS_NEEDS_HUMAN) and env["applied"] == []
+    assert "didn't see a confirmation" in applicator.submit_entry(e)
+    got = tabs.get(e["id"])
+    assert got["state"] == tabs.FILLED and "no confirmation" in got["note"]
+    assert env["sheet"] == [] and env["applied"] == []
 
 
-def test_i_submitted_it(monkeypatch, env):
-    _pending(env)
+def test_by_hand_sets_submitted_user(monkeypatch, env):
+    e = _entry(env)
     monkeypatch.setattr(ats_submit, "page_confirms", lambda tab: True)
-    assert applicator.handle_followup("I submitted it") == "Marked ML Engineer at Acme as applied."
-    assert env["sheet"][-1][:2] == (7, sheets.STATUS_APPLIED) and "confirmation seen" in env["sheet"][-1][2]
-    assert len(env["applied"]) == 1
+    assert applicator.mark_submitted_by_hand(e) == "Got it: ML Engineer at Acme is submitted."
+    got = tabs.get(e["id"])
+    assert (got["state"], got["submitted_by"]) == (tabs.SUBMITTED, "user") and "confirmation seen" in got["note"]
+    assert env["sheet"] == [] and len(env["applied"]) == 1
 
 
-def test_skip_this_job(env):
-    _pending(env)
-    assert applicator.handle_followup("skip this job") == "Skipped ML Engineer at Acme."
+def test_mark_applied_writes_status_and_note(env):
+    e = _entry(env, state=tabs.SUBMITTED, submitted_by="aria")
+    assert applicator.mark_applied(e, "submitted by Aria, confirmation seen") == ""
+    assert env["sheet"][-1] == (7, sheets.STATUS_APPLIED, "submitted by Aria, confirmation seen")
+    assert tabs.get(e["id"])["sheet_marked"] is True
+
+
+def test_skip_writes_skipped_and_keeps_tab(env):
+    e = _entry(env)
+    assert applicator.skip_entry(e) == "Skipped ML Engineer at Acme. The tab stays open."
     assert env["sheet"][-1][:2] == (7, sheets.STATUS_SKIPPED)
-    assert env["store"][applicator.PENDING_KEY] is None and env["applied"] == []
+    got = tabs.get(e["id"])
+    assert got["skipped"] is True and got["state"] == tabs.FILLED and env["applied"] == []
 
 
 def test_learn_corrections_ignores_unchanged_files_essays_and_dial_codes(monkeypatch):
@@ -275,8 +309,8 @@ def _tool():
 
 def test_apply_job_next_row_url_and_errors(monkeypatch, env):
     seen = []
-    monkeypatch.setattr(applicator, "run_application", lambda job, progress_fn=None, voice_ask_fn=None, run=None:
-                        seen.append(job) or "filled")
+    monkeypatch.setattr(applicator, "run_application", lambda job, progress_fn=None, voice_ask_fn=None, run=None,
+                        **kw: seen.append(job) or "filled")
     monkeypatch.setattr(sheets, "get_next_job", lambda: dict(JOB))
     monkeypatch.setattr(sheets, "get_job", lambda row: dict(JOB, row=row) if row == 12 else None)
     monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: [dict(JOB)]})())
@@ -310,10 +344,10 @@ def test_apply_run_logs_steps_decisions_and_labels_llm_calls(monkeypatch, env):
     from aria.observability import run_log
     seen_labels = []
 
-    def fill(job, progress_fn=None):
+    def fill(job, progress_fn=None, tab=None):
         seen_labels.append(llm_context.current())
         return FillResult(ats="greenhouse", form_url=FORM, title="ML Engineer", company="Acme",
-                          review=list(REVIEW), filled=dict(FILLED), tab="apply")
+                          review=list(REVIEW), filled=dict(FILLED), tab=tab)
     monkeypatch.setattr(applicator.ats, "fill_application", fill)
     skipped = dict(JOB, row=6, company="Old Co", status="Applied", alignment="2")
     monkeypatch.setattr(sheets, "get_next_job", lambda: dict(JOB))
@@ -336,8 +370,7 @@ def test_apply_run_logs_steps_decisions_and_labels_llm_calls(monkeypatch, env):
 
 def test_skip_is_its_own_run(env):
     from aria.observability import run_log
-    env["store"][applicator.PENDING_KEY] = {"job": dict(JOB), "ats": "greenhouse", "review_path": ""}
-    applicator.skip_pending()
+    applicator.skip_entry(_entry(env))
     run = run_log.read_runs()[0]
     assert run["trigger"] == "skip" and run["status"] == "skipped"
     assert {s["step"]: s["status"] for s in run["steps"]}["update sheet"] == "ok"

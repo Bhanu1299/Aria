@@ -1,19 +1,21 @@
 """applicator.py — the one entry point for job applications: fill → stop for review → you decide.
 
-run_application(job, progress_fn, voice_ask_fn) → spoken one-liner
+run_application(job, progress_fn, voice_ask_fn, entry=None, gate=None) → spoken one-liner
+  0. tab      every application gets its own visible tab (applying.tabs entry; its id is
+              the agent_browser tab name). Aria never closes it.
   1. fill     Greenhouse adapter / LinkedIn Easy Apply / generic browser loop — never submits
-  2. review   full-page screenshot + markdown summary in ~/.aria/reviews/ (needs-you first);
-              the form stays open in its own browser tab
-  3. record   sheet Status "In review" (+ note in Updates), aria.db application_runs,
-              flight log job entry with the LLM cost of this job, keyed by sheet row
+  2. review   full-page screenshot + markdown summary in ~/.aria/reviews/ (needs-you first)
+  3. record   tab entry → filled; sheet Status "In review" (+ note in Updates), aria.db
+              application_runs, flight log job entry with this job's LLM cost, by sheet row
 
-Then, only from the user's own words (handle_followup, a dispatcher pre-handler —
-never an agent tool, so no LLM can decide to submit):
-  "submit it"         → learn the answers the user corrected in the form, click the form's
-                        submit button, verify the confirmation → tracker + sheet "Applied"
-  "I submitted it"    → the user submitted by hand → tracker + sheet "Applied"
-  "skip this job"     → sheet "Skipped"
-Failures → sheet "Needs human" + the reason in Updates.
+Then, only from the user's own words (applying.commands, a dispatcher pre-handler —
+never an agent tool, so no LLM can decide to submit), on one tab entry:
+  submit_entry           learn the answers the user corrected, click the form's submit,
+                         verify the confirmation → tab "submitted" (by aria) + tracker
+  mark_submitted_by_hand the user submitted → tab "submitted" (by user) + tracker
+  mark_applied           sheet "Applied" + dated note — only on "applications are done"
+  skip_entry             sheet "Skipped"; the tab stays open
+Fill failures → sheet "Needs human" + the reason in Updates.
 """
 from __future__ import annotations
 
@@ -21,7 +23,6 @@ import contextlib
 import functools
 import logging
 import re
-import time
 from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
@@ -30,9 +31,8 @@ from urllib.parse import urlparse
 import aria.features.answer_bank as answer_bank
 import aria.features.tracker as tracker
 import aria.state.db as db
-import aria.state.memory as memory
-from aria.dispatch.parse import normalize
 from aria.features import ats
+from aria.features.applying import control, tabs
 from aria.features.ats import greenhouse
 from aria.features.ats import submit as ats_submit
 from aria.integrations import sheets
@@ -42,7 +42,6 @@ from aria.observability import flight_recorder, run_log
 
 logger = logging.getLogger(__name__)
 
-PENDING_KEY = "pending_application"
 REVIEWS_DIR = Path.home() / ".aria" / "reviews"
 
 _ATS_NAME = {"greenhouse": "Greenhouse", "linkedin": "LinkedIn Easy Apply", "generic": "Application"}
@@ -56,32 +55,9 @@ _SECTIONS = [
 # Corrections to these aren't reusable answers (files, company-specific essays, consents).
 _NO_LEARN_KINDS = {"file", "textarea", "checkbox"}
 
-_SUBMIT_RE = re.compile(
-    r"(?:yes |ok |okay )?(?:go ahead and )?(?:submit|send)(?: it| that| this| the application| my application|"
-    r" the form| this application)?(?: now)?"
-)
-_BY_HAND_RE = re.compile(
-    r"i(?: have|'ve)? (?:already |just )?(?:submitted|sent)(?: it| the application| my application)?|"
-    r"i applied(?: to it)?|mark (?:it|this|the job) (?:as )?applied"
-)
-_SKIP_RE = re.compile(
-    r"skip (?:this |the )?(?:job|application|role|one)|don'?t apply(?: to (?:it|this(?: one)?))?|"
-    r"not applying(?: to (?:it|this(?: one)?))?|pass on (?:it|this(?: one| job)?)"
-)
-
-
 # ---------------------------------------------------------------------------
-# Pending review (persisted, so a restart doesn't forget what's open)
+# Names
 # ---------------------------------------------------------------------------
-
-def pending() -> Optional[dict]:
-    p = memory.get_persistent(PENDING_KEY)
-    return p if isinstance(p, dict) and p.get("job") else None
-
-
-def _set_pending(value: Optional[dict]) -> None:
-    memory.set_persistent(PENDING_KEY, value)
-
 
 def _names(job: dict, result=None) -> tuple:
     company = job.get("company") or (result.company if result else "") or "this company"
@@ -316,6 +292,9 @@ def _run_logged(run: run_log.Run, job: dict, fn: Callable[[], str]) -> str:
     try:
         with llm_context.job(run_log.job_label(company, role, job.get("row")), run.id):
             out = fn()
+    except control.Stopped:
+        run.finish("stopped", "you said stop; the tab stays open")
+        raise
     finally:
         _RUN = prev
     run.finish(_RUN_STATUS.get("status", "no change"), out)
@@ -327,39 +306,44 @@ def run_application(
     progress_fn: Optional[Callable[[str], None]] = None,
     voice_ask_fn: Optional[Callable[[str], str]] = None,
     run: Optional[run_log.Run] = None,
+    entry: Optional[dict] = None,
+    gate: Optional[Callable[[], None]] = None,
 ) -> str:
-    """Fill the application for a job (sheet row dict or {"url": ...}) and stop for review.
-    Returns one spoken sentence or two. Never submits, never raises. `run` continues a
-    pipeline run the caller started (e.g. after reading the sheet)."""
+    """Fill the application for a job (sheet row dict or {"url": ...}) in its own tab and
+    stop for review. Returns one spoken sentence or two. Never submits, never raises —
+    except control.Stopped (from `gate`, the run's pause/stop checkpoint), which leaves the
+    tab open and propagates so the run ends. `entry` is the tab entry the caller already
+    opened; else one is created. `run` continues a pipeline run the caller started."""
     job = dict(job or {})
     run = run or run_log.start("apply_job")
-    return _run_logged(run, job, lambda: _run_application(job, progress_fn, voice_ask_fn))
+    return _run_logged(run, job, lambda: _run_application(job, progress_fn, voice_ask_fn, entry, gate))
 
 
 def _run_application(
     job: dict,
     progress_fn: Optional[Callable[[str], None]],
     voice_ask_fn: Optional[Callable[[str], str]],
+    entry: Optional[dict] = None,
+    gate: Optional[Callable[[], None]] = None,
 ) -> str:
+    import aria.web.agent_browser as agent_browser
     say = progress_fn or (lambda _msg: None)
     before = meter.snapshot()
     job = dict(job or {})
     url = (job.get("url") or "").strip()
     company, role = _names(job)
+    tab = ""
     try:
-        prior = pending()
-        if prior and prior["job"].get("url") != url:
-            pc, pr = _names(prior["job"])
-            say(f"Closing the review for {pr} at {pc} — it stays In review in the sheet.")
-
         if not url:
             note = f"no application URL ({job.get('apply_link') or 'empty'})"
             _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, note)
             _finish(job, "", "error", before, ok=False, note=note)
             return f"{role} at {company} has no application link I can open, so I marked it Needs human."
 
-        with _step("fill form") as step:
-            result = _fill_linkedin(job, voice_ask_fn) if _is_linkedin(url) else ats.fill_application(job, say)
+        entry = entry or tabs.add(job)
+        tab = entry["id"]
+        with _step("fill form") as step, agent_browser.use_tab(tab, gate=gate):
+            result = _fill_linkedin(job, voice_ask_fn) if _is_linkedin(url) else ats.fill_application(job, say, tab=tab)
             n_need = result.count("needs_me") if result.review else 0
             step.detail = (f"{_ATS_NAME.get(result.ats, result.ats or 'form')}: {len(result.filled or {})} filled, "
                            f"{n_need} need you" + (f" — {result.error}" if result.error else ""))
@@ -372,18 +356,19 @@ def _run_application(
         if _RUN is not None and (company, role) != _names({}):
             _RUN.job(company, role, job.get("row"))
 
+        result.tab = tab
+        tabs.update(tab, company=company, role=role, ats=result.ats, form_url=result.form_url)
         if result.error and not result.review:
+            tabs.update(tab, state=tabs.OPEN, note=result.error)
             _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, result.error)
             _finish(job, result.ats, "error", before, ok=False, note=result.error)
-            return f"I couldn't fill the application for {role} at {company}. {result.error}"
+            return f"I couldn't fill the application for {role} at {company}. {result.error} The tab stays open."
 
         say("Saving a screenshot and the review summary.")
         md, shot = _write_review(job, result, company, role)
-        _set_pending({
-            "job": {k: job.get(k) for k in ("row", "company", "role", "url", "location")},
-            "ats": result.ats, "tab": result.tab, "form_url": result.form_url,
-            "filled": result.filled, "review_path": md, "screenshot": shot, "started": time.time(),
-        })
+        tabs.update(tab, state=tabs.FILLED, filled=result.filled, review_path=md, screenshot=shot,
+                    needs_me=[r.get("label") or r.get("name", "") for r in result.review if r["source"] == "needs_me"],
+                    note=result.error)
         n_me = result.count("needs_me")
         sheet_err = _sheet_update(
             job, sheets.STATUS_IN_REVIEW,
@@ -394,8 +379,15 @@ def _run_application(
                 note=result.error or sheet_err, needs_me=n_me, review_path=md)
         spoken = spoken_result(result, company, role)
         return spoken + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
+    except control.Stopped:
+        if tab:
+            tabs.update(tab, state=tabs.OPEN, note="stopped mid-fill")
+        _finish(job, "", "stopped", before, ok=False, note="stopped mid-fill")
+        raise
     except Exception as exc:
         logger.error("run_application failed: %s", exc)
+        if tab:
+            tabs.update(tab, state=tabs.OPEN, note=f"Aria error: {exc}")
         _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, f"Aria error: {exc}")
         _finish(job, "", "error", before, ok=False, note=str(exc))
         return f"Something went wrong applying to {role} at {company}. I marked it Needs human."
@@ -430,103 +422,90 @@ def _logged_followup(trigger: str):
     """Log a review follow-up (submit / submitted by hand / skip) as its own short run."""
     def deco(fn):
         @functools.wraps(fn)
-        def wrapper() -> str:
-            p = pending()
-            if not p:
-                return fn()
-            return _run_logged(run_log.start(trigger), dict(p["job"]), fn)
+        def wrapper(entry: dict, *args):
+            return _run_logged(run_log.start(trigger), _job_of(entry), lambda: fn(entry, *args))
         return wrapper
     return deco
 
 
+def _job_of(entry: dict) -> dict:
+    return {k: entry.get(k) for k in ("row", "company", "role", "url", "location")}
+
+
 @_logged_followup("submit")
-def submit_pending() -> str:
-    p = pending()
-    if not p:
-        return "There's no application waiting for review."
-    job, tab, ats_name = p["job"], p.get("tab"), p.get("ats", "")
+def submit_entry(entry: dict) -> str:
+    """Click this tab's submit button (the user said "submit it"). Confirmed → the tab is
+    submitted; the sheet says Applied once the user says "applications are done"."""
+    job, tab, ats_name = _job_of(entry), entry["id"], entry.get("ats", "")
     company, role = _names(job)
     before = meter.snapshot()
     try:
         import aria.web.agent_browser as agent_browser
         current = agent_browser.run(lambda page: page.url, tab=tab)
-        if not _same_form(current, p.get("form_url", "")):
-            return ("That form isn't open anymore, so I won't submit anything. If you submitted it "
-                    "yourself, say I submitted it.")
+        if not _same_form(current, entry.get("form_url", "")):
+            return (f"The {company} form isn't open anymore, so I won't submit anything. If you submitted "
+                    "it yourself, say I submitted it.")
 
         learned = 0
         if ats_name == "greenhouse":
             try:
-                learned = learn_corrections(p.get("filled") or {}, greenhouse.read_values(list(p.get("filled") or {})))
+                filled = entry.get("filled") or {}
+                learned = learn_corrections(filled, greenhouse.read_values(list(filled), tab=tab))
             except Exception as exc:
                 logger.warning("applicator: couldn't read corrections: %s", exc)
 
         outcome = ats_submit.submit(tab)
         saved = f" I saved {learned} answer{'s' if learned != 1 else ''} you changed." if learned else ""
         if outcome.status == "submitted":
-            tracker.log_application(company, role, ats_name, job.get("url") or p.get("form_url", ""), "applied")
-            sheet_err = _sheet_update(job, sheets.STATUS_APPLIED, "submitted by Aria after your review")
-            _finish(job, ats_name, "submitted", before, review_path=p.get("review_path", ""))
-            _set_pending(None)
-            msg = f"Submitted {role} at {company}. Logged it and marked the sheet Applied.{saved}"
-            return msg + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
+            tracker.log_application(company, role, ats_name, job.get("url") or entry.get("form_url", ""), "applied")
+            tabs.update(tab, state=tabs.SUBMITTED, submitted_by="aria", note="confirmation seen")
+            _finish(job, ats_name, "submitted", before, review_path=entry.get("review_path", ""))
+            return (f"Submitted {role} at {company}. I saw the confirmation; the sheet gets Applied when you "
+                    f"say applications are done.{saved}")
         if outcome.status == "invalid":
             fields = ", ".join(outcome.missing[:4])
-            return f"The form didn't accept it yet. Still needed: {fields}.{saved}"
+            return f"The {company} form didn't accept it yet. Still needed: {fields}.{saved}"
         if outcome.status == "no_button":
-            return ("I can't find the submit button, so nothing was sent. If you submitted it yourself, "
-                    "say I submitted it.")
-        note = "clicked submit but saw no confirmation, check your email"
-        _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, note)
-        _finish(job, ats_name, "submit_unconfirmed", before, ok=False, note=note)
-        return ("I clicked submit but didn't see a confirmation. I marked it Needs human, so check "
-                f"the browser and your email.{saved}")
+            return (f"I can't find the submit button on the {company} form, so nothing was sent. If you "
+                    "submitted it yourself, say I submitted it.")
+        tabs.update(tab, note="clicked submit, no confirmation seen")
+        _finish(job, ats_name, "submit_unconfirmed", before, ok=False, note="clicked submit, no confirmation")
+        return (f"I clicked submit on {company} but didn't see a confirmation. Check the tab and your email; "
+                f"I'll ask you about it when you say applications are done.{saved}")
     except Exception as exc:
-        logger.error("submit_pending failed: %s", exc)
+        logger.error("submit_entry failed: %s", exc)
         return "Something went wrong submitting. Check the browser before trying again."
 
 
 @_logged_followup("submitted by hand")
-def mark_submitted_by_hand() -> str:
-    p = pending()
-    if not p:
-        return "There's no application waiting for review."
-    job, ats_name = p["job"], p.get("ats", "")
+def mark_submitted_by_hand(entry: dict) -> str:
+    job, ats_name = _job_of(entry), entry.get("ats", "")
     company, role = _names(job)
     before = meter.snapshot()
-    seen = ats_submit.page_confirms(p.get("tab"))
-    tracker.log_application(company, role, ats_name, job.get("url") or p.get("form_url", ""), "applied")
-    sheet_err = _sheet_update(job, sheets.STATUS_APPLIED,
-                              "you submitted it" + (", confirmation seen" if seen else ""))
-    _finish(job, ats_name, "submitted", before, note="by hand", review_path=p.get("review_path", ""))
-    _set_pending(None)
-    return f"Marked {role} at {company} as applied." + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
+    seen = ats_submit.page_confirms(entry["id"])
+    tracker.log_application(company, role, ats_name, job.get("url") or entry.get("form_url", ""), "applied")
+    tabs.update(entry["id"], state=tabs.SUBMITTED, submitted_by="user",
+                note="you submitted it" + (", confirmation seen" if seen else ""))
+    _finish(job, ats_name, "submitted", before, note="by hand", review_path=entry.get("review_path", ""))
+    return f"Got it: {role} at {company} is submitted."
+
+
+def mark_applied(entry: dict, note: str) -> str:
+    """Sheet Status → Applied with a dated note (only on "applications are done"). Returns
+    an error string, or "" when written (or the entry has no sheet row)."""
+    err = _sheet_update_now(_job_of(entry), sheets.STATUS_APPLIED, note)
+    if not err:
+        tabs.update(entry["id"], sheet_marked=True)
+    return err
 
 
 @_logged_followup("skip")
-def skip_pending() -> str:
-    p = pending()
-    if not p:
-        return "There's no application waiting for review."
-    job = p["job"]
+def skip_entry(entry: dict) -> str:
+    job = _job_of(entry)
     company, role = _names(job)
     before = meter.snapshot()
     sheet_err = _sheet_update(job, sheets.STATUS_SKIPPED, "skipped after review")
-    _finish(job, p.get("ats", ""), "skipped", before, review_path=p.get("review_path", ""))
-    _set_pending(None)
-    return f"Skipped {role} at {company}." + (f" (Sheet not updated: {sheet_err})" if sheet_err else "")
-
-
-def handle_followup(text: str) -> Optional[str]:
-    """Dispatcher pre-handler: "submit it" / "I submitted it" / "skip this job" while a
-    review is open. Anything else (or nothing pending) → None, so routing continues."""
-    if not pending():
-        return None
-    q = normalize(text)
-    if _SUBMIT_RE.fullmatch(q):
-        return submit_pending()
-    if _BY_HAND_RE.fullmatch(q):
-        return mark_submitted_by_hand()
-    if _SKIP_RE.fullmatch(q):
-        return skip_pending()
-    return None
+    tabs.update(entry["id"], skipped=True)
+    _finish(job, entry.get("ats", ""), "skipped", before, review_path=entry.get("review_path", ""))
+    return (f"Skipped {role} at {company}. The tab stays open."
+            + (f" (Sheet not updated: {sheet_err})" if sheet_err else ""))

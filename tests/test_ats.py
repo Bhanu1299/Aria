@@ -324,14 +324,14 @@ def test_fill_application_requires_url():
 
 def test_fill_application_routes_greenhouse_to_adapter(monkeypatch):
     called = {}
-    monkeypatch.setattr(gh, "fill", lambda job, progress_fn=None: called.setdefault("job", job) and gh.GreenhouseResult(
+    monkeypatch.setattr(gh, "fill", lambda job, progress_fn=None, tab=None: called.setdefault("job", job) and gh.GreenhouseResult(
         form_url="https://job-boards.greenhouse.io/x", review=[{"source": "needs_me"}]))
     result = ats.fill_application({"url": "https://job-boards.greenhouse.io/x/jobs/1"})
     assert result.ats == "greenhouse" and result.count("needs_me") == 1 and called
 
 
 def test_fill_application_falls_back_to_generic_for_other_atses(monkeypatch):
-    monkeypatch.setattr(ats, "_generic", lambda job, progress_fn: ats.FillResult(ats="generic"))
+    monkeypatch.setattr(ats, "_generic", lambda job, progress_fn, tab=None: ats.FillResult(ats="generic"))
     said = []
     result = ats.fill_application({"url": "https://nike.wd1.myworkdayjobs.com/job/1"}, said.append)
     assert (result.ats, result.identified) == ("generic", "workday")

@@ -236,6 +236,11 @@ def use_tab(name: Optional[str], gate: Optional[Callable[[], None]] = None) -> I
         _local.tab, _local.gate = prev
 
 
+def current_gate() -> Optional[Callable[[], None]]:
+    """This thread's gate (from an enclosing use_tab), to keep it in a nested use_tab."""
+    return getattr(_local, "gate", None)
+
+
 def attach(wanted: dict) -> set:
     """Bind each name to an open tab showing the same host + path. Returns the names bound."""
     def _do():

@@ -581,25 +581,25 @@ def _gateway_up() -> bool:
     return check_health(config.GATEWAY_URL) is None
 
 
-def _open(url: str, progress_fn) -> str:
+def _open(url: str, progress_fn, tab: str = TAB) -> str:
     """Navigate to the form; return its live DOM HTML."""
-    agent_browser.navigate(url, settle_secs=2.5, tab=TAB)
-    html = agent_browser.run(lambda page: page.content(), tab=TAB)
+    agent_browser.navigate(url, settle_secs=2.5, tab=tab)
+    html = agent_browser.run(lambda page: page.content(), tab=tab)
     form_url = greenhouse_form_url(url, html)
     if form_url != url:
         if progress_fn:
             progress_fn("It's an embedded Greenhouse form — opening it directly.")
-        agent_browser.navigate(form_url, settle_secs=2.5, tab=TAB)
+        agent_browser.navigate(form_url, settle_secs=2.5, tab=tab)
 
     def _ready(page):
         page.wait_for_selector(_FORM_READY, timeout=15000)
         return page.content()
-    return agent_browser.run(_ready, tab=TAB)
+    return agent_browser.run(_ready, tab=tab)
 
 
-def read_values(names: list) -> dict:
-    """Current DOM value of each field id in the review tab (None = not on the page)."""
-    return agent_browser.run(lambda page: page.evaluate(_READBACK_JS, list(names)), tab=TAB)
+def read_values(names: list, tab: str = TAB) -> dict:
+    """Current DOM value of each field id in the form's tab (None = not on the page)."""
+    return agent_browser.run(lambda page: page.evaluate(_READBACK_JS, list(names)), tab=tab)
 
 
 @dataclass
@@ -613,14 +613,24 @@ class GreenhouseResult:
     error: str = ""
 
 
-def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None) -> GreenhouseResult:
-    """Open, parse, plan, fill and read back. Never submits, never raises."""
+def _fill_field(p: "Planned", tab: str) -> bool:
+    """One field per browser call, so a pause holds between fields. False = not filled."""
+    try:
+        return bool(agent_browser.run(lambda page: _fill_one(page, p), tab=tab))
+    except Exception as exc:
+        logger.warning("greenhouse: fill %s (%s) failed: %s", p.field.name, p.field.label, exc)
+        return False
+
+
+def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None, tab: str = TAB) -> GreenhouseResult:
+    """Open, parse, plan, fill and read back in `tab`. Never submits, never raises
+    (a pause/stop gate's Stopped is a BaseException and passes through)."""
     say = progress_fn or (lambda _msg: None)
     result = GreenhouseResult()
     try:
         say("Opening the Greenhouse application.")
-        html = _open(job["url"], progress_fn)
-        result.form_url = agent_browser.run(lambda page: page.url, tab=TAB)
+        html = _open(job["url"], progress_fn, tab)
+        result.form_url = agent_browser.run(lambda page: page.url, tab=tab)
         form = parse_form(html, _fetch_schema_html(result.form_url))
         result.title, result.company, result.description = form.title, form.company, form.description
         if not form.fields:
@@ -629,7 +639,7 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None) -> Gree
 
         unknown = [f for f in form.fields if f.kind in ("select", "multiselect") and not f.options]
         if unknown:
-            found = agent_browser.run(lambda page: {f.name: _read_options(page, f.name) for f in unknown}, tab=TAB)
+            found = agent_browser.run(lambda page: {f.name: _read_options(page, f.name) for f in unknown}, tab=tab)
             for f in unknown:
                 f.options = found.get(f.name, [])
 
@@ -642,25 +652,14 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None) -> Gree
         to_fill = [p for p in plans if p.value and p.source in ("bank", "llm_guess", "llm_draft")]
         say(f"Filling {len(to_fill)} fields.")
 
-        def _fill_all(page):
-            missing = []
-            for p in to_fill:
-                try:
-                    if not _fill_one(page, p):
-                        missing.append(p)
-                except Exception as exc:
-                    logger.warning("greenhouse: fill %s (%s) failed: %s", p.field.name, p.field.label, exc)
-            if missing:                    # conditional fields (e.g. Race) appear after others are set
-                time.sleep(1.0)
-                for p in missing:
-                    try:
-                        _fill_one(page, p)
-                    except Exception as exc:
-                        logger.warning("greenhouse: retry %s failed: %s", p.field.name, exc)
-            values = page.evaluate(_READBACK_JS, [p.field.name for p in plans])
-            return confirm_uploads(values, plans, page.inner_text("body"))
-
-        dom_values = agent_browser.run(_fill_all, tab=TAB)
+        missing = [p for p in to_fill if not _fill_field(p, tab)]
+        if missing:                        # conditional fields (e.g. Race) appear after others are set
+            time.sleep(1.0)
+            for p in missing:
+                _fill_field(p, tab)
+        dom_values = agent_browser.run(
+            lambda page: confirm_uploads(page.evaluate(_READBACK_JS, [p.field.name for p in plans]), plans,
+                                         page.inner_text("body")), tab=tab)
         result.review = build_review(plans, dom_values)
         result.filled = {
             p.field.name: {"label": p.field.label, "kind": p.field.kind,
