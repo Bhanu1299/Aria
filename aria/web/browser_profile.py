@@ -7,18 +7,103 @@ logged-in sessions (Gmail, LinkedIn, etc.) survive between runs.
 Public API:
   get_persistent_context(headless=True) → BrowserContext
   login_session(url)                    → interactive login flow
+  launch_chrome(port)                   → start Aria's visible Chrome, detached, with a
+                                          local debug port (it outlives Aria)
+  connect_cdp(port)                     → (browser, context) over that port
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
+import time
 from pathlib import Path
 
+import httpx
 from patchright.sync_api import sync_playwright, BrowserContext
 
 logger = logging.getLogger(__name__)
 
 PROFILE_DIR = str(Path.home() / ".aria" / "browser_profile")
+CDP_PORT = 9333
+CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+_CHROME_LOG = Path.home() / ".aria" / "logs" / "chrome.log"
+_ARGS = [
+    "--no-first-run",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--no-default-browser-check",
+    "--disable-blink-features=AutomationControlled",
+]
+
+
+def cdp_up(port: int = CDP_PORT) -> bool:
+    try:
+        return httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=1.0).status_code == 200
+    except Exception:
+        return False
+
+
+def launch_chrome(port: int = CDP_PORT, wait_secs: float = 15.0) -> None:
+    """Start Chrome on Aria's profile in its own session (so quitting Aria leaves it and its
+    tabs open), debug port bound to 127.0.0.1. No-op if it's already up. Raises RuntimeError."""
+    if cdp_up(port):
+        return
+    profile = Path(PROFILE_DIR)
+    if os.path.lexists(profile / "SingletonLock"):
+        # Chrome holds the profile but answers no debug port: an old Playwright-launched
+        # window, or a crash leftover. Give it a moment in case it's still starting.
+        deadline = time.time() + wait_secs
+        while time.time() < deadline:
+            if cdp_up(port):
+                return
+            time.sleep(0.2)
+        raise RuntimeError("Chrome is already open on Aria's profile without remote debugging — "
+                           "quit that Chrome window and try again.")
+    profile.mkdir(parents=True, exist_ok=True)
+    _CHROME_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with _CHROME_LOG.open("ab") as log:
+        subprocess.Popen(
+            [CHROME_BIN, f"--user-data-dir={profile}", f"--remote-debugging-port={port}",
+             "--remote-debugging-address=127.0.0.1", "--window-size=1280,900", *_ARGS],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+        )
+    deadline = time.time() + wait_secs
+    while time.time() < deadline:
+        if cdp_up(port):
+            logger.info("Chrome up on debug port %d", port)
+            return
+        time.sleep(0.3)
+    raise RuntimeError(f"Chrome didn't open its debug port within {wait_secs:.0f} s.")
+
+
+def connect_cdp(port: int = CDP_PORT):
+    """(browser, context) for the running Chrome. Closing `browser` only disconnects."""
+    pw = sync_playwright().start()
+    try:
+        browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+    except Exception:
+        pw.stop()
+        raise
+    browser._aria_pw = pw  # type: ignore[attr-defined]
+    context = browser.contexts[0] if browser.contexts else browser.new_context()
+    return browser, context
+
+
+def disconnect_cdp(browser) -> None:
+    """Drop the connection; Chrome and every tab stay open."""
+    try:
+        browser.close()
+    except Exception as exc:
+        logger.warning("Error disconnecting from Chrome: %s", exc)
+    pw = getattr(browser, "_aria_pw", None)
+    if pw is not None:
+        try:
+            pw.stop()
+        except Exception as exc:
+            logger.warning("Error stopping Playwright: %s", exc)
 
 
 def get_persistent_context(headless: bool = True) -> BrowserContext:

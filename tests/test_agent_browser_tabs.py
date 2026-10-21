@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import threading
+
+import pytest
+
+import aria.web.agent_browser as agent_browser
+import aria.web.browser_profile as browser_profile
+
+
+class FakePage:
+    def __init__(self, url: str = "about:blank", visible: bool = False) -> None:
+        self.url = url
+        self.visible = visible
+        self.closed = False
+        self.fronted = 0
+        self.viewport = None
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    def evaluate(self, js: str):
+        assert "visibilityState" in js
+        return "visible" if self.visible else "hidden"
+
+    def bring_to_front(self) -> None:
+        self.fronted += 1
+
+    def close(self) -> None:
+        self.closed = True
+
+    def set_viewport_size(self, size: dict) -> None:
+        self.viewport = size
+
+
+class FakeContext:
+    def __init__(self, pages=None) -> None:
+        self.pages = list(pages or [])
+
+    def new_page(self) -> FakePage:
+        p = FakePage()
+        self.pages.append(p)
+        return p
+
+
+@pytest.fixture
+def browser(monkeypatch):
+    shared = FakePage("https://shared.example/")
+    ctx = FakeContext([shared])
+    monkeypatch.setattr(agent_browser, "_context", ctx)
+    monkeypatch.setattr(agent_browser, "_page", shared)
+    monkeypatch.setattr(agent_browser, "_tabs", {})
+    monkeypatch.setattr(agent_browser, "_open_browser", lambda: shared)
+    monkeypatch.setattr(agent_browser, "_activate_chrome", lambda: None)
+    return ctx, shared
+
+
+def test_use_tab_routes_default_calls(browser):
+    _ctx, shared = browser
+    assert agent_browser.run(lambda page: page) is shared
+    with agent_browser.use_tab("apply-15"):
+        inside = agent_browser.run(lambda page: page)
+        explicit = agent_browser.run(lambda page: page, tab="other")
+    assert inside is not shared and inside is agent_browser._tabs["apply-15"]
+    assert explicit is agent_browser._tabs["other"]
+    assert agent_browser.run(lambda page: page) is shared
+
+
+def test_gate_runs_before_each_call_on_that_thread_only(browser):
+    calls = []
+    other_thread_saw = []
+    with agent_browser.use_tab("apply-15", gate=lambda: calls.append(1)):
+        agent_browser.run(lambda page: None)
+        agent_browser.navigate("https://x.example/", settle_secs=0)
+        t = threading.Thread(target=lambda: other_thread_saw.append(agent_browser.run(lambda page: page)))
+        t.start()
+        t.join()
+    assert len(calls) == 2
+    assert other_thread_saw[0] is browser[1]
+
+
+def test_attach_binds_by_host_and_path(browser):
+    ctx, _shared = browser
+    form = FakePage("https://job-boards.greenhouse.io/scaleai/jobs/4730836005?utm=x")
+    ctx.pages.append(form)
+    bound = agent_browser.attach({"apply-15": "https://job-boards.greenhouse.io/scaleai/jobs/4730836005/"})
+    assert bound == {"apply-15"}
+    assert agent_browser.run(lambda page: page, tab="apply-15") is form
+
+
+def test_attach_skips_missing_pages(browser):
+    assert agent_browser.attach({"apply-16": "https://job-boards.greenhouse.io/singlestore/jobs/1"}) == set()
+    assert not agent_browser.has_tab("apply-16")
+
+
+def test_front_tabs_reads_visibility(browser):
+    ctx, _ = browser
+    a, b = FakePage("https://a.example/f", visible=False), FakePage("https://b.example/f", visible=True)
+    ctx.pages += [a, b]
+    agent_browser.attach({"a": a.url, "b": b.url})
+    assert agent_browser.front_tabs(["a", "b", "missing"]) == ["b"]
+
+
+def test_bring_to_front_fronts_page(browser):
+    agent_browser.run(lambda page: None, tab="apply-15")
+    agent_browser.bring_to_front("apply-15")
+    assert agent_browser._tabs["apply-15"].fronted == 1
+
+
+def test_close_tab_forgets_name(browser):
+    page = agent_browser.run(lambda page: page, tab="apply-15")
+    assert agent_browser.close_tab("apply-15") is True
+    assert page.closed and not agent_browser.has_tab("apply-15")
+    assert agent_browser.close_tab("apply-15") is False
+
+
+def test_new_tabs_get_fixed_viewport(browser):
+    page = agent_browser.run(lambda page: page, tab="apply-15")
+    assert page.viewport == {"width": 1280, "height": 900}
+
+
+def test_launch_reports_locked_profile(monkeypatch, tmp_path):
+    (tmp_path / "SingletonLock").symlink_to("host-123")
+    monkeypatch.setattr(browser_profile, "PROFILE_DIR", str(tmp_path))
+    monkeypatch.setattr(browser_profile, "cdp_up", lambda port=0: False)
+    launched = []
+    monkeypatch.setattr(browser_profile.subprocess, "Popen", lambda *a, **k: launched.append(a))
+    with pytest.raises(RuntimeError, match="without remote debugging"):
+        browser_profile.launch_chrome(wait_secs=0.2)
+    assert launched == []
+
+
+def test_launch_is_noop_when_cdp_up(monkeypatch):
+    monkeypatch.setattr(browser_profile, "cdp_up", lambda port=0: True)
+    monkeypatch.setattr(browser_profile.subprocess, "Popen", lambda *a, **k: pytest.fail("launched"))
+    browser_profile.launch_chrome()
