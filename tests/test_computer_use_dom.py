@@ -292,3 +292,21 @@ def test_research_loop_falls_back_to_vision_on_thin_dom():
     assert result == "Verified."
     mock_vision.assert_called()
     mock_dom.assert_not_called()
+
+
+def test_take_screenshot_is_jpeg_in_css_pixels(monkeypatch, tmp_path):
+    """Callers label the image image/jpeg; Claude rejects a PNG sent under that label."""
+    import base64
+
+    from aria.web import computer_use
+    seen = {}
+
+    class Page:
+        def screenshot(self, **kw):
+            seen.update(kw)
+            return b"\xff\xd8\xff\xe0jpeg"
+    monkeypatch.setattr(computer_use, "_SCREENSHOT_PATH", str(tmp_path / "shot.jpg"))
+    monkeypatch.setattr(computer_use.agent_browser, "run", lambda fn, tab=None: fn(Page()))
+    b64 = computer_use.take_screenshot()
+    assert seen.get("type") == "jpeg" and seen.get("scale") == "css"
+    assert base64.b64decode(b64).startswith(b"\xff\xd8")
