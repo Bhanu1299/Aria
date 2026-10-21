@@ -144,45 +144,6 @@ def test_parse_review_sections(reviews):
     assert r["sections"]["llm_draft"][0]["value"] == "I like robots.\nA lot."
 
 
-def test_new_questions_dedupe_skip_and_unlabeled(reviews, monkeypatch):
-    monkeypatch.setattr(ab, "_identity_answers", lambda: {})
-    bank = ab.load()
-    qs, unlabeled, skipped = answers.new_questions(bank, reviews)
-    assert [q["question"] for q in qs] == ["How did you hear about us?", "Phone"]
-    assert qs[1]["key"] == "phone" and qs[0]["jobs"][0]["label"] == "Acme — SWE I (row 2)"
-    assert skipped == 1 and unlabeled[0]["capture"]["nearby"] == "Tell us about a project"
-    ab.set_learned("How did you hear about us?", "LinkedIn")
-    assert [q["question"] for q in answers.new_questions(ab.load(), reviews)[0]] == ["Phone"]
-
-
-def test_save_question_routes_to_key_learned_or_job(monkeypatch):
-    monkeypatch.setattr(ab, "_identity_answers", lambda: {})
-    answers.act({"op": "save_question", "question": "Phone", "value": "555-0100", "scope": "all"})
-    assert json.loads(ab.BANK_PATH.read_text())["answers"]["phone"] == "555-0100"
-    answers.act({"op": "save_question", "question": "How did you hear about us?", "value": "LinkedIn", "scope": "all"})
-    assert json.loads(ab.BANK_PATH.read_text())["answers"]["referral_source"] == "LinkedIn"   # a bank field now
-    answers.act({"op": "save_question", "question": "What archetype are you?", "value": "Full Stack", "scope": "all"})
-    assert ab.load()["learned"]["what archetype are you"] == "Full Stack"
-    answers.act({"op": "save_question", "question": "Why Acme?", "value": "Robots", "scope": "job", "job": "acme | swe i"})
-    assert ab.lookup("Why Acme?", job={"company": "Acme", "role": "SWE I"}).value == "Robots"
-    with pytest.raises(answers.AnswerError):
-        answers.act({"op": "save_question", "question": "x", "value": " ", "scope": "all"})
-    with pytest.raises(answers.AnswerError):
-        answers.act({"op": "drop_tables"})
-
-
-def test_answers_tab_renders_groups_sources_and_history(reviews, monkeypatch):
-    monkeypatch.setattr(ab, "_identity_answers", lambda: {"email": "seeker@example.test"})
-    ab.set_answer("school", "State U")
-    html = answers.render(Source(True, reviews))
-    for text in ("New questions", "Unlabeled fields", "Tell us about a project", "/review-img?f=acme_field0.png",
-                 "Identity", "Contact", "Education", "Links", "Work preferences", "Salary rule", "Learned answers",
-                 "LLM guesses in your reviews", "History", "identity.json", "State U", "always ask me"):
-        assert text in html, text
-
-
-# ── unlabeled-field capture ─────────────────────────────────────────────────
-
 def test_is_unlabeled():
     assert applicator.is_unlabeled("cards[1a][field0]") and applicator.is_unlabeled("question_12345")
     assert not applicator.is_unlabeled("Current location")

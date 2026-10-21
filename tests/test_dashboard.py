@@ -396,7 +396,7 @@ def test_settings_writes_only_through_atomic_write():
     assert not re.search(r"write_text\(|(?<!fd)open\([^)]*['\"][wa]", text)
 
 
-def test_unlabeled_fields_go_to_my_answers_and_draft_subject_shows(srcs, tmp_path):
+def test_unlabeled_fields_without_context_are_dropped_and_draft_subject_shows(srcs, tmp_path):
     review = next(iter(srcs["reviews"].data))
     srcs["reviews"].data[review]["sections"]["needs_me"] = [
         {"field": f, "value": "", "required": True, "note": ""}
@@ -405,8 +405,8 @@ def test_unlabeled_fields_go_to_my_answers_and_draft_subject_shows(srcs, tmp_pat
                                          "ts": ts(5)})
     html = page_from(srcs, NOW, calls={"calls": [], "via": "none"}, flight=[], runs=[])
     answers_tab = html[html.index('id="answers-tab"'):html.index('id="applications-tab"')]
-    assert "Unlabeled fields" in answers_tab and "cards[abc-123][field0]" in answers_tab
-    assert "Current location" in answers_tab                      # a new question
+    assert "cards[abc-123]" not in answers_tab                     # no captured context → nothing to go on
+    assert "Current location" in answers_tab and "Needs your answer" in answers_tab
     assert "no recipient" in html and "Intro for a role" in html
 
 
