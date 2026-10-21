@@ -342,7 +342,7 @@ def take_screenshot() -> str | None:
     Returns None on any error.
     """
     def _do(page):
-        img_bytes = page.screenshot(full_page=False, scale="css")
+        img_bytes = page.screenshot(full_page=False, scale="css", type="jpeg", quality=80)
         Path(_SCREENSHOT_PATH).write_bytes(img_bytes)
         return base64.b64encode(img_bytes).decode("utf-8")
 
