@@ -272,7 +272,7 @@ rows.forEach(function(r){tb.appendChild(r)})})})})();
 
 TAB_NAMES = [("today", "Today"), ("answers", "My answers"), ("applications", "Applications"), ("live", "Live run"),
              ("costs", "Costs"), ("settings", "Settings"), ("health", "Data health")]
-TAB_SUBS = {"today": "what needs you now", "answers": "everything Aria fills into forms — edits save to your answer bank",
+TAB_SUBS = {"today": "what needs you now", "answers": "what Aria fills into application forms",
             "applications": "one row per company, roles nested; click a role for its timeline",
             "live": "current or last pipeline run, from Aria's run log",
             "costs": "from GateLLM's per-call log + Aria's flight log",
@@ -298,7 +298,7 @@ def page(mdl: dict, tabs: Optional[dict] = None, token: str = "") -> str:
     from aria.dashboard import answers as ans, applications as apps
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}<title>Job Pipeline</title>'
-            f'<style>{CSS}{tabmod.TABS_CSS}</style></head><body><header><h1>Job pipeline</h1>'
+            f'<style>{CSS}{tabmod.TABS_CSS}{ans.CSS}</style></head><body><header><h1>Job pipeline</h1>'
             f'<p class="muted small">Loaded {mdl["now"]:%Y-%m-%d %H:%M}. Gmail and the sheet are cached for 5 minutes. '
             f'Writes only: your answer bank (My answers) and GateLLM keys (Settings).{warn}</p>'
             f'<nav class="tabs">{nav}</nav></header><main>{"".join(panes)}</main>'
