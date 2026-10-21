@@ -19,6 +19,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from patchright.sync_api import sync_playwright, BrowserContext
@@ -54,6 +55,15 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+
+
+def chrome_pid() -> Optional[int]:
+    """Pid of the Chrome holding Aria's profile (from its SingletonLock), or None."""
+    try:
+        pid = int(os.readlink(Path(PROFILE_DIR) / "SingletonLock").rsplit("-", 1)[-1])
+    except (OSError, ValueError):
+        return None
+    return pid if _pid_alive(pid) else None
 
 
 def _clear_stale_lock(profile: Path) -> None:
