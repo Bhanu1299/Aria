@@ -70,7 +70,7 @@ def test_sync_never_raises(tmp_path):
 def test_run_outreach_syncs_feedback_first(monkeypatch):
     seen = []
     monkeypatch.setattr(pipeline.feedback, "sync",
-                        lambda data: seen.append(data) or {"replied": ["pat@acme.com"], "bounced": [], "error": ""})
+                        lambda data, record_fn=None: seen.append(data) or {"replied": ["pat@acme.com"], "bounced": [], "error": ""})
     sheet = JobSheet("s", "Sheet1", service=FakeSheetsService([HEADERS]), today=lambda: date(2026, 10, 20))
     out = pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail_data=_gmail(), gmail=object())
     assert seen and seen[0]["me"] == ME
