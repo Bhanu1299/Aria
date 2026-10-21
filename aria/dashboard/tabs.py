@@ -20,20 +20,33 @@ def _ts(ts: Optional[float]) -> str:
 # Live run — rendered client-side from /api/runs (polled every 2 s)
 # ---------------------------------------------------------------------------
 
-def live_tab(runs: list, error: str = "") -> str:
+def live_tab(runs: list, error: str = "", apps: Optional[list] = None) -> str:
+    """apps: the open application tabs (aria.features.applying.tabs), shown above the runs."""
     if error:
         return _no_data(error)
     data = json.dumps(runs).replace("</", "<\\/")
-    return ('<div class="live"><div class="runlist" id="runlist"></div><div class="rundetail" id="rundetail"></div></div>'
-            '<p class="muted small" id="livestatus">Updates every 2 s from ~/.aria/run_log.jsonl. Read-only.</p>'
-            f'<script id="runs-data" type="application/json">{data}</script>')
+    apps_data = json.dumps(apps or []).replace("</", "<\\/")
+    return ('<div id="apptabs"></div>'
+            '<div class="live"><div class="runlist" id="runlist"></div><div class="rundetail" id="rundetail"></div></div>'
+            '<p class="muted small" id="livestatus">Updates every 2 s from ~/.aria/run_log.jsonl and '
+            '~/.aria/apply_tabs.json. Read-only.</p>'
+            f'<script id="runs-data" type="application/json">{data}</script>'
+            f'<script id="apps-data" type="application/json">{apps_data}</script>')
 
 
 LIVE_JS = r"""
 (function(){var list=document.getElementById('runlist');if(!list)return;
 var detail=document.getElementById('rundetail'),status=document.getElementById('livestatus');
 var runs=JSON.parse(document.getElementById('runs-data').textContent),sel=null;
+var apps=JSON.parse(document.getElementById('apps-data').textContent),appbox=document.getElementById('apptabs');
 function el(t,c,txt){var n=document.createElement(t);if(c)n.className=c;if(txt!=null)n.textContent=txt;return n}
+function drawApps(){appbox.textContent='';appbox.appendChild(el('h3',null,'Open application tabs ('+apps.length+')'));
+if(!apps.length){appbox.appendChild(el('p','muted','None open. Say "start applications".'));return}
+var t=el('table','steps apps');var h=el('tr');['Company','Role','State','Fields needing you'].forEach(function(x){h.appendChild(el('th',null,x))});t.appendChild(h);
+apps.forEach(function(a){var tr=el('tr','st-'+a.state);tr.appendChild(el('td',null,a.company||'?'));
+tr.appendChild(el('td',null,(a.role||'?')+(a.row!=null?' · row '+a.row:'')));var st=el('td');st.appendChild(el('span','badge st-'+a.state,a.state));tr.appendChild(st);
+var need=(a.needs_me||[]).join(', ')||(a.state==='filled'?'none':'');tr.appendChild(el('td','small',need+(a.note?(need?' · ':'')+a.note:'')));t.appendChild(tr)});
+appbox.appendChild(t)}
 function fmt(ts){if(!ts)return'';var d=new Date(ts*1000);return d.toLocaleString()}
 function dur(ms){if(ms==null)return'';return ms<1000?ms+' ms':(ms/1000).toFixed(1)+' s'}
 function title(r){var j=r.job;return j?((j.company||'?')+' — '+(j.role||'?')+(j.row!=null?' · row '+j.row:'')):(r.trigger||'run')}
@@ -53,8 +66,8 @@ detail.appendChild(t);
 if(r.decisions.length){detail.appendChild(el('h3',null,'Why this job'));var u=el('ul','decisions');
 r.decisions.slice().reverse().forEach(function(d){var li=el('li',d.picked?'picked':'');li.appendChild(el('b',null,(d.picked?'Picked: ':'Skipped: ')+(d.company||'?')+' — '+(d.role||'?')+' (row '+d.row+')'));
 li.appendChild(el('div','muted small',(d.reasons||[]).join(' · ')));u.appendChild(li)});detail.appendChild(u)}}
-draw();
-function poll(){if(!document.getElementById('live-tab').classList.contains('on')){return}fetch('/api/runs',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){runs=d.runs;draw();
+draw();drawApps();
+function poll(){if(!document.getElementById('live-tab').classList.contains('on')){return}fetch('/api/runs',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){runs=d.runs;draw();apps=d.apps||[];drawApps();
 status.textContent='Updated '+new Date().toLocaleTimeString()+' · polling every 2 s · read-only'}).catch(function(){status.textContent='Live updates paused (dashboard server not reachable).'})}
 setInterval(poll,2000)})();
 """
@@ -200,6 +213,7 @@ color:var(--ink);border-radius:6px;padding:8px 10px;cursor:pointer;font:inherit}
 .rt{font-weight:600;font-size:13px}.badge{display:inline-block;margin-top:4px;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--bar)}
 .st-error td:nth-child(2),.badge.st-error{color:var(--bad)}.st-running td:nth-child(2),.badge.st-running{color:var(--accent)}
 .st-not-in-this-run td{color:var(--muted)}.steps{margin-bottom:12px}
+#apptabs{margin-bottom:14px}.badge.st-filled{color:var(--warn)}.badge.st-submitted{color:var(--ok)}.badge.st-filling{color:var(--accent)}.badge.st-open{color:var(--bad)}
 ul.decisions{padding-left:18px}ul.decisions li{margin:4px 0}ul.decisions li.picked b{color:var(--ok)}
 h3.sub3{margin:18px 0 8px}details{border-top:1px solid var(--line);padding:6px 0}summary{cursor:pointer}
 #providers input,#tiers input{padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink);width:240px;max-width:100%}
