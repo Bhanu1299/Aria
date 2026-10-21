@@ -23,3 +23,6 @@ answer_bank.json
 
 # Local audit notes (private)
 audit/
+
+# Retrained on every run from the user's voice samples: local only
+training/models/checkpoints/
