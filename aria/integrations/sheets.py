@@ -51,6 +51,8 @@ STATUS_IN_REVIEW = "In review"
 STATUS_APPLIED = "Applied"
 STATUS_SKIPPED = "Skipped"
 STATUS_NEEDS_HUMAN = "Needs human"
+# Statuses that still mean "not handled yet" (the user's sheet defaults rows to "Not applied").
+_NEW_ALIASES = {"", "not applied", "not yet applied", "to apply"}
 
 _URL = re.compile(r"^https?://", re.I)
 
@@ -188,7 +190,7 @@ class JobSheet:
         want = _norm(status)
         for job in self.jobs():
             have = _norm(job["status"])
-            if have == want or (want == STATUS_NEW and have == ""):
+            if have == want or (want == STATUS_NEW and have in _NEW_ALIASES):
                 return job
         return None
 

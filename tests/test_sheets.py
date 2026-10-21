@@ -96,6 +96,14 @@ def test_next_job_matches_explicit_new_status_case_insensitively():
     assert sheet.get_next_job()["company"] == "Acme"
 
 
+def test_next_job_treats_not_applied_as_new():
+    sheet, _ = _sheet([
+        _row("Palantir", "SWE", status="Applied"),
+        _row("Amazon", "SDE", status="Not applied", apply_link="https://amazon.jobs/1"),
+    ])
+    assert sheet.get_next_job()["company"] == "Amazon"
+
+
 def test_next_job_falls_back_to_post_link_when_apply_link_is_not_a_url():
     sheet, _ = _sheet([
         _row("GovStar", "Dev", apply_link="Email resume to x@govstar.us", post_link="https://news.ycombinator.com/item?id=1"),
