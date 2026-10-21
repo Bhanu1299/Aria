@@ -308,6 +308,24 @@ def build_profile(job: dict) -> str:
     return "\n".join(lines)
 
 
+# Greenhouse's education block: field ids say what each one is; labels ("Start date
+# year") would match the job's start date instead.
+_EDU_FIELD = re.compile(r"^(school|degree|discipline|start-month|start-year|end-month|end-year)--\d+$")
+_EDU_KEY = {"school": "school", "degree": "degree", "discipline": "major", "start-month": "edu_start_month",
+            "start-year": "edu_start_year", "end-month": "grad_month", "end-year": "grad_year"}
+# Remote-search dropdowns: the first 100 options are all that load until you type.
+_SEARCHABLE = {"school", "discipline"}
+_SEARCH_FIELD = re.compile(r"^(?:school|discipline)--\d+$")
+
+
+def _why_unfilled(key: str, f: "FormField", job_ctx: dict) -> str:
+    """The review note for a field the bank knows but couldn't fill."""
+    plain = answer_bank.lookup_key(key, job=job_ctx, label=f.label)
+    if plain and f.options:
+        return f"your answer “{plain.value}” isn't one of the options"
+    return f"no {answer_bank.key_title(key).lower()} in your bank yet"
+
+
 def plan(
     form: ParsedForm,
     job: dict,
@@ -350,13 +368,21 @@ def plan(
             p.source = "needs_me" if f.required else "skipped"
             p.note = "you asked to always answer this yourself"
             continue
-        found = answer_bank.lookup(f.label, options=f.options or None, job=job_ctx)
+        edu = _EDU_FIELD.match(f.name)
+        key = _EDU_KEY[edu.group(1)] if edu else None
+        if key:      # the education block: known by field name, whatever its label says
+            searchable = edu.group(1) in _SEARCHABLE
+            found = answer_bank.lookup_key(key, options=None if searchable else (f.options or None),
+                                           job=job_ctx, label=f.label)
+        else:
+            found = answer_bank.lookup(f.label, options=f.options or None, job=job_ctx, llm=llm_available)
         if found:
             p.value, p.source = found.value, "bank"
             continue
-        if answer_bank.matched_key(f.label):
+        key = key or answer_bank.matched_key(f.label, llm=llm_available)
+        if key:
             p.source = "needs_me" if f.required else "skipped"
-            p.note = "no answer in your bank yet"
+            p.note = _why_unfilled(key, f, job_ctx)
             continue
         if f.section in ("eeoc", "demographic"):
             p.source = "needs_me" if f.required else "skipped"
@@ -485,7 +511,7 @@ def match_location(value: str, options: list) -> Optional[str]:
     return None
 
 
-def _pick(page, name: str, value: str, type_text: str = "") -> bool:
+def _pick(page, name: str, value: str, type_text: str = "", search: bool = False) -> bool:
     loc = page.locator(_sel(name))
     if loc.count() == 0:
         return False
@@ -499,7 +525,7 @@ def _pick(page, name: str, value: str, type_text: str = "") -> bool:
         page.keyboard.press("Escape")
         return False
     texts = [t.strip() for t in opts.all_inner_texts()]
-    if type_text:                                   # autocomplete (location)
+    if type_text and not search:                    # autocomplete (location)
         target = match_location(value, texts)
     else:
         target = value if value in texts else answer_bank.choose_option(value, texts)
@@ -526,6 +552,8 @@ def _fill_one(page, p: Planned) -> bool:
         el = page.locator(sel).first
         if el.evaluate("e => e.tagName") == "SELECT":
             page.select_option(sel, label=p.value, timeout=5000)
+        elif _SEARCH_FIELD.match(f.name):
+            _pick(page, f.name, p.value, type_text=p.value.split(",")[0].strip()[:40], search=True)
         else:
             _pick(page, f.name, p.value)
     return True
