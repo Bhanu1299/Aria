@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _VISION_MODEL = tier_for("browser_vision_decide")  # aria/llm/tasks.py
 _SCREENSHOT_PATH = "/tmp/aria_cu.jpg"
+_FORM_FIELD_LINE = re.compile(r"^\[\d+\] (?:input|select|textarea)\b", re.I | re.M)
 _ACTION_SLEEP = 1.2  # base — actual sleep randomised via _human_sleep()
 
 _VALID_ACTIONS = {"click", "type", "scroll", "key", "confirm", "stuck", "needs_input"}
@@ -706,7 +707,9 @@ def run_loop(
 
     for step in range(start_step, max_steps + 1):
         snapshot, interactive_count = dom_browser.get_dom_snapshot()
-        _vision_mode = interactive_count < 5
+        # Thin DOM → vision, unless it has form fields: native <select> options never
+        # appear in a screenshot, so vision can't pick one (Jobvite's country gate).
+        _vision_mode = interactive_count < 5 and not _FORM_FIELD_LINE.search(snapshot or "")
 
         if _vision_mode:
             b64 = take_screenshot()

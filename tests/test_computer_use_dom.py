@@ -310,3 +310,19 @@ def test_take_screenshot_is_jpeg_in_css_pixels(monkeypatch, tmp_path):
     b64 = computer_use.take_screenshot()
     assert seen.get("type") == "jpeg" and seen.get("scale") == "css"
     assert base64.b64decode(b64).startswith(b"\xff\xd8")
+
+
+def test_run_loop_stays_on_dom_for_a_lone_native_select():
+    """Jobvite's country gate is one <select>: vision can't see native dropdown options."""
+    gate = ("URL: https://jobs.jobvite.com/ookla/job/x/apply\nTITLE: Apply\n\nINTERACTIVE[1]:\n"
+            "[0] select   #jv-country-select\n\nPAGE TEXT:\nLocation of Residence and Language:")
+    with patch("aria.web.dom_browser.get_dom_snapshot", return_value=(gate, 1)), \
+         patch("aria.web.computer_use._dom_decide", return_value={"action": "confirm"}) as mock_dom, \
+         patch("aria.web.computer_use.decide") as mock_vision, \
+         patch("aria.web.computer_use.take_screenshot", return_value="fakeb64"), \
+         patch("aria.web.computer_use.execute"), \
+         patch("aria.web.computer_use._human_sleep"):
+        status, _ = computer_use.run_loop("fill a form", {}, max_steps=5)
+    assert status == "confirm"
+    mock_dom.assert_called()
+    mock_vision.assert_not_called()
