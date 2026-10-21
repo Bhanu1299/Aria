@@ -160,7 +160,9 @@ def test_save_question_routes_to_key_learned_or_job(monkeypatch):
     answers.act({"op": "save_question", "question": "Phone", "value": "555-0100", "scope": "all"})
     assert json.loads(ab.BANK_PATH.read_text())["answers"]["phone"] == "555-0100"
     answers.act({"op": "save_question", "question": "How did you hear about us?", "value": "LinkedIn", "scope": "all"})
-    assert ab.load()["learned"]["how did you hear about us"] == "LinkedIn"
+    assert json.loads(ab.BANK_PATH.read_text())["answers"]["referral_source"] == "LinkedIn"   # a bank field now
+    answers.act({"op": "save_question", "question": "What archetype are you?", "value": "Full Stack", "scope": "all"})
+    assert ab.load()["learned"]["what archetype are you"] == "Full Stack"
     answers.act({"op": "save_question", "question": "Why Acme?", "value": "Robots", "scope": "job", "job": "acme | swe i"})
     assert ab.lookup("Why Acme?", job={"company": "Acme", "role": "SWE I"}).value == "Robots"
     with pytest.raises(answers.AnswerError):
