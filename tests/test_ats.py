@@ -213,7 +213,7 @@ def test_plan_unknown_required_short_fields_go_to_one_small_batch():
     spy = Spy(guesses={"What is your highest completed degree?": "Master's"})
     plans = _plan("conviva_embed", spy)
     assert len(spy.guess_calls) == 1
-    assert plans["What is your highest completed degree?"].source == "llm_guess"
+    assert plans["What is your highest completed degree?"].source == "bank"   # the bank's degree, not a guess
     hands_on = next(p for label, p in plans.items() if label.startswith("Do you have hands-on experience"))
     assert hands_on.source == "needs_me"                              # model said nothing → yours
 

@@ -48,6 +48,7 @@ TASK_TIERS: dict[str, str] = {
     "job_query_parse": SMALL,             # features/jobs.py
     "job_listing_vision": VISION,         # features/jobs.py — read listings off a screenshot
     "form_short_answer": SMALL,           # features/ats/answers.py — unknown short form fields
+    "form_field_match": SMALL,            # features/answer_bank.py — which bank KEY a question means
     "form_free_text": FRONTIER,           # features/ats/answers.py — "why us" answers
     "outreach_email": FRONTIER,           # features/outreach/writer.py — cold email body
     "outreach_linkedin_note": FRONTIER,   # features/outreach/writer.py — LinkedIn connection note
