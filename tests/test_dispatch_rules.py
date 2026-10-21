@@ -77,6 +77,9 @@ def rules():
     ("apply to sheet row 12", "apply_job", {"row": 12}),
     ("next job from muse", "job_from_sheet", {}),
     ("what's the next job on my list", "job_from_sheet", {}),
+    ("do my outreach", "job_outreach", {}),
+    ("Aria, run the job outreach for my jobs", "job_outreach", {}),
+    ("find recruiters for my jobs", "job_outreach", {}),
 ])
 def test_direct_routes(rules, utterance, tool, params):
     m = rules.match(utterance)

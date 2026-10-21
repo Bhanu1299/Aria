@@ -34,6 +34,8 @@ _SUFFIXES = re.compile(r"\b(inc|llc|ltd|corp|corporation|co|company|technologies
                        r"holdings|the)\b\.?", re.I)
 _NO_CONTACT = re.compile(r"(?i)^(via |no |none|n/?a|-|tbd|apply|ats|email draft|draft|gmail draft|inferred)")
 _CONTACT_PREFIX = re.compile(r"(?i)^(linkedin|email|contact|recruiter)\s*:\s*")
+# Written by aria/features/outreach: "LinkedIn (Aria): Name (Title) — profile\nNote: …"
+_ARIA_NOTE = re.compile(r"(?is)^linkedin \(aria\):\s*(?P<who>.*?)\s*\nnote:\s*(?P<note>.+)$")
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
                                        "oct", "nov", "dec"], start=1)}
 
@@ -131,6 +133,8 @@ class Job:
     email: str = ""
     email_confidence: Optional[float] = None
     email_status: str = ""
+    linkedin_note: str = ""   # a note Aria wrote, ready to send by hand
+    linkedin_to: str = ""
     found_date: Optional[datetime] = None
     deadline: Optional[datetime] = None
     last_update: Optional[datetime] = None
@@ -235,6 +239,9 @@ def _sheet_job(idx: _Index, row: dict, tab: str, today: datetime) -> Job:
         job.channels.add("linkedin")
     if "email" in text_all or job.email:
         job.channels.add("email")
+    note = _ARIA_NOTE.match(row.get("Outreach_2", "").strip())
+    if note:
+        job.linkedin_note, job.linkedin_to = note.group("note").strip(), note.group("who").strip()
     if re.search(r"(?i)draft ready", " ".join(text_cells)):
         job.add(DRAFT, f"Muse sheet ({ref})", "says a draft is ready")
 
@@ -568,7 +575,7 @@ def next_action(job: Job, now: datetime, outreach_elsewhere: str = "") -> tuple:
         return "Send the draft", "needs_action"
     if outreach_elsewhere:
         return f"Outreach already sent for {outreach_elsewhere}", "waiting"
-    if "linkedin" in job.channels and not job.email:   # the sheet planned a LinkedIn note
+    if job.linkedin_note or ("linkedin" in job.channels and not job.email):   # a LinkedIn note is planned
         return "Send the LinkedIn note", "needs_action"
     if not job.contact and not job.email:
         return "Find a contact", "no_contact"
