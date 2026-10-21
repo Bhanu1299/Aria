@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -307,14 +308,43 @@ def bring_to_front(name: str) -> None:
     _activate_chrome()
 
 
+def strip_window_title(title: str) -> str:
+    """macOS window title → the active tab's page title ("<title> - Google Chrome[ - profile]")."""
+    return re.sub(r" - Google Chrome(?: - .*)?$", "", (title or "").strip())
+
+
+def _front_window_title() -> Optional[str]:
+    """Title of the frontmost window of Aria's Chrome (by its pid, so the user's own Chrome
+    is never read). None if it can't be read (no Accessibility permission, no window)."""
+    from aria.web.browser_profile import chrome_pid
+    pid = chrome_pid()
+    if pid is None:
+        return None
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", f'tell application "System Events" to get name of front window of '
+                                f'(first process whose unix id is {pid})'],
+            capture_output=True, text=True, timeout=5)
+        return strip_window_title(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
+    except Exception as exc:
+        logger.debug("front window title unreadable: %s", exc)
+        return None
+
+
 def front_tabs(names: list) -> list:
-    """The names (of those given) whose tab is the one showing in its window."""
+    """The names (of those given) whose tab is the active tab of Chrome's front window.
+    document.visibilityState can't tell: Playwright's focus emulation makes every tab
+    'visible'. The window title is the active tab's title; ties and unreadable → []."""
+    title = _front_window_title()
+    if not title:
+        return []
+
     def _do():
         out = []
         for name in names:
             page = _live(name)
             try:
-                if page is not None and page.evaluate("document.visibilityState") == "visible":
+                if page is not None and page.title().strip() == title:
                     out.append(name)
             except Exception:
                 continue

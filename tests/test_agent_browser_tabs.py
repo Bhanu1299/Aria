@@ -94,12 +94,26 @@ def test_attach_skips_missing_pages(browser):
     assert not agent_browser.has_tab("apply-16")
 
 
-def test_front_tabs_reads_visibility(browser):
+def test_front_tabs_uses_the_front_window_title(browser, monkeypatch):
+    """visibilityState is 'visible' in every tab under Playwright's focus emulation, so the
+    front tab comes from the Chrome window title (= its active tab's title)."""
     ctx, _ = browser
-    a, b = FakePage("https://a.example/f", visible=False), FakePage("https://b.example/f", visible=True)
+    a, b = FakePage("https://a.example/f"), FakePage("https://b.example/f")
+    a.title = lambda: "Job Application for SWE at Scale AI"
+    b.title = lambda: "Job Application for SWE at SingleStore"
     ctx.pages += [a, b]
     agent_browser.attach({"a": a.url, "b": b.url})
+    monkeypatch.setattr(agent_browser, "_front_window_title", lambda: "Job Application for SWE at SingleStore")
     assert agent_browser.front_tabs(["a", "b", "missing"]) == ["b"]
+    monkeypatch.setattr(agent_browser, "_front_window_title", lambda: "Job pipeline")      # dashboard in front
+    assert agent_browser.front_tabs(["a", "b"]) == []
+    monkeypatch.setattr(agent_browser, "_front_window_title", lambda: None)                # can't tell
+    assert agent_browser.front_tabs(["a", "b"]) == []
+
+
+def test_window_title_strips_chrome_suffix():
+    assert agent_browser.strip_window_title("Job Application at Scale AI - Google Chrome") == "Job Application at Scale AI"
+    assert agent_browser.strip_window_title("Ookla Careers - Apply - Google Chrome - Aria") == "Ookla Careers - Apply"
 
 
 def test_bring_to_front_fronts_page(browser):
