@@ -138,6 +138,9 @@ class JobSheet:
             raise
         except Exception as exc:
             logger.error("sheets: write failed: %s", exc)
+            if getattr(getattr(exc, "resp", None), "status", None) == 403:
+                raise SheetError("Your jobs Google account can read the job sheet but can't edit it. "
+                                 "Share the sheet with that account as Editor.") from exc
             raise SheetError(f"I couldn't update the job sheet: {exc}") from exc
 
     # -- layout --------------------------------------------------------------
