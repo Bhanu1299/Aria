@@ -1,6 +1,6 @@
 """features/ats/submit.py — click an application's own submit button and check it went through.
 
-Only aria.features.applicator.submit_pending() calls this, and only after the user
+Only aria.features.applicator.submit_entry() calls this, and only after the user
 said "submit it". Pure code: no LLM decides whether or what to submit.
 
 submit(tab) → SubmitOutcome(status, missing)

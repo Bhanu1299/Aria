@@ -15,7 +15,7 @@ Tools:
 Every Google call here uses the jobs account (google_auth.JOBS), never personal.
 
 Submitting is deliberately NOT a tool: only the user's own words ("submit it",
-"I submitted it", "skip this job") reach applicator.handle_followup, a dispatcher
+"I submitted it", "skip this job") reach aria.features.applying.commands, a dispatcher
 pre-handler, so no LLM can decide to send an application.
 """
 from __future__ import annotations
