@@ -447,6 +447,22 @@ def choose_option(value: str, options: Sequence[str]) -> Optional[str]:
 # Lookup
 # ---------------------------------------------------------------------------
 
+_TITLES = {
+    "edu_start_month": "Education start month", "edu_start_year": "Education start year",
+    "grad_date": "Graduation date", "grad_month": "Graduation month", "grad_year": "Graduation year",
+    "gpa": "GPA", "major": "Major / field of study", "years_experience": "Years of experience",
+    "referral_source": "How you heard about the job", "work_authorization": "Work authorization",
+    "linkedin": "LinkedIn", "github": "GitHub", "zip": "ZIP code", "address_line1": "Street address",
+    "hybrid_onsite_ok": "Hybrid / on-site OK", "eeo.hispanic_latino": "Hispanic or Latino",
+    "eeo.lgbtq": "LGBTQ+", "salary_rule": "Expected salary", "resume_path": "Resume file",
+}
+
+
+def key_title(key: str) -> str:
+    """A field's name for people ("edu_start_year" → "Education start year")."""
+    return _TITLES.get(key) or key.split(".")[-1].replace("_", " ").capitalize()
+
+
 def _key_label(key: str) -> str:
     return normalize(key.split(".")[-1].replace("_", " "))
 
@@ -670,6 +686,13 @@ def fillable_answers(bank: dict, job: Optional[dict] = None) -> dict:
     skip = set(bank.get("always_ask") or [])
     out = {k: v for k, v in bank["answers"].items()
            if v not in (None, "") and not isinstance(v, dict) and k not in skip and k != "salary_rule"}
+    for key in ("major", "grad_month", "grad_year"):          # derived from what the bank has
+        if key not in out and key not in skip and _value(bank, key):
+            out[key] = _value(bank, key)
+    heard = str((job or {}).get("source") or "").strip() or _value(bank, "referral_source")
+    if heard and "referral_source" not in skip:
+        out["how_did_you_hear_about_us"] = heard
+    out.pop("referral_source", None)
     if job:
         out.update({q: v for q, v in (bank.get("job_answers") or {}).get(job_key(job), {}).items()
                     if str(v).strip() and q not in skip})

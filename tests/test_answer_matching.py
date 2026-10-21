@@ -189,3 +189,9 @@ def test_referral_source_falls_back_to_your_default(bank_file):
     ab.set_answer("referral_source", "LinkedIn", path=bank_file)
     assert look("How did you hear about us?", bank_file, job={"company": "Z"}).value == "LinkedIn"
     assert look("How did you hear about us?", bank_file, job={"company": "Z", "source": "Instagram"}).value == "Instagram"
+
+
+def test_generic_filler_gets_derived_fields_and_the_source(bank_file):
+    ctx = ab.fillable_answers(ab.load(bank_file), {"company": "Ookla", "role": "DE", "source": "Instagram"})
+    assert ctx["major"] == "Computer Science" and ctx["grad_month"] == "May" and ctx["grad_year"] == "2026"
+    assert ctx["how_did_you_hear_about_us"] == "Instagram"

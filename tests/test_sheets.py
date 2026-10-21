@@ -320,3 +320,21 @@ def test_write_permission_denied_says_how_to_fix(monkeypatch):
     msg = str(exc.value)
     assert "can read the job sheet but can't edit it" in msg and "Editor" in msg
     assert "googleapis" not in msg
+
+
+@pytest.mark.parametrize("post_link,source", [
+    ("https://www.instagram.com/reel/abc", "Instagram"),
+    ("https://www.linkedin.com/jobs/view/1", "LinkedIn"),
+    ("https://job-boards.greenhouse.io/x/jobs/1", ""),      # the job board itself says nothing about how
+    ("", ""),
+])
+def test_source_from_post_link(post_link, source):
+    sheet, _svc = _sheet([_row("Acme", "SWE", post_link=post_link)])
+    assert sheet.jobs()[0]["source"] == source
+
+
+def test_source_column_wins_over_post_link():
+    headers = HEADERS + ["Source"]
+    row = _row("Acme", "SWE", post_link="https://www.instagram.com/reel/abc", updates="") + ["Friend referral"]
+    sheet, _svc = _sheet([row], headers=headers)
+    assert sheet.jobs()[0]["source"] == "Friend referral"

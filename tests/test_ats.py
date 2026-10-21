@@ -469,3 +469,83 @@ def test_country_label_pattern():
     assert ats.is_country_label("Location of Residence and Language:")
     assert ats.is_country_label("Country")
     assert not ats.is_country_label("Are you legally authorized to work in the United States?")
+
+
+# ── education block: matched by field name; school/discipline typed to search ──
+
+GH_DEGREES = ["Associate's Degree", "Bachelor's Degree", "Master's Degree", "Doctor of Philosophy (Ph.D.)", "Other"]
+
+
+def _edu_form():
+    F = gh.FormField
+    return gh.ParsedForm(fields=[
+        F("school--0", "School", "select", True, [f"School {i}" for i in range(100)]),   # truncated list
+        F("degree--0", "Degree", "select", True, GH_DEGREES),
+        F("discipline--0", "Discipline", "select", False, []),
+        F("start-month--0", "Start date month", "select", False, ["January", "May", "August"]),
+        F("start-year--0", "Start date year", "text", True),
+        F("end-month--0", "End date month", "select", False, ["January", "May", "August"]),
+        F("end-year--0", "End date year", "text", False),
+        F("question_1", "How did you hear about this opportunity?", "select", True, ["Instagram", "LinkedIn", "Other"]),
+    ], title="SWE", company="Acme")
+
+
+def _with_education(bank):
+    data = json.loads(bank.read_text())
+    data["answers"].update({"school": "University at Buffalo, SUNY", "degree": "Master of Science, Computer Science",
+                            "grad_date": "05/18/2026", "edu_start_month": None, "edu_start_year": None})
+    bank.write_text(json.dumps(data))
+
+
+def test_plan_fills_the_education_block_by_field_name(bank):
+    _with_education(bank)
+    spy = Spy()
+    plans = {p.field.name: p for p in gh.plan(_edu_form(), {"company": "Acme", "role": "SWE", "source": "Instagram"},
+                                             "profile", spy.guess, spy.draft_fn)}
+    assert (plans["school--0"].source, plans["school--0"].value) == ("bank", "University at Buffalo, SUNY")
+    assert (plans["degree--0"].source, plans["degree--0"].value) == ("bank", "Master's Degree")
+    assert plans["discipline--0"].value == "Computer Science"
+    assert (plans["end-month--0"].value, plans["end-year--0"].value) == ("May", "2026")
+    assert plans["start-year--0"].source == "needs_me" and "education start" in plans["start-year--0"].note
+    assert plans["start-month--0"].source == "skipped"                  # optional, no answer
+    assert plans["question_1"].value == "Instagram"                      # the sheet's source
+    assert spy.guess_calls == []                                         # nothing went to the LLM
+
+
+def test_plan_note_says_when_the_bank_value_fits_no_option(bank):
+    data = json.loads(bank.read_text())
+    data["answers"]["degree"] = "Certificate in Welding"
+    bank.write_text(json.dumps(data))
+    spy = Spy()
+    plans = {p.field.name: p for p in gh.plan(_edu_form(), {"company": "Acme", "role": "SWE"}, "profile",
+                                             spy.guess, spy.draft_fn)}
+    assert plans["degree--0"].source == "needs_me"
+    assert "Certificate in Welding" in plans["degree--0"].note and "options" in plans["degree--0"].note
+
+
+def test_fill_types_to_search_for_school(monkeypatch):
+    seen = {}
+
+    def pick(page, name, value, type_text="", search=False):
+        seen.update(name=name, value=value, type_text=type_text, search=search)
+        return True
+
+    class Loc:
+        def count(self):
+            return 1
+
+        @property
+        def first(self):
+            return self
+
+        def evaluate(self, js):
+            return "INPUT"
+
+    class Page:
+        def locator(self, sel):
+            return Loc()
+    monkeypatch.setattr(gh, "_pick", pick)
+    p = gh.Planned(gh.FormField("school--0", "School", "select", True), "University at Buffalo, SUNY", "bank")
+    assert gh._fill_one(Page(), p)
+    assert seen == {"name": "school--0", "value": "University at Buffalo, SUNY",
+                    "type_text": "University at Buffalo", "search": True}

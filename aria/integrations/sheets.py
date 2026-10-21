@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import urlparse
 from datetime import date
 from typing import Callable, Optional
 
@@ -41,6 +42,7 @@ COL_STATUS = "Status"
 COL_APPLY_LINK = "Apply link"
 COL_POST_LINK = "Post link"
 COL_UPDATES = "Updates"
+COL_SOURCE = "Source"          # optional: how you found the job ("How did you hear about us")
 COL_WHO = "Who to contact"
 COL_OUTREACH = "Outreach_2"   # the second "Outreach" column: the planned message + channel
 OUTREACH_FIELDS = (COL_WHO, COL_OUTREACH)
@@ -84,6 +86,22 @@ def col_letter(index: int) -> str:
 
 def _norm(name: str) -> str:
     return re.sub(r"\s+", " ", name).strip().lower()
+
+
+# Where a job was posted, by the Post link's site. Job boards / ATS pages say nothing
+# about how you found it, so they give no source.
+_SOURCE_SITES = {
+    "instagram.com": "Instagram", "linkedin.com": "LinkedIn", "indeed.com": "Indeed",
+    "glassdoor.com": "Glassdoor", "joinhandshake.com": "Handshake", "wellfound.com": "Wellfound",
+    "angel.co": "Wellfound", "x.com": "Twitter", "twitter.com": "Twitter", "youtube.com": "YouTube",
+    "tiktok.com": "TikTok", "facebook.com": "Facebook", "reddit.com": "Reddit", "builtin.com": "Built In",
+    "ycombinator.com": "Y Combinator", "themuse.com": "The Muse", "dice.com": "Dice",
+}
+
+
+def source_from_link(url: str) -> str:
+    host = (urlparse(url or "").hostname or "").lower()
+    return next((name for site, name in _SOURCE_SITES.items() if host == site or host.endswith("." + site)), "")
 
 
 class JobSheet:
@@ -170,6 +188,7 @@ class JobSheet:
             "apply_link": apply_link,
             "post_link": post_link,
             "url": url,
+            "source": get(COL_SOURCE) or source_from_link(post_link),
             "fields": fields,
         }
 
