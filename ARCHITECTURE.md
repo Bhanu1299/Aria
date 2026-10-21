@@ -387,11 +387,63 @@ flowchart LR
 
 - `aria/features/applicator.py` is the single entry point. `aria/features/ats/` holds
   detection, the Greenhouse adapter, the two LLM tasks and the submit helper.
-- The form stays open in its own browser tab (`agent_browser` tab `"apply"`), so
-  other tools can't navigate it away while it waits for review.
-- Submitting is not an agent tool. Only the dispatcher pre-handler, triggered by
-  the user's own words, can click submit, and it refuses if the open tab isn't
-  the reviewed form.
+- Every application gets its own visible tab (`aria/features/applying/tabs.py`
+  registry, `~/.aria/apply_tabs.json`; the entry id is the `agent_browser` tab
+  name), so other tools can't navigate it away while it waits for review.
+- Submitting is not an agent tool. Only the dispatcher pre-handler
+  (`aria/features/applying/commands.py`), triggered by the user's own words, can
+  click submit, and it refuses if the tab isn't showing the reviewed form.
+
+### Applications in front (standing rules, non-negotiable)
+
+Set by the user 2026-10-21. Code that touches applications is checked against these.
+
+1. **One start command.** "Aria, start applications" and `python -m aria start`
+   bring up GateLLM, Coldstart (a library: import check), the dashboard and Aria's
+   Chrome, health-checking each in that order. The first failure is named out loud
+   and nothing else starts. Then the dashboard opens in a visible tab on Live run.
+2. **Applications run in front, never in the background.** Every form fill happens
+   in a visible, headed Chrome window. No headless mode for applications, ever.
+   Each application opens in its own new tab. Aria never closes an application tab:
+   only "close it" (the tab in front / "close <company>") or "close all" do.
+   Background is fine for everything else (Gmail, contacts, Coldstart, sheet reads).
+3. **Submitting** happens only on the user's words; Aria never clicks submit by
+   itself. Each tab's state is tracked: `filling` → `filled` → `submitted`
+   (confirmation page seen, or the user said "I submitted it"); `open` = the fill
+   didn't finish; `closed` = the user closed it.
+4. **"Applications are done"** marks the sheet Status = Applied, with a dated
+   Updates note, for every tab where a confirmation page was seen or the user said
+   "I submitted it". Every tab that's filled but not confirmed is asked about one at
+   a time ("applied" / "not applied"); never marked Applied on a guess. Tabs stay open.
+5. **Dashboard.** The Live run tab shows each open application tab: company, role,
+   state, fields needing the user (`/api/runs` → `apps`).
+6. **Tabs and control.** One persistent Chrome profile (`~/.aria/browser_profile`,
+   the user's logins). Aria launches that Chrome detached with a 127.0.0.1 debug
+   port and drives it over CDP, so tabs survive an Aria restart and are re-attached
+   by URL on start. One job at a time, fit-score order (fit desc, then row). "Submit
+   it" = the tab in front, "submit <company>" = that tab, unclear → ask. "Pause"
+   holds before the next browser call (between fields); "stop" ends the run, tabs
+   stay open. CAPTCHA (a *visible* challenge), login wall or email code → that tab
+   comes to front, Aria says so and waits. Jobs already Applied or already open in
+   a tab are skipped. At most 10 open application tabs. `caffeinate` for the whole run.
+
+```mermaid
+flowchart LR
+    S["start applications"] --> B["bring_up: GateLLM → Coldstart → dashboard → Chrome<br/>(first failure: say it, stop)"]
+    B --> D["dashboard tab #live"]
+    D --> J["sheet: new rows, not open in a tab<br/>fit desc, ≤ 10 tabs"]
+    J --> T["new tab → front → wall? wait"]
+    T --> F["fill (never submit) → review → tab filled"]
+    F -->|next job| T
+    F --> W{"your words"}
+    W -->|submit it / submit X| SB["click submit → confirmation → tab submitted"]
+    W -->|I submitted it| SB
+    W -->|applications are done| AD["Applied + dated note for submitted tabs<br/>ask per unconfirmed tab"]
+```
+
+Known limit: Chrome only allows a debug port on a non-default profile, so this is
+Aria's own profile, not the user's everyday Chrome. Any local process can reach that
+port while Chrome runs.
 - Every step writes `aria.db.application_runs` and a flight-log job entry with
   that job's LLM cost, keyed by sheet row. `daily_check.py report` prints
   per-row spend.
