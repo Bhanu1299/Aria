@@ -171,6 +171,7 @@ def test_run_outreach_writes_who_to_contact_for_qualifying_rows(monkeypatch):
     monkeypatch.setattr(pipeline.finder, "company_domain", lambda job, search_fn=None: "acme.com")
     monkeypatch.setattr(pipeline.finder, "find_people",
                         lambda *a, **k: [c.Person("Pat Lee", "Recruiter", "search")])
+    monkeypatch.setattr(pipeline.channel, "find_emails", lambda domain, people, **k: people)
     out = pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [])
     assert "1 of 1" in out
     assert svc.written() == {"'Sheet1'!H2": "Pat Lee (Recruiter) | Via Greenhouse"}
