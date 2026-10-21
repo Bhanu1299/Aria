@@ -448,3 +448,24 @@ def test_apply_form_link_ignores_non_links_and_other_buttons(html):
 def test_apply_form_link_accepts_common_wordings():
     html = '<a href="https://x.example/job/1/form">Apply for this job</a><a href="/other">Apply now</a>'
     assert ats.apply_form_link(html, "https://x.example/job/1") == "https://x.example/job/1/form"
+
+
+JOBVITE_COUNTRY = ["Select your location of residence and language", "US", "Canadian-French",
+                   "European Economic Area", "Other Areas"]
+
+
+@pytest.mark.parametrize("options,country,want", [
+    (JOBVITE_COUNTRY, "United States", "US"),
+    (["Choose…", "Canada", "United States of America", "Mexico"], "United States", "United States of America"),
+    (["Select", "USA", "UK"], "united states", "USA"),
+    (["Select", "Canada", "Mexico"], "United States", None),
+    (JOBVITE_COUNTRY, "", None),
+])
+def test_match_country_option(options, country, want):
+    assert ats.match_country(options, country) == want
+
+
+def test_country_label_pattern():
+    assert ats.is_country_label("Location of Residence and Language:")
+    assert ats.is_country_label("Country")
+    assert not ats.is_country_label("Are you legally authorized to work in the United States?")
