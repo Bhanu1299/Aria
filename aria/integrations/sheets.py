@@ -7,10 +7,12 @@ order: "Outreach", "Outreach" → "Outreach", "Outreach_2".
     get_next_job(status="new") → dict | None     first matching row, top to bottom
     get_job(row) → dict | None
     set_status(row, status, note="", company=, role=)
+    set_fields(row, {"Who to contact": ...}, note="", company=, role=)   outreach columns only
 
 A blank Status cell counts as "new". Notes are appended to "Updates" as
 "YYYY-MM-DD: note", joined with " | " — existing text is never overwritten.
-Columns this module never writes: everything except Status and Updates.
+Columns this module writes: Status, Updates, and the outreach columns in
+OUTREACH_FIELDS (set_fields refuses any other). Everything else is the user's.
 
 Rows move when the sheet is sorted, so set_status() re-finds the job by
 (Company, Role) when the given row no longer holds it.
@@ -39,6 +41,9 @@ COL_STATUS = "Status"
 COL_APPLY_LINK = "Apply link"
 COL_POST_LINK = "Post link"
 COL_UPDATES = "Updates"
+COL_WHO = "Who to contact"
+COL_OUTREACH = "Outreach_2"   # the second "Outreach" column: the planned message + channel
+OUTREACH_FIELDS = (COL_WHO, COL_OUTREACH)
 
 # Status values Aria writes. "Applied" / "Not gonna apply" are the user's own.
 STATUS_NEW = "new"
@@ -199,6 +204,24 @@ class JobSheet:
         role: Optional[str] = None,
     ) -> int:
         """Write Status (and append note to Updates). Returns the row actually written."""
+        return self._update_row(row, {COL_STATUS: status}, note, company, role)
+
+    def set_fields(
+        self,
+        row: int,
+        fields: dict[str, str],
+        note: str = "",
+        company: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> int:
+        """Write outreach columns (OUTREACH_FIELDS only) and append note to Updates."""
+        bad = [k for k in fields if _norm(k) not in {_norm(f) for f in OUTREACH_FIELDS}]
+        if bad:
+            raise SheetError(f"Aria doesn't write the {bad[0]!r} column.")
+        return self._update_row(row, fields, note, company, role)
+
+    def _update_row(self, row: int, fields: dict[str, str], note: str,
+                    company: Optional[str], role: Optional[str]) -> int:
         values = self._read()
         if not values:
             raise SheetError("The job sheet is empty.")
@@ -206,28 +229,29 @@ class JobSheet:
         index = self._index(headers)
         cells: dict[str, str] = {}
 
-        if _norm(COL_STATUS) not in index:
-            index[_norm(COL_STATUS)] = len(headers)
-            cells[f"{col_letter(len(headers))}1"] = COL_STATUS
-            headers.append(COL_STATUS)
+        def column(name: str) -> int:
+            if _norm(name) not in index:
+                index[_norm(name)] = len(headers)
+                cells[f"{col_letter(len(headers))}1"] = name.split("_")[0]
+                headers.append(name)
+            return index[_norm(name)]
 
+        for name in fields:
+            column(name)
         row = self._resolve_row(values, headers, row, company, role)
-        status_col = index[_norm(COL_STATUS)]
-        cells[f"{col_letter(status_col)}{row}"] = status
+        for name, value in fields.items():
+            cells[f"{col_letter(column(name))}{row}"] = value
 
         if note:
-            if _norm(COL_UPDATES) not in index:
-                index[_norm(COL_UPDATES)] = len(headers)
-                cells[f"{col_letter(len(headers))}1"] = COL_UPDATES
-                headers.append(COL_UPDATES)
-            updates_col = index[_norm(COL_UPDATES)]
+            updates_col = column(COL_UPDATES)
             current = values[row - 1] if row - 1 < len(values) else []
             existing = current[updates_col].strip() if updates_col < len(current) else ""
             entry = f"{self._today().isoformat()}: {note.strip()}"
             cells[f"{col_letter(updates_col)}{row}"] = f"{existing} | {entry}" if existing else entry
 
         self._write(cells)
-        logger.info("sheets: row %d → %r%s", row, status, f" ({note})" if note else "")
+        logger.info("sheets: row %d → %s%s", row, ", ".join(f"{k}={v[:40]!r}" for k, v in fields.items()),
+                    f" ({note})" if note else "")
         return row
 
     def _resolve_row(self, values, headers, row, company, role) -> int:
@@ -267,3 +291,8 @@ def get_job(row: int) -> Optional[dict]:
 def set_status(row: int, status: str, note: str = "", company: Optional[str] = None,
                role: Optional[str] = None) -> int:
     return default_sheet().set_status(row, status, note, company=company, role=role)
+
+
+def set_fields(row: int, fields: dict[str, str], note: str = "", company: Optional[str] = None,
+               role: Optional[str] = None) -> int:
+    return default_sheet().set_fields(row, fields, note, company=company, role=role)
