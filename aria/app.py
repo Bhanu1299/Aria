@@ -84,7 +84,8 @@ from aria.core.tool import ToolRegistry
 from aria.core.agent import Agent
 from aria.core.plugin import PluginContext
 from aria.dispatch import Dispatcher, RuleSet
-from aria.features import applicator
+from aria.features.applying import commands as applying_commands
+from aria.features.applying import session as applying_session
 import aria.plugins as plugin_packs
 import aria.observability.flight_recorder as flight_recorder
 
@@ -471,7 +472,7 @@ def main():
             print(f"[Aria] Fast path disabled — patterns failed to load: {exc}")
     _dispatcher = Dispatcher(
         _registry, _agent, _rules,
-        pre_handlers=[("apply_followup", applicator.handle_followup),
+        pre_handlers=[("applications", applying_commands.handle),
                       ("jobs_followup", _check_jobs_followup)],
     )
 
@@ -506,10 +507,31 @@ def main():
     )
     wake_word_listener.start()
 
+    # 8b. Applications in front: spoken progress for the run, re-attach application tabs
+    #     a previous Aria left open, and `python -m aria start` kicks the run off.
+    applying_commands.configure(say=speaker.say)
+    threading.Thread(target=_reattach_and_maybe_start, args=(speaker,), daemon=True,
+                     name="aria-apply-startup").start()
+
     print("Aria ready. Hold ⌥ Space to ask a question.")
 
     # 8. Run rumps main loop — blocks until quit
     menubar.run()
+
+
+def _reattach_and_maybe_start(speaker) -> None:
+    """Re-attach open application tabs; with ARIA_START_APPLICATIONS=1 (python -m aria start)
+    run "start applications" as if the user had said it. Never raises."""
+    try:
+        start = os.environ.pop("ARIA_START_APPLICATIONS", "") == "1"
+        if start:
+            speaker.say(applying_commands.handle("start applications") or "Applications didn't start.")
+        else:
+            n = applying_session.reattach()
+            if n:
+                print(f"[Aria] Re-attached {n} open application tab{'s' if n != 1 else ''}")
+    except Exception as exc:
+        print(f"[Aria] Application tabs: {exc}")
 
 
 _LOGIN_URLS = {
