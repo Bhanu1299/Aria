@@ -9,9 +9,12 @@ job: a job-sheet row dict — needs "url"; "company"/"role"/"fields" improve ans
 """
 from __future__ import annotations
 
+import html as _html
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+from urllib.parse import urljoin
 
 import aria.features.answer_bank as answer_bank
 from aria.features.ats.detect import detect, identify
@@ -22,6 +25,28 @@ NEVER_SUBMIT = (
     "Do NOT click Submit, Apply, Send or any button that sends the application — "
     "return 'confirm' as soon as every field you can fill is filled."
 )
+
+
+_ANCHOR = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.I | re.S)
+_HREF = re.compile(r"""\bhref\s*=\s*["']([^"']+)["']""", re.I)
+_APPLY_TEXT = re.compile(r"apply(?: now| online| here| for this (?:job|position|role))?|i'?m interested", re.I)
+_HAS_FIELDS_JS = """() => Array.from(document.querySelectorAll('input, textarea, select')).filter(e =>
+  !['hidden', 'search', 'submit', 'button'].includes((e.type || '').toLowerCase()) && e.offsetParent !== null).length"""
+
+
+def apply_form_link(html: str, base_url: str) -> Optional[str]:
+    """The URL behind a posting's "Apply" LINK (an <a href>, never a button), or None.
+    Following a link only opens the form — it can't send anything."""
+    for attrs, inner in _ANCHOR.findall(html or ""):
+        text = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", inner))).strip()
+        href = _HREF.search(attrs)
+        if not href or not _APPLY_TEXT.fullmatch(text):
+            continue
+        target = _html.unescape(href.group(1)).strip()
+        if target.lower().startswith(("mailto:", "javascript:", "#", "tel:")):
+            continue
+        return urljoin(base_url, target)
+    return None
 
 
 @dataclass
@@ -52,6 +77,13 @@ def _generic(job: dict, progress_fn, tab: Optional[str] = None) -> FillResult:
     try:
         with agent_browser.use_tab(tab, gate=agent_browser.current_gate()):
             agent_browser.navigate(job["url"], settle_secs=3.0)
+            if not agent_browser.run(lambda page: page.evaluate(_HAS_FIELDS_JS)):
+                html, here = agent_browser.run(lambda page: (page.content(), page.url))
+                form = apply_form_link(html, here)
+                if form:
+                    if progress_fn:
+                        progress_fn("That's the job posting. Opening its application form.")
+                    agent_browser.navigate(form, settle_secs=3.0)
             context = answer_bank.fillable_answers(answer_bank.load(), job)   # never always-ask answers
             goal = (
                 f"Fill out the job application form for {job.get('role', 'this role')} at "

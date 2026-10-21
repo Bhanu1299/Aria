@@ -301,3 +301,22 @@ def test_setup_rejects_unknown_account(monkeypatch, capsys):
     monkeypatch.setattr(google_auth, "run_setup", lambda *a, **k: pytest.fail("must not run"))
     assert setup.main(["google", "--account", "me@example.com"]) == 1
     assert "--email" in capsys.readouterr().out
+
+
+def test_write_permission_denied_says_how_to_fix(monkeypatch):
+    from googleapiclient.errors import HttpError
+
+    sheet, svc = _sheet([_row("Acme", "SWE")])
+
+    class Resp(dict):
+        status = 403
+        reason = "Forbidden"
+
+    def denied(spreadsheetId, body):
+        raise HttpError(Resp(), b'{"error": {"message": "The caller does not have permission"}}')
+    monkeypatch.setattr(svc, "batchUpdate", denied)
+    with pytest.raises(SheetError) as exc:
+        sheet.set_status(2, "In review")
+    msg = str(exc.value)
+    assert "can read the job sheet but can't edit it" in msg and "Editor" in msg
+    assert "googleapis" not in msg

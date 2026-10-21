@@ -417,3 +417,34 @@ def test_fixtures_carry_no_keys_or_tokens():
     for path in FIX.glob("*.html"):
         hit = pattern.search(path.read_text())
         assert hit is None, f"{path.name}: {hit.group(0)[:40]}"
+
+
+# ── generic filler: posting page → the form behind its Apply link ───────────
+
+JOBVITE_POSTING = """<div class="jv-job-detail-top-actions">
+<a class="jv-button jv-button-primary jv-button-apply" href="/ookla/job/oAaCAfwG/apply">
+  Apply
+</a>
+<a class="jv-button jv-button-apply-later" ng-href="mailto:?subject=Apply for Data Engineer at Ookla">Apply Later</a>
+</div>"""
+
+
+def test_apply_form_link_follows_the_postings_apply_link():
+    url = "https://jobs.jobvite.com/ookla/job/oAaCAfwG"
+    assert ats.apply_form_link(JOBVITE_POSTING, url) == "https://jobs.jobvite.com/ookla/job/oAaCAfwG/apply"
+
+
+@pytest.mark.parametrize("html", [
+    '<a href="mailto:jobs@x.com">Apply</a>',
+    '<a href="javascript:void(0)">Apply now</a>',
+    '<a href="/careers">Apply later</a>',
+    '<a href="/jobs">See all jobs</a>',
+    '<button type="submit">Apply</button>',
+])
+def test_apply_form_link_ignores_non_links_and_other_buttons(html):
+    assert ats.apply_form_link(html, "https://x.example/job/1") is None
+
+
+def test_apply_form_link_accepts_common_wordings():
+    html = '<a href="https://x.example/job/1/form">Apply for this job</a><a href="/other">Apply now</a>'
+    assert ats.apply_form_link(html, "https://x.example/job/1") == "https://x.example/job/1/form"
