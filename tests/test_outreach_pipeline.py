@@ -123,7 +123,7 @@ def test_email_channel_creates_a_jobs_gmail_draft_and_marks_the_sheet(monkeypatc
     _llm(monkeypatch, BODY)
     sheet, svc = _sheet([_row()])
     gmail = FakeGmail()
-    out = pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail=gmail)
+    out = pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail_data={}, gmail=gmail)
     assert out == "Outreach: 1 email draft in your jobs Gmail. Nothing was sent."
     assert [d["to"] for d in gmail.drafts] == ["pat@acme.com"]
     w = svc.written()
@@ -136,7 +136,7 @@ def test_linkedin_channel_writes_the_note_to_the_sheet_not_gmail(monkeypatch):
     _llm(monkeypatch, "I build voice agents and the ML Engineer role at Acme fits my MS work. Open to connecting?")
     sheet, svc = _sheet([_row()])
     gmail = FakeGmail()
-    out = pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail=gmail)
+    out = pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail_data={}, gmail=gmail)
     assert "1 LinkedIn note in the sheet" in out
     assert gmail.drafts == []
     cell = svc.written()["'Sheet1'!K2"]
@@ -147,7 +147,7 @@ def test_failed_draft_leaves_outreach_empty_and_retries_next_run(monkeypatch):
     _people(monkeypatch, {"email": "pat@acme.com", "status": "valid", "confidence": 0.97})
     _llm(monkeypatch, BODY)
     sheet, svc = _sheet([_row()])
-    out = pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail=FakeGmail("Jobs Gmail isn't connected yet."))
+    out = pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail_data={}, gmail=FakeGmail("Jobs Gmail isn't connected yet."))
     assert "1 failed (Acme)" in out
     assert "'Sheet1'!K2" not in svc.written()
     # next run: the sheet now names Pat (written by Aria) — reuse them, don't search again
@@ -168,7 +168,7 @@ def test_cost_goes_to_the_flight_log_per_company(monkeypatch):
     logged = []
     monkeypatch.setattr(pipeline.flight_recorder, "record_job", lambda *a, **k: logged.append(a))
     sheet, _svc = _sheet([_row()])
-    pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail=FakeGmail())
+    pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail_data={}, gmail=FakeGmail())
     assert [(a[0], a[1], a[3], a[6]) for a in logged] == [(2, "Acme", "outreach", True)]
 
 

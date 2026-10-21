@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from aria.dashboard.model import contact_name, emails_in, is_company_address
-from aria.features.outreach import channel, writer
+from aria.features.outreach import channel, feedback, writer
 from aria.features.outreach import contacts as finder
 from aria.integrations import google_auth, sheets
 from aria.llm import context as llm_context
@@ -212,9 +212,10 @@ def write_outreach(t: Target, cell: str, run: run_log.Run, sheet: sheets.JobShee
     return ""
 
 
-def process(t: Target, run: run_log.Run, sheet: sheets.JobSheet, gmail, search_fn=None, client=None) -> None:
-    """All steps for one company, LLM calls labelled with its primary row. Never raises."""
+def process(t: Target, sheet: sheets.JobSheet, gmail, search_fn=None, client=None) -> None:
+    """All steps for one company as its own run, LLM calls labelled with its primary row. Never raises."""
     j = t.primary
+    run = run_log.start("outreach")
     run.job(t.company, j["role"], j["row"])
     before = meter.snapshot()
     try:
@@ -239,8 +240,9 @@ def process(t: Target, run: run_log.Run, sheet: sheets.JobSheet, gmail, search_f
         t.outcome = f"not written: {exc}"
     finally:
         ok = t.outcome in ("drafted", "noted")
-        flight_recorder.record_job(j["row"], t.company, j["role"], "outreach", "", meter.since(before), ok,
-                                   f"{t.outcome}" + (f" via {t.channel}" if t.channel else ""))
+        how = f"{t.outcome}" + (f" via {t.channel}" if t.channel else "")
+        flight_recorder.record_job(j["row"], t.company, j["role"], "outreach", "", meter.since(before), ok, how)
+        run.finish("ok" if ok else ("no change" if t.outcome == "no contact" else "error"), how)
 
 
 def run_outreach(
@@ -249,8 +251,10 @@ def run_outreach(
     search_fn=None,
     client=None,
     gmail=None,
+    gmail_data: Optional[dict] = None,
 ) -> str:
-    """The outreach loop over every qualifying sheet row. Never raises, never sends."""
+    """The outreach loop over every qualifying sheet row. Never raises, never sends.
+    gmail_data: the jobs Gmail threads for feedback (default: the dashboard's cached load)."""
     if search_fn is None:
         from aria.web import websearch
         search_fn = lambda q: websearch.search(q, max_results=8)
@@ -259,6 +263,10 @@ def run_outreach(
         gmail = GmailClient(google_auth.JOBS)
     sheet = sheet or sheets.default_sheet()
     run = run_log.start("outreach")
+    with run.step("record feedback") as s:
+        fb = feedback.sync(gmail_data)
+        s.detail = fb["error"] or f"{len(fb['replied'])} replied, {len(fb['bounced'])} bounced → Coldstart"
+        s.status = "error" if fb["error"] else "ok"
     try:
         with run.step("read sheet") as s:
             jobs = sheet.jobs()
@@ -271,14 +279,15 @@ def run_outreach(
         logger.error("outreach: reading the sheet failed: %s", exc)
         run.finish("error", f"reading the sheet failed: {exc}")
         return "I couldn't read your job sheet right now."
+    heard = feedback.spoken(fb)
     if not todo:
         run.finish("no change", "no rows need outreach")
-        return "Every job with a fit of 3 or more already has outreach planned."
+        return " ".join(x for x in ("Every job with a fit of 3 or more already has outreach planned.", heard) if x)
 
     _say(progress_fn, f"Working on outreach for {_plural(len(todo))}. This takes a few minutes.")
     for t in todo:
-        process(t, run, sheet, gmail, search_fn, client)
-    return finish(run, todo)
+        process(t, sheet, gmail, search_fn, client)
+    return " ".join(x for x in (finish(run, todo), heard) if x)
 
 
 def finish(run: run_log.Run, todo: list) -> str:
