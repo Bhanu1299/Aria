@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 from aria.dashboard.model import company_slug, contact_name, emails_in, is_company_address
@@ -42,6 +44,7 @@ MIN_FIT = 3.0
 _CLOSED = re.compile(r"(?i)not gonna apply|not applying|skipped|reject|closed|withdrawn")
 FOUND_NOTE = "Aria found contacts"
 LINKEDIN_PREFIX = "LinkedIn (Aria):"
+DRY_RUN_DIR = Path.home() / ".aria" / "outreach"
 _WHO_PERSON = re.compile(r"^\s*(?P<name>[^()]+?)\s*(?:\((?P<title>[^)]*)\))?\s*$")
 
 
@@ -57,6 +60,7 @@ class Target:
     channel: str = ""               # channel.EMAIL | channel.LINKEDIN
     why: str = ""
     outcome: str = ""               # drafted | noted | no contact | not written: …
+    message: dict = field(default_factory=dict)   # the email {to, subject, body} or {"note": …}
 
     @property
     def primary(self) -> dict:
@@ -223,13 +227,13 @@ def draft(t: Target, run: run_log.Run, gmail) -> str:
             if not result.startswith("Draft saved"):
                 s.status, s.detail, t.outcome = "error", result, f"not written: {result}"
                 return ""
-            s.detail, t.outcome = f"Gmail draft (jobs account) to {msg['to']}: {msg['subject']}", "drafted"
+            s.detail, t.outcome, t.message = f"Gmail draft (jobs account) to {msg['to']}: {msg['subject']}", "drafted", msg
             return outreach_cell(t)
         note = writer.linkedin_note(t)
         if note is None:
             s.status, s.detail, t.outcome = "error", "the LinkedIn note didn't pass checks", "not written: note failed checks"
             return ""
-        s.detail, t.outcome = f"LinkedIn note for {t.contact.name} ({len(note)} chars)", "noted"
+        s.detail, t.outcome, t.message = f"LinkedIn note for {t.contact.name} ({len(note)} chars)", "noted", {"note": note}
         return outreach_cell(t, note)
 
 
@@ -256,10 +260,10 @@ def write_outreach(t: Target, cell: str, run: run_log.Run, sheet: sheets.JobShee
     return ""
 
 
-def process(t: Target, sheet: sheets.JobSheet, gmail, search_fn=None, client=None) -> None:
+def process(t: Target, sheet: sheets.JobSheet, gmail, search_fn=None, client=None, trigger: str = "outreach") -> None:
     """All steps for one company as its own run, LLM calls labelled with its primary row. Never raises."""
     j = t.primary
-    run = run_log.start("outreach")
+    run = run_log.start(trigger)
     run.job(t.company, j["role"], j["row"])
     before = meter.snapshot()
     try:
@@ -284,8 +288,68 @@ def process(t: Target, sheet: sheets.JobSheet, gmail, search_fn=None, client=Non
     finally:
         ok = t.outcome in ("drafted", "noted")
         how = f"{t.outcome}" + (f" via {t.channel}" if t.channel else "")
-        flight_recorder.record_job(j["row"], t.company, j["role"], "outreach", "", meter.since(before), ok, how)
+        flight_recorder.record_job(j["row"], t.company, j["role"], trigger, "", meter.since(before), ok, how)
         run.finish("ok" if ok else ("no change" if t.outcome == "no contact" else "error"), how)
+
+
+class DrySheet:
+    """Reads the real sheet; set_fields only records what it would write."""
+
+    def __init__(self, sheet: sheets.JobSheet) -> None:
+        self._sheet, self.writes = sheet, []
+
+    def jobs(self) -> list[dict]:
+        return self._sheet.jobs()
+
+    def set_fields(self, row, fields, note="", company=None, role=None) -> int:
+        bad = [k for k in fields if k not in sheets.OUTREACH_FIELDS]
+        if bad:
+            raise sheets.SheetError(f"Aria doesn't write the {bad[0]!r} column.")
+        self.writes.append({"row": row, "fields": dict(fields), "note": note})
+        return row
+
+
+class DryGmail:
+    """create_draft only records the draft."""
+
+    def __init__(self) -> None:
+        self.drafts = []
+
+    def create_draft(self, to, subject, body, cc="", reply_to_id="") -> str:
+        self.drafts.append({"to": to, "subject": subject, "body": body})
+        return "Draft saved (dry run — not created)."
+
+
+def dry_run_report(todo: list, sheet: DrySheet, fb: dict, skipped: list, summary: str) -> str:
+    """Markdown: per company, who was found, the channel, the message, and the sheet cells."""
+    lines = ["# Outreach dry run", "", f"_{time.strftime('%Y-%m-%d %H:%M')} — nothing was drafted, written "
+             "or recorded._", "", f"**Result:** {summary}", ""]
+    if fb.get("replied") or fb.get("bounced"):
+        lines += ["## Coldstart feedback that would be recorded", ""]
+        lines += [f"- {e}: {o}" for o in ("replied", "bounced") for e in fb.get(o, [])] + [""]
+    for t in todo:
+        rows = ", ".join(f"row {j['row']} {j['role']} (fit {j.get('alignment') or '?'})" for j in t.jobs)
+        lines += [f"## {t.company}", "", f"- **Rows:** {rows}", f"- **Domain:** {t.domain or 'unknown'}",
+                  f"- **Outcome:** {t.outcome or 'nothing'}"]
+        for p in t.people:
+            lk = p.lookup or {}
+            mail = f" — {lk.get('email')} ({lk.get('status')}, {lk.get('confidence')})" if lk.get("email") else ""
+            lines.append(f"  - {p.label()} [{p.source}] {p.url}{mail}".rstrip())
+        if t.contact is not None:
+            lines.append(f"- **Contact:** {t.contact.label()} via {t.channel} — {t.why}")
+        if t.message.get("body"):
+            lines += ["", f"**To:** {t.message['to']}  ", f"**Subject:** {t.message['subject']}", "", "```",
+                      t.message["body"], "```"]
+        elif t.message.get("note"):
+            lines += ["", f"**LinkedIn note ({len(t.message['note'])} chars):**", "", f"> {t.message['note']}"]
+        cells = [w for w in sheet.writes if any(w["row"] == j["row"] for j in t.jobs)]
+        if cells:
+            lines += ["", "**Sheet cells that would be written:**", ""]
+            lines += [f"- row {w['row']} {k}: {v!r}" for w in cells for k, v in w["fields"].items()]
+        lines.append("")
+    if skipped:
+        lines += ["## Skipped", ""] + [f"- {j['company']} — {j['role']} (row {j['row']}): {why}" for j, why in skipped]
+    return "\n".join(lines) + "\n"
 
 
 def run_outreach(
@@ -295,19 +359,27 @@ def run_outreach(
     client=None,
     gmail=None,
     gmail_data: Optional[dict] = None,
+    dry_run: bool = False,
+    report_dir: Optional[Path] = None,
 ) -> str:
     """The outreach loop over every qualifying sheet row. Never raises, never sends.
-    gmail_data: the jobs Gmail threads for feedback (default: the dashboard's cached load)."""
+    gmail_data: the jobs Gmail threads for feedback (default: the dashboard's cached load).
+    dry_run: run everything but write nothing (drafts, sheet, Coldstart feedback); save a report."""
     if search_fn is None:
         from aria.web import websearch
         search_fn = lambda q: websearch.search(q, max_results=8)
-    if gmail is None:
+    if dry_run:
+        gmail = DryGmail()
+    elif gmail is None:
         from aria.plugins.productivity.gmail import GmailClient
         gmail = GmailClient(google_auth.JOBS)
     sheet = sheet or sheets.default_sheet()
-    run = run_log.start("outreach")
+    if dry_run:
+        sheet = DrySheet(sheet)
+    trigger = "outreach (dry run)" if dry_run else "outreach"
+    run = run_log.start(trigger)
     with run.step("record feedback") as s:
-        fb = feedback.sync(gmail_data)
+        fb = feedback.sync(gmail_data, record_fn=(lambda *a, **k: None) if dry_run else None)
         s.detail = fb["error"] or f"{len(fb['replied'])} replied, {len(fb['bounced'])} bounced → Coldstart"
         s.status = "error" if fb["error"] else "ok"
     try:
@@ -327,30 +399,53 @@ def run_outreach(
         run.finish("error", f"reading the sheet failed: {exc}")
         return "I couldn't read your job sheet right now."
     heard = feedback.spoken(fb)
+    if dry_run and heard:
+        heard = heard.replace("Told Coldstart about", "Would tell Coldstart about")
     if not todo:
         run.finish("no change", "no rows need outreach")
         return " ".join(x for x in ("Every job with a fit of 3 or more already has outreach planned.", heard) if x)
 
-    _say(progress_fn, f"Working on outreach for {_plural(len(todo))}. This takes a few minutes.")
+    _say(progress_fn, f"Working on outreach for {_plural(len(todo))}{' as a dry run' if dry_run else ''}. "
+                      "This takes a few minutes.")
     for t in todo:
-        process(t, sheet, gmail, search_fn, client)
-    return " ".join(x for x in (finish(run, todo), heard) if x)
+        process(t, sheet, gmail, search_fn, client, trigger)
+    summary = finish(run, todo, dry_run)
+    if dry_run:
+        path = save_report(dry_run_report(todo, sheet, fb, skipped, summary), report_dir)
+        summary += f" The report is in {path.parent.name}/{path.name} in your Aria folder." if path else \
+            " I couldn't save the report."
+    return " ".join(x for x in (summary, heard) if x)
 
 
-def finish(run: run_log.Run, todo: list) -> str:
+def save_report(text: str, report_dir: Optional[Path] = None) -> Optional[Path]:
+    try:
+        d = report_dir or DRY_RUN_DIR
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"dry-run-{time.strftime('%Y%m%d-%H%M%S')}.md"
+        path.write_text(text)
+        return path
+    except OSError as exc:
+        logger.error("outreach: couldn't save the dry-run report: %s", exc)
+        return None
+
+
+def finish(run: run_log.Run, todo: list, dry_run: bool = False) -> str:
     drafted = [t for t in todo if t.outcome == "drafted"]
     noted = [t for t in todo if t.outcome == "noted"]
     nobody = [t for t in todo if t.outcome == "no contact"]
     failed = [t for t in todo if t.outcome.startswith("not written")]
     parts = []
     if drafted:
-        parts.append(f"{len(drafted)} email draft{'s' if len(drafted) != 1 else ''} in your jobs Gmail")
+        parts.append(f"{len(drafted)} email draft{'s' if len(drafted) != 1 else ''} "
+                     + ("written, not saved" if dry_run else "in your jobs Gmail"))
     if noted:
-        parts.append(f"{len(noted)} LinkedIn note{'s' if len(noted) != 1 else ''} in the sheet")
+        parts.append(f"{len(noted)} LinkedIn note{'s' if len(noted) != 1 else ''} "
+                     + ("written, not saved" if dry_run else "in the sheet"))
     if nobody:
         parts.append(f"nobody found at {_plural(len(nobody))}")
     if failed:
         parts.append(f"{len(failed)} failed ({', '.join(t.company for t in failed[:3])})")
-    summary = "Outreach: " + "; ".join(parts) + ". Nothing was sent."
+    summary = ("Outreach dry run: " if dry_run else "Outreach: ") + "; ".join(parts) + (
+        ". Nothing was written." if dry_run else ". Nothing was sent.")
     run.finish("ok" if drafted or noted else ("error" if failed else "no change"), summary)
     return summary

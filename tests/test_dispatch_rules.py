@@ -80,6 +80,10 @@ def rules():
     ("do my outreach", "job_outreach", {}),
     ("Aria, run the job outreach for my jobs", "job_outreach", {}),
     ("find recruiters for my jobs", "job_outreach", {}),
+    ("dry run my outreach", "job_outreach", {"dry_run": True}),
+    ("do a dry run of the job outreach", "job_outreach", {"dry_run": True}),
+    ("run my outreach as a dry run", "job_outreach", {"dry_run": True}),
+    ("preview outreach", "job_outreach", {"dry_run": True}),
 ])
 def test_direct_routes(rules, utterance, tool, params):
     m = rules.match(utterance)

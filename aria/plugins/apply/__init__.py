@@ -10,7 +10,7 @@ Tools:
                    account (GOOGLE_JOBS_ACCOUNT). Never sends; never the personal account.
   job_outreach   — the outreach loop over the sheet (aria/features/outreach): people →
                    Coldstart emails → jobs-Gmail drafts or LinkedIn notes in the sheet.
-                   NEVER sends.
+                   NEVER sends. dry_run=true writes nothing and saves a report.
 
 Every Google call here uses the jobs account (google_auth.JOBS), never personal.
 
@@ -244,7 +244,7 @@ class ApplyPlugin(_plugin_base.PluginBase):
         def execute(params: dict) -> str:
             from aria.features.outreach import pipeline
             try:
-                return pipeline.run_outreach(progress_fn=self._progress_fn())
+                return pipeline.run_outreach(progress_fn=self._progress_fn(), dry_run=bool(params.get("dry_run")))
             except Exception as exc:
                 logger.error("job_outreach failed: %s", exc)
                 return "Outreach didn't run — something went wrong reading the sheet."
@@ -255,8 +255,14 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 "Run job-search outreach over the user's job sheet: for jobs with fit 3+ and no "
                 "contact, find recruiters / hiring managers, look up their emails, and write Gmail "
                 "DRAFTS (jobs account) or LinkedIn notes into the sheet. Never sends anything. Use for "
-                "'do my outreach', 'find recruiters for my jobs', 'draft outreach for the sheet'."
+                "'do my outreach', 'find recruiters for my jobs', 'draft outreach for the sheet'. "
+                "dry_run=true does everything but write drafts, the sheet or Coldstart feedback, and "
+                "saves a report instead ('dry run my outreach', 'preview outreach')."
             ),
-            input_schema={"type": "object", "properties": {}, "required": []},
+            input_schema={
+                "type": "object",
+                "properties": {"dry_run": {"type": "boolean", "description": "Preview only; write nothing"}},
+                "required": [],
+            },
             execute=execute,
         )
