@@ -22,6 +22,7 @@ from typing import Callable, Optional
 
 import aria.system.prevent_sleep as prevent_sleep
 import aria.web.agent_browser as agent_browser
+import aria.web.browser_profile as browser_profile
 from aria.features import applicator
 from aria.features.applying import control, tabs, walls
 from aria.integrations import sheets
@@ -153,6 +154,11 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
             tabs.update(tab, state=tabs.OPEN, note="stopped before the fill")
         run.finish("stopped", "you said stop; the tab stays open")
         raise
+    except Exception as exc:
+        if (tabs.get(tab) or {}).get("state") == tabs.FILLING:
+            tabs.update(tab, state=tabs.OPEN, note=f"error: {exc}")
+        run.finish("error", str(exc))
+        raise
 
 
 def reattach() -> int:
@@ -160,7 +166,7 @@ def reattach() -> int:
     closed; a fill cut off by a crash → open. Chrome unreachable → nothing changes."""
     live = tabs.live()
     wanted = {e["id"]: e.get("form_url") or e.get("url") for e in live if e.get("form_url") or e.get("url")}
-    if not wanted:
+    if not wanted or not browser_profile.cdp_up():     # never launch Chrome just to look
         return 0
     try:
         bound = agent_browser.attach(wanted)

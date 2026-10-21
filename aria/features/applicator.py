@@ -23,6 +23,7 @@ import contextlib
 import functools
 import logging
 import re
+import threading
 from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
@@ -69,13 +70,28 @@ def _names(job: dict, result=None) -> tuple:
 # Records: sheet, aria.db, flight log
 # ---------------------------------------------------------------------------
 
-# The pipeline run in progress (one at a time): steps and its outcome go to run_log.
-_RUN: Optional[run_log.Run] = None
-_RUN_STATUS: dict = {}
+# The pipeline run in progress ON THIS THREAD: the application run and the user's voice
+# follow-ups (submit / skip) run on different threads at once, so each keeps its own.
+_local = threading.local()
+
+
+def _current_run() -> Optional[run_log.Run]:
+    return getattr(_local, "run", None)
+
+
+def _set_run(run: Optional[run_log.Run]) -> None:
+    _local.run = run
+
+
+def _run_status() -> dict:
+    if not hasattr(_local, "status"):
+        _local.status = {}
+    return _local.status
 
 
 def _step(name: str):
-    return _RUN.step(name) if _RUN is not None else contextlib.nullcontext(run_log._Step())
+    run = _current_run()
+    return run.step(name) if run is not None else contextlib.nullcontext(run_log._Step())
 
 
 def _sheet_update(job: dict, status: str, note: str) -> str:
@@ -107,7 +123,7 @@ def _finish(job: dict, ats_name: str, stage: str, before: dict, ok: bool = True,
     """Cost of this step → flight log (keyed by sheet row) + aria.db application_runs."""
     usage = meter.since(before)
     company, role = _names(job)
-    _RUN_STATUS["status"] = stage if ok else "error"
+    _run_status()["status"] = stage if ok else "error"
     flight_recorder.record_job(job.get("row"), company, role, stage, ats_name, usage, ok, note)
     conn = None
     try:
@@ -282,22 +298,26 @@ def _fill_linkedin(job: dict, voice_ask_fn) -> "ats.FillResult":
     return result
 
 
-def _run_logged(run: run_log.Run, job: dict, fn: Callable[[], str]) -> str:
-    """Run fn as pipeline run `run` for `job`: steps + outcome logged, LLM calls labelled."""
-    global _RUN
+def _run_logged(run: run_log.Run, job: dict, fn: Callable[[], str], label: bool = True) -> str:
+    """Run fn as pipeline run `run` for `job`: steps + outcome logged. label=True also tags
+    LLM calls with this job (the label is process-wide, so follow-ups that make no LLM
+    calls pass False and never relabel a fill running on another thread)."""
     company, role = _names(job)
     run.job(company, role, job.get("row"))
-    prev, _RUN = _RUN, run
-    _RUN_STATUS.clear()
+    prev = _current_run()
+    _set_run(run)
+    _run_status().clear()
+    scope = (llm_context.job(run_log.job_label(company, role, job.get("row")), run.id) if label
+             else contextlib.nullcontext())
     try:
-        with llm_context.job(run_log.job_label(company, role, job.get("row")), run.id):
+        with scope:
             out = fn()
     except control.Stopped:
         run.finish("stopped", "you said stop; the tab stays open")
         raise
     finally:
-        _RUN = prev
-    run.finish(_RUN_STATUS.get("status", "no change"), out)
+        _set_run(prev)
+    run.finish(_run_status().get("status", "no change"), out)
     return out
 
 
@@ -353,8 +373,8 @@ def _run_application(
         if not job.get("role") and result.title:
             job["role"] = result.title
         company, role = _names(job, result)
-        if _RUN is not None and (company, role) != _names({}):
-            _RUN.job(company, role, job.get("row"))
+        if _current_run() is not None and (company, role) != _names({}):
+            _current_run().job(company, role, job.get("row"))
 
         result.tab = tab
         tabs.update(tab, company=company, role=role, ats=result.ats, form_url=result.form_url)
@@ -423,7 +443,7 @@ def _logged_followup(trigger: str):
     def deco(fn):
         @functools.wraps(fn)
         def wrapper(entry: dict, *args):
-            return _run_logged(run_log.start(trigger), _job_of(entry), lambda: fn(entry, *args))
+            return _run_logged(run_log.start(trigger), _job_of(entry), lambda: fn(entry, *args), label=False)
         return wrapper
     return deco
 

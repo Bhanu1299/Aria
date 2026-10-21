@@ -38,6 +38,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_browser, "bring_to_front", lambda name: browser["fronted"].append(name))
     monkeypatch.setattr(agent_browser, "navigate", lambda *a, **k: None)
     monkeypatch.setattr(session.walls, "check", lambda tab: None)
+    monkeypatch.setattr(session.browser_profile, "cdp_up", lambda port=0: True)
     monkeypatch.setattr(session.prevent_sleep, "start", lambda: None)
     monkeypatch.setattr(session.prevent_sleep, "stop", lambda: None)
     sheet = []
@@ -288,3 +289,67 @@ def test_done_answer_applied_marks_then_asks_next(env):
 
 def test_done_with_nothing_open(env):
     assert "No application tabs" in commands.handle("applications are done")
+
+
+# ── review fixes ────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", ["send it", "send that", "yes send it", "send"])
+def test_send_is_not_submit(monkeypatch, env, text):
+    a = _filled("Scale AI", 15)
+    env["front"]["names"] = [a["id"]]
+    monkeypatch.setattr(applicator, "submit_entry", lambda e: pytest.fail("'send' submitted an application"))
+    assert commands.handle(text) is None
+
+
+@pytest.mark.parametrize("company,text", [("GitHub", "skip it"), ("Meta", "send me"), ("Adobe", "skip ad"),
+                                          ("Citadel", "close it all"), ("Spotify", "close spotify")])
+def test_everyday_phrases_never_hit_a_company_tab(monkeypatch, env, company, text):
+    _filled(company, 15)
+    monkeypatch.setattr(applicator, "skip_entry", lambda e: pytest.fail("skipped"))
+    monkeypatch.setattr(applicator, "submit_entry", lambda e: pytest.fail("submitted"))
+    assert commands.handle(text) is None and env["browser"]["closed"] == []
+
+
+def test_skip_and_close_company_need_the_job_word(monkeypatch, env):
+    a = _filled("Spotify", 15)
+    got = []
+    monkeypatch.setattr(applicator, "skip_entry", lambda e: got.append(e["id"]) or "Skipped.")
+    assert commands.handle("skip the spotify application") == "Skipped." and got == [a["id"]]
+    assert "Closed" in commands.handle("close the spotify tab")
+
+
+def test_company_match_is_at_word_start(monkeypatch, env):
+    _filled("GitHub", 15)
+    monkeypatch.setattr(applicator, "submit_entry", lambda e: pytest.fail("submitted"))
+    assert commands.handle("submit hub") is None
+
+
+def test_done_marks_submitted_tabs_the_user_already_closed(env):
+    a = _filled("Scale AI", 15, state=tabs.SUBMITTED, submitted_by="aria", note="confirmation seen")
+    tabs.mark_closed(a["id"])
+    out = commands.handle("applications are done")
+    assert env["sheet"] and env["sheet"][0][:2] == (15, sheets.STATUS_APPLIED) and "Scale AI" in out
+
+
+def test_unrelated_words_end_the_applied_question(env):
+    _filled("Ookla", 14)
+    commands.handle("applications are done")
+    assert commands.handle("what's the weather") is None
+    assert commands.handle("yes") is None and env["sheet"] == []
+
+
+def test_reattach_does_nothing_when_chrome_is_not_running(monkeypatch, env):
+    a = _filled("Scale AI", 15)
+    monkeypatch.setattr(session.browser_profile, "cdp_up", lambda port=0: False)
+    monkeypatch.setattr(agent_browser, "attach", lambda wanted: pytest.fail("launched Chrome to reattach"))
+    assert session.reattach() == 0 and tabs.get(a["id"])["state"] == tabs.FILLED
+
+
+def test_fill_one_error_leaves_entry_open_not_filling(monkeypatch, env):
+    def broken(*a, **k):
+        raise RuntimeError("Chrome went away")
+    monkeypatch.setattr(agent_browser, "navigate", broken)
+    with pytest.raises(RuntimeError):
+        session.fill_one(_row(15, "Scale AI", 4), env["said"].append, ctl=control.RunControl())
+    [e] = tabs.live()
+    assert e["state"] == tabs.OPEN and "Chrome went away" in e["note"]

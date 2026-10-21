@@ -136,7 +136,8 @@ def _generic(job: dict, progress_fn, tab: Optional[str] = None) -> FillResult:
                 f"{job.get('company', 'this company')} using the applicant answers in Context. "
                 f"Leave any field you have no answer for empty. {NEVER_SUBMIT}"
             )
-            status, _data = computer_use.run_loop(goal, context, max_steps=30, progress_fn=progress_fn)
+            with computer_use.no_submit():    # code, not just the prompt, refuses submit
+                status, _data = computer_use.run_loop(goal, context, max_steps=30, progress_fn=progress_fn)
             result.form_url = agent_browser.run(lambda page: page.url)
             empty = dom_browser.find_empty_required_fields()
         result.review = [

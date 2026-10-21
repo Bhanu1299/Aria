@@ -51,6 +51,7 @@ def browser(monkeypatch):
     monkeypatch.setattr(agent_browser, "_page", shared)
     monkeypatch.setattr(agent_browser, "_tabs", {})
     monkeypatch.setattr(agent_browser, "_open_browser", lambda: shared)
+    monkeypatch.setattr(agent_browser, "_connect", lambda: None)
     monkeypatch.setattr(agent_browser, "_activate_chrome", lambda: None)
     return ctx, shared
 
@@ -123,6 +124,7 @@ def test_launch_reports_locked_profile(monkeypatch, tmp_path):
     (tmp_path / "SingletonLock").symlink_to("host-123")
     monkeypatch.setattr(browser_profile, "PROFILE_DIR", str(tmp_path))
     monkeypatch.setattr(browser_profile, "cdp_up", lambda port=0: False)
+    monkeypatch.setattr(browser_profile, "_pid_alive", lambda pid: pid == 123)   # Chrome holding it is alive
     launched = []
     monkeypatch.setattr(browser_profile.subprocess, "Popen", lambda *a, **k: launched.append(a))
     with pytest.raises(RuntimeError, match="without remote debugging"):
@@ -134,3 +136,34 @@ def test_launch_is_noop_when_cdp_up(monkeypatch):
     monkeypatch.setattr(browser_profile, "cdp_up", lambda port=0: True)
     monkeypatch.setattr(browser_profile.subprocess, "Popen", lambda *a, **k: pytest.fail("launched"))
     browser_profile.launch_chrome()
+
+
+def test_closed_shared_page_keeps_tab_bindings(monkeypatch):
+    """Closing Aria's blank tab must not drop the application-tab bindings."""
+    shared = FakePage("about:blank")
+    ctx = FakeContext([shared])
+
+    class Browser:
+        def is_connected(self):
+            return True
+    monkeypatch.setattr(agent_browser, "_browser", Browser())
+    monkeypatch.setattr(agent_browser, "_context", ctx)
+    monkeypatch.setattr(agent_browser, "_page", shared)
+    form = FakePage("https://job-boards.greenhouse.io/scaleai/jobs/1")
+    monkeypatch.setattr(agent_browser, "_tabs", {"apply-15": form})
+    shared.closed = True
+    page = agent_browser.run(lambda page: page)
+    assert page is not shared and not page.closed
+    assert agent_browser.run(lambda page: page, tab="apply-15") is form
+
+
+def test_stale_singleton_lock_from_a_dead_chrome_still_launches(monkeypatch, tmp_path):
+    (tmp_path / "SingletonLock").symlink_to("Some-Mac.local-999999")
+    monkeypatch.setattr(browser_profile, "PROFILE_DIR", str(tmp_path))
+    ups = iter([False, True])
+    monkeypatch.setattr(browser_profile, "cdp_up", lambda port=0: next(ups, True))
+    launched = []
+    monkeypatch.setattr(browser_profile.subprocess, "Popen", lambda *a, **k: launched.append(a))
+    monkeypatch.setattr(browser_profile, "_pid_alive", lambda pid: False)
+    browser_profile.launch_chrome(wait_secs=1)
+    assert launched and not (tmp_path / "SingletonLock").is_symlink()

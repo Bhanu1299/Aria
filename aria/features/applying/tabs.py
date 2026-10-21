@@ -104,11 +104,22 @@ def live() -> list:
     return sorted((e for e in all_entries() if e.get("state") != CLOSED), key=lambda e: e.get("opened", 0))
 
 
+_NOT_COMPANIES = {"it", "this", "that", "one", "me", "them", "all", "everything", "everyone", "the", "a", "an",
+                  "now", "here", "there", "up", "out", "off"}
+
+
+def _starts(company: str, want: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", (company or "").lower())
+    return any("".join(words[i:]).startswith(want) for i in range(len(words)))
+
+
 def by_company(text: str) -> list:
+    """Live tabs whose company starts with these words (at a word start). Short or filler
+    words ("it", "me", "ad") never match, so everyday phrases don't hit a tab."""
     want = _norm(text)
-    if not want:
+    if len(want) < 3 or (text or "").strip().lower() in _NOT_COMPANIES:
         return []
-    return [e for e in live() if want in _norm(e.get("company", "")) or _norm(e.get("company", "")) == want]
+    return [e for e in live() if _starts(e.get("company", ""), want)]
 
 
 def is_open_for(job: dict) -> bool:
@@ -118,4 +129,9 @@ def is_open_for(job: dict) -> bool:
 
 
 def mark_closed(entry_id: str) -> Optional[dict]:
-    return update(entry_id, state=CLOSED)
+    """closed_from keeps what the tab was, so a submitted tab still gets its Applied write."""
+    e = get(entry_id)
+    if e is None:
+        return None
+    return update(entry_id, state=CLOSED, closed_from=e.get("state", "") if e.get("state") != CLOSED
+                  else e.get("closed_from", ""))
