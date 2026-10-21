@@ -12,6 +12,7 @@ from __future__ import annotations
 import html as _html
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import urljoin
@@ -47,6 +48,49 @@ def apply_form_link(html: str, base_url: str) -> Optional[str]:
             continue
         return urljoin(base_url, target)
     return None
+
+
+_COUNTRY_ALIASES = {"united states": {"us", "usa", "u s", "u s a", "united states of america", "america"},
+                    "united kingdom": {"uk", "u k", "great britain", "britain"}}
+_COUNTRY_LABEL = re.compile(r"\bcountry\b|(?:location|country|place) of residence", re.I)
+_SELECTS_JS = """() => Array.from(document.querySelectorAll('select')).map((s, i) => ({
+  i: i, empty: !s.value, visible: s.offsetParent !== null,
+  label: ((s.labels && s.labels[0] && s.labels[0].innerText) || s.getAttribute('aria-label') || '').trim(),
+  options: Array.from(s.options).map(o => o.text.trim())}))"""
+
+
+def _norm_place(text: str) -> str:
+    return re.sub(r"[^a-z]+", " ", (text or "").lower()).strip()
+
+
+def is_country_label(label: str) -> bool:
+    return bool(_COUNTRY_LABEL.search(label or ""))
+
+
+def match_country(options: list, country: str) -> Optional[str]:
+    """The option naming `country` (exactly or by a common alias such as US / USA), else None."""
+    want = _norm_place(country)
+    if not want:
+        return None
+    names = {want} | _COUNTRY_ALIASES.get(want, set())
+    return next((o for o in options if _norm_place(o) in names), None)
+
+
+def _preselect_country(agent_browser, country: str, progress_fn) -> None:
+    """Code first: set an empty, visible country/residence <select> to the bank's country
+    (the LLM loop clicks native selects instead of choosing). Never raises."""
+    try:
+        for sel in agent_browser.run(lambda page: page.evaluate(_SELECTS_JS)):
+            if not (sel["empty"] and sel["visible"] and is_country_label(sel["label"])):
+                continue
+            option = match_country(sel["options"], country)
+            if option:
+                agent_browser.run(lambda page: page.locator("select").nth(sel["i"]).select_option(label=option))
+                if progress_fn:
+                    progress_fn(f"Set {sel['label'].rstrip(':')} to {option}.")
+                time.sleep(1.5)        # the rest of the form renders after this choice
+    except Exception as exc:
+        logger.warning("country preselect failed: %s", exc)
 
 
 @dataclass
@@ -85,6 +129,8 @@ def _generic(job: dict, progress_fn, tab: Optional[str] = None) -> FillResult:
                         progress_fn("That's the job posting. Opening its application form.")
                     agent_browser.navigate(form, settle_secs=3.0)
             context = answer_bank.fillable_answers(answer_bank.load(), job)   # never always-ask answers
+            if context.get("country"):
+                _preselect_country(agent_browser, str(context["country"]), progress_fn)
             goal = (
                 f"Fill out the job application form for {job.get('role', 'this role')} at "
                 f"{job.get('company', 'this company')} using the applicant answers in Context. "
