@@ -8,6 +8,9 @@ Tools:
                    NEVER submits.
   job_outreach_draft — save a job outreach email as a draft in the JOBS Gmail
                    account (GOOGLE_JOBS_ACCOUNT). Never sends; never the personal account.
+  job_outreach   — the outreach loop over the sheet (aria/features/outreach): people →
+                   Coldstart emails → jobs-Gmail drafts or LinkedIn notes in the sheet.
+                   NEVER sends.
 
 Every Google call here uses the jobs account (google_auth.JOBS), never personal.
 
@@ -92,6 +95,7 @@ class ApplyPlugin(_plugin_base.PluginBase):
         registry.register(self._job_from_sheet_tool())
         registry.register(self._apply_job_tool())
         registry.register(self._job_outreach_draft_tool())
+        registry.register(self._job_outreach_tool())
 
     # -- voice helpers -----------------------------------------------------
 
@@ -233,5 +237,26 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 },
                 "required": ["body"],
             },
+            execute=execute,
+        )
+
+    def _job_outreach_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.outreach import pipeline
+            try:
+                return pipeline.run_outreach(progress_fn=self._progress_fn())
+            except Exception as exc:
+                logger.error("job_outreach failed: %s", exc)
+                return "Outreach didn't run — something went wrong reading the sheet."
+
+        return ToolDescriptor(
+            name="job_outreach",
+            description=(
+                "Run job-search outreach over the user's job sheet: for jobs with fit 3+ and no "
+                "contact, find recruiters / hiring managers, look up their emails, and write Gmail "
+                "DRAFTS (jobs account) or LinkedIn notes into the sheet. Never sends anything. Use for "
+                "'do my outreach', 'find recruiters for my jobs', 'draft outreach for the sheet'."
+            ),
+            input_schema={"type": "object", "properties": {}, "required": []},
             execute=execute,
         )

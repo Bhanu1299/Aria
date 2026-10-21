@@ -47,13 +47,23 @@ def build(mdl: dict) -> dict:
     drafts = [d for d in mdl["drafts"] if timedelta(days=m.DRAFT_STALE_DAYS) < now - d["created"] <= WINDOW]
     finish = [j for j in jobs if not m.is_closed(j) and
               (j.status.lower() == "needs human" or j.stage_label == "Form filled (in review)")]
-    linkedin = sorted((j for j in jobs if "linkedin" in j.channels and not j.threads and not j.email
-                       and m.has_applied(j) and not m.is_closed(j)),
+    linkedin = sorted((j for j in jobs if not j.threads and not m.is_closed(j) and (j.linkedin_note or (
+                       "linkedin" in j.channels and not j.email and m.has_applied(j)))),
                       key=lambda j: -(float(j.fit) if (j.fit or "").replace(".", "").isdigit() else 0))
     deadlines = sorted((j for j in jobs if j.deadline and now <= j.deadline <= now + timedelta(days=3)
                         and not m.is_closed(j)), key=lambda j: j.deadline)
     return {"replies": replies, "interviews": interviews, "bounces": bounces, "follow_ups": follow_ups,
             "drafts": drafts, "finish": finish, "linkedin": linkedin, "deadlines": deadlines}
+
+
+def linkedin_item(j) -> str:
+    who, _, where = (j.linkedin_to or j.contact).partition(" — ")
+    profile = f' <a href="{e(where)}" target="_blank" rel="noopener">profile</a>' if where.startswith("http") else ""
+    head = (f'{e(j.company)} — {e(j.role)} <span class="muted small">fit {e(j.fit or "?")}/5'
+            f'{(" · " + e(who)) if who else ""}</span>{profile}')
+    if not j.linkedin_note:
+        return head
+    return head + f'<div class="fix small">Note (Aria, not sent): {e(j.linkedin_note)}</div>'
 
 
 def summary_line(d: dict) -> str:
@@ -94,9 +104,7 @@ def render(mdl: dict) -> str:
         card(f"Drafts to send ({m.DRAFT_STALE_DAYS}+ days old)", d["drafts"],
              lambda x: f'{job(x.get("job"))} · {e(x["to"] or "no recipient")} <span class="muted small">“{e(x["subject"][:50])}”</span>'
              + link({"id": x["thread_id"]}), gm),
-        card("LinkedIn notes to send", d["linkedin"],
-             lambda j: f'{job(j)} <span class="muted small">fit {e(j.fit or "?")}/5{(" · " + e(j.contact)) if j.contact else ""}</span>',
-             empty="Nothing.") .replace("</h3>", '</h3><p class="muted small">From the sheet’s Channel column; Aria can’t see LinkedIn, so some may already be sent.</p>', 1),
+        card("LinkedIn notes to send", d["linkedin"], linkedin_item, empty="Nothing.") .replace("</h3>", '</h3><p class="muted small">From the sheet’s outreach columns; Aria can’t see LinkedIn, so some may already be sent.</p>', 1),
         card("Deadlines in the next 3 days", d["deadlines"], lambda j: f'{job(j)} — {_date(j.deadline)}',
              empty=("None." if mdl.get("has_deadline_col") else "Your sheet has no Deadline column, so there are no deadlines to show.")),
     ]
