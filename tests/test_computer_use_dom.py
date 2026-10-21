@@ -48,6 +48,20 @@ def test_dom_decide_returns_stuck_on_llm_error():
     assert result["action"] == "stuck"
 
 
+def test_dom_decide_retries_once_on_truncated_json():
+    mock_client = MagicMock()
+    mock_client.complete.side_effect = [
+        MagicMock(text='{"action": "type", "selector": "#q", "text": "I am interes'),
+        MagicMock(text='{"action": "type", "selector": "#q", "text": "I am interested"}'),
+    ]
+    with patch("aria.web.computer_use.llm_client", mock_client):
+        result = computer_use._dom_decide(
+            snapshot=SAMPLE_SNAPSHOT, goal="goal", context_data={}, step=3, max_steps=30,
+        )
+    assert result["text"] == "I am interested"
+    assert mock_client.complete.call_count == 2
+
+
 def test_dom_decide_returns_stuck_on_invalid_action():
     mock_client = _mock_llm_response('{"action": "fly", "reason": "invalid"}')
     with patch("aria.web.computer_use.llm_client", mock_client):
@@ -173,6 +187,26 @@ def test_execute_type_with_selector():
         computer_use.execute({"action": "type", "selector": "#search", "text": "AirPods Pro"})
     mock_page.locator.assert_called_with("#search")
     mock_page.locator.return_value.first.fill.assert_called_once_with("AirPods Pro", timeout=3000)
+
+
+def test_execute_type_into_select_picks_option_by_label():
+    mock_page = MagicMock()
+    loc = mock_page.locator.return_value.first
+    loc.evaluate.return_value = "select"
+    with patch("aria.web.agent_browser.run", side_effect=_fake_browser_run(mock_page)):
+        computer_use.execute({"action": "type", "selector": "select[name=v]", "text": "I am not a protected veteran"})
+    loc.select_option.assert_called_once_with(label="I am not a protected veteran", timeout=3000)
+    loc.fill.assert_not_called()
+
+
+def test_execute_type_into_file_input_uploads():
+    mock_page = MagicMock()
+    loc = mock_page.locator.return_value.first
+    loc.evaluate.return_value = "file"
+    with patch("aria.web.agent_browser.run", side_effect=_fake_browser_run(mock_page)):
+        computer_use.execute({"action": "type", "selector": "#resume", "text": "/tmp/resume.pdf"})
+    loc.set_input_files.assert_called_once_with("/tmp/resume.pdf", timeout=3000)
+    loc.fill.assert_not_called()
 
 
 def test_execute_click_coordinates_unchanged():
