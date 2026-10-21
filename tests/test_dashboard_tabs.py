@@ -349,3 +349,30 @@ def test_fetch_calls_falls_back_to_file(tmp_path):
 
 def test_costs_tab_no_data():
     assert "No data" in tabs.costs_tab(None, "none", "boom")
+
+
+# ── Live run: open application tabs ─────────────────────────────────────────
+
+def test_runs_json_includes_live_apps_without_closed(monkeypatch, tmp_path):
+    from aria.dashboard.__main__ import runs_json
+    from aria.features.applying import tabs as apply_tabs
+    from aria.observability import run_log
+    monkeypatch.setattr(apply_tabs, "REGISTRY_PATH", tmp_path / "apply_tabs.json")
+    monkeypatch.setattr(run_log, "LOG_PATH", tmp_path / "run_log.jsonl")
+    a = apply_tabs.add({"row": 15, "company": "Scale AI", "role": "SWE New Grad", "url": "https://x.example/a"})
+    apply_tabs.update(a["id"], state=apply_tabs.FILLED, needs_me=["Pronouns", "Work authorization"],
+                      filled={"secret": {"value": "do not ship"}})
+    b = apply_tabs.add({"row": 16, "company": "SingleStore", "role": "SWE", "url": "https://x.example/b"})
+    apply_tabs.mark_closed(b["id"])
+    out = runs_json()
+    assert out["runs"] == []
+    assert out["apps"] == [{"company": "Scale AI", "role": "SWE New Grad", "row": 15, "state": "filled",
+                            "needs_me": ["Pronouns", "Work authorization"], "note": ""}]
+
+
+def test_live_tab_renders_apps_table():
+    html = tabs.live_tab([], apps=[{"company": "Ookla</script>", "role": "Data Engineer", "row": 14,
+                                    "state": "open", "needs_me": [], "note": "stopped mid-fill"}])
+    assert 'id="apptabs"' in html and 'id="apps-data"' in html
+    assert "Ookla<\\/script>" in html and "Ookla</script>" not in html
+    assert "Open application tabs" in tabs.LIVE_JS and "Fields needing you" in tabs.LIVE_JS

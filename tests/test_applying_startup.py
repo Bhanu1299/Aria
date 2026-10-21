@@ -66,3 +66,27 @@ def test_bring_up_names_chrome(up):
     up["chrome"] = False
     ok, msg = startup.bring_up()
     assert not ok and msg.startswith("Chrome isn't working: Chrome didn't open")
+
+
+def test_python_m_aria_start_stops_when_bring_up_fails(monkeypatch, capsys):
+    import aria.__main__ as cli
+    monkeypatch.setattr(startup, "bring_up", lambda open_dashboard=True: (False, "Coldstart isn't working: x. Stopping."))
+    monkeypatch.setattr(cli, "_run_aria", lambda: pytest.fail("launched Aria anyway"))
+    assert cli.main(["start"]) == 1
+    assert "Coldstart isn't working" in capsys.readouterr().out
+
+
+def test_python_m_aria_start_launches_aria_with_the_run_flag(monkeypatch):
+    import os
+
+    import aria.__main__ as cli
+    monkeypatch.delenv("ARIA_START_APPLICATIONS", raising=False)
+    monkeypatch.setattr(startup, "bring_up", lambda open_dashboard=True: (True, "up"))
+    seen = []
+    monkeypatch.setattr(cli, "_run_aria", lambda: seen.append(os.environ.get("ARIA_START_APPLICATIONS")) or 0)
+    assert cli.main(["start"]) == 0 and seen == ["1"]
+
+
+def test_python_m_aria_usage(capsys):
+    import aria.__main__ as cli
+    assert cli.main([]) == 2 and "python -m aria start" in capsys.readouterr().out

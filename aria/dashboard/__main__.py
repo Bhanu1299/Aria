@@ -2,7 +2,7 @@
 
 Endpoints:
   GET  /                    the page (all tabs)
-  GET  /api/runs            last 10 pipeline runs (Live run tab polls this every 2 s)
+  GET  /api/runs            last 10 pipeline runs + open application tabs (Live run polls every 2 s)
   POST /api/settings/key    {provider, key|null}    add / replace / remove a GateLLM key
   POST /api/settings/test   {provider}              one tiny call through GateLLM
   POST /api/settings/tier   {tier, models: [...]}   edit a tier's model chain
@@ -66,7 +66,7 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
     guard("answers", lambda: answers.render(srcs.get("reviews")))
     guard("applications", lambda: applications.render(mdl) + render.all_jobs_table(mdl))
     guard("health", lambda: health.render(mdl))
-    guard("live", lambda: tabs.live_tab(run_log.read_runs(10) if runs is None else runs))
+    guard("live", lambda: tabs.live_tab(run_log.read_runs(10) if runs is None else runs, apps=open_apps()))
 
     def costs_html() -> str:
         got = calls if calls is not None else costs.fetch_calls()
@@ -78,9 +78,17 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
     return render.page(mdl, built, token)
 
 
+def open_apps() -> list:
+    """Open application tabs for the Live run tab: no filled values, just what to look at."""
+    from aria.features.applying import tabs as apply_tabs
+    return [{"company": e.get("company") or "", "role": e.get("role") or "", "row": e.get("row"),
+             "state": e.get("state", ""), "needs_me": list(e.get("needs_me") or []), "note": e.get("note") or ""}
+            for e in apply_tabs.live()]
+
+
 def runs_json() -> dict:
     from aria.observability import run_log
-    return {"runs": run_log.read_runs(10)}
+    return {"runs": run_log.read_runs(10), "apps": open_apps()}
 
 
 def settings_action(path: str, body: dict) -> tuple:
