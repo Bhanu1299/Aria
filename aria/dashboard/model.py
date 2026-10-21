@@ -35,6 +35,7 @@ _SUFFIXES = re.compile(r"\b(inc|llc|ltd|corp|corporation|co|company|technologies
 _NO_CONTACT = re.compile(r"(?i)^(via |no |none|n/?a|-|tbd|apply|ats|email draft|draft|gmail draft|inferred)")
 _CONTACT_PREFIX = re.compile(r"(?i)^(linkedin|email|contact|recruiter)\s*:\s*")
 # Written by aria/features/outreach: "LinkedIn (Aria): Name (Title) — profile\nNote: …"
+_OUTREACH_VIA = re.compile(r"(?i)^outreach via row \d+ \((?P<role>.+)\)$")   # sibling role at one company
 _ARIA_NOTE = re.compile(r"(?is)^linkedin \(aria\):\s*(?P<who>.*?)\s*\nnote:\s*(?P<note>.+)$")
 _MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
                                        "oct", "nov", "dec"], start=1)}
@@ -135,6 +136,7 @@ class Job:
     email_status: str = ""
     linkedin_note: str = ""   # a note Aria wrote, ready to send by hand
     linkedin_to: str = ""
+    outreach_via: str = ""    # the role at this company whose outreach covers this one
     found_date: Optional[datetime] = None
     deadline: Optional[datetime] = None
     last_update: Optional[datetime] = None
@@ -242,6 +244,9 @@ def _sheet_job(idx: _Index, row: dict, tab: str, today: datetime) -> Job:
     note = _ARIA_NOTE.match(row.get("Outreach_2", "").strip())
     if note:
         job.linkedin_note, job.linkedin_to = note.group("note").strip(), note.group("who").strip()
+    via = _OUTREACH_VIA.match(row.get("Outreach_2", "").strip())
+    if via:
+        job.outreach_via = via.group("role")
     if re.search(r"(?i)draft ready", " ".join(text_cells)):
         job.add(DRAFT, f"Muse sheet ({ref})", "says a draft is ready")
 
@@ -575,6 +580,8 @@ def next_action(job: Job, now: datetime, outreach_elsewhere: str = "") -> tuple:
         return "Send the draft", "needs_action"
     if outreach_elsewhere:
         return f"Outreach already sent for {outreach_elsewhere}", "waiting"
+    if job.outreach_via:
+        return f"Covered by the outreach for {job.outreach_via}", "waiting"
     if job.linkedin_note or ("linkedin" in job.channels and not job.email):   # a LinkedIn note is planned
         return "Send the LinkedIn note", "needs_action"
     if not job.contact and not job.email:

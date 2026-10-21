@@ -7,6 +7,11 @@ its Status isn't closed, the outreach column is empty, and either "Who to contac
 names nobody (Muse writes placeholders like "Via Breezy ATS") or Aria filled it on an
 earlier run whose draft didn't get written.
 
+One company gets one outreach (plan() groups rows by dashboard.model.company_slug):
+the highest-fit row carries it and names every role; sibling rows get "Outreach via
+row N (Role)". A company is skipped when any of its rows — qualifying or not —
+already has outreach, an address, or a contact the user named.
+
 Per company:
   1. contacts.find_people() → 1–3 people → "Who to contact" (placeholder kept after them)
   2. Coldstart find_emails (cache-first by domain) → channel.choose(): one contact + channel
@@ -23,7 +28,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from aria.dashboard.model import contact_name, emails_in, is_company_address
+from aria.dashboard.model import company_slug, contact_name, emails_in, is_company_address
 from aria.features.outreach import channel, feedback, writer
 from aria.features.outreach import contacts as finder
 from aria.integrations import google_auth, sheets
@@ -47,7 +52,7 @@ class Target:
     jobs: list = field(default_factory=list)
     domain: str = ""
     people: list = field(default_factory=list)
-    new_people: bool = False        # found this run (→ written to "Who to contact")
+    new_people: bool = False        # found this run, not read back from the sheet
     contact: object = None          # the one Person this company's outreach goes to
     channel: str = ""               # channel.EMAIL | channel.LINKEDIN
     why: str = ""
@@ -102,14 +107,41 @@ def who_cell(people: list, existing: str) -> str:
     return f"{names} | {existing}" if existing else names
 
 
-def targets(jobs: list[dict]) -> list[Target]:
-    out = []
+def contacted(job: dict) -> bool:
+    """This row already shows outreach, an address, or a contact the user (not Aria) named."""
+    fields = job.get("fields") or {}
+    who = fields.get(sheets.COL_WHO, "")
+    if fields.get(sheets.COL_OUTREACH, "").strip():
+        return True
+    if any(is_company_address(e) for e in emails_in(who, fields.get("Outreach", ""))):
+        return True
+    return bool(contact_name(who)) and FOUND_NOTE not in fields.get(sheets.COL_UPDATES, "")
+
+
+def plan(jobs: list[dict]) -> tuple[list[Target], list[tuple]]:
+    """(targets, skipped) — one Target per company; skipped = [(job, reason)] for logging."""
+    groups: dict[str, list] = {}
     for j in jobs:
-        if needs_contact(j):
-            out.append(Target(j["company"], [j]))
-        elif found_earlier(j):
-            out.append(Target(j["company"], [j], people=people_from_who((j.get("fields") or {}).get(sheets.COL_WHO, ""))))
-    return out
+        if j.get("company"):
+            groups.setdefault(company_slug(j["company"]) or j["company"].lower(), []).append(j)
+    out, skipped = [], []
+    for rows in groups.values():
+        todo = [j for j in rows if needs_contact(j) or found_earlier(j)]
+        if not todo:
+            continue
+        done = next((j for j in rows if contacted(j)), None)
+        if done is not None:
+            skipped += [(j, f"company already contacted on row {done['row']} ({done['role']})") for j in todo]
+            continue
+        todo.sort(key=lambda j: -fit_score(j))          # stable: equal fits keep sheet order
+        earlier = next((j for j in todo if found_earlier(j)), None)
+        people = people_from_who((earlier.get("fields") or {}).get(sheets.COL_WHO, "")) if earlier else []
+        out.append(Target(todo[0]["company"], todo, people=people))
+    return out, skipped
+
+
+def targets(jobs: list[dict]) -> list[Target]:
+    return plan(jobs)[0]
 
 
 def _say(progress_fn: Optional[Callable[[str], None]], msg: str) -> None:
@@ -155,16 +187,19 @@ def find_email(t: Target, run: run_log.Run) -> None:
 
 
 def write_contacts(t: Target, run: run_log.Run, sheet: sheets.JobSheet) -> str:
-    """Names → "Who to contact" on every row of the target. Returns an error string or ""."""
+    """Names → "Who to contact" on the target's rows that name nobody yet. Returns an error string or ""."""
+    rows = [j for j in t.jobs if not contact_name((j.get("fields") or {}).get(sheets.COL_WHO, ""))]
+    if not rows:
+        return ""
     with run.step("update sheet") as s:
-        for j in t.jobs:
+        for j in rows:
             try:
                 sheet.set_fields(j["row"], {sheets.COL_WHO: who_cell(t.people, (j.get("fields") or {}).get(sheets.COL_WHO, ""))},
                                  note=FOUND_NOTE, company=j["company"], role=j["role"])
             except sheets.SheetError as exc:
                 s.status, s.detail = "error", str(exc)
                 return str(exc)
-        s.detail = f"Who to contact on row{'s' if len(t.jobs) > 1 else ''} " + ", ".join(str(j["row"]) for j in t.jobs)
+        s.detail = f"Who to contact on row{'s' if len(rows) > 1 else ''} " + ", ".join(str(j["row"]) for j in rows)
     return ""
 
 
@@ -208,7 +243,16 @@ def write_outreach(t: Target, cell: str, run: run_log.Run, sheet: sheets.JobShee
         except sheets.SheetError as exc:
             s.status, s.detail = "error", str(exc)
             return str(exc)
-        s.detail = f"outreach on row {t.primary['row']}"
+        p = t.primary
+        for j in t.jobs[1:]:
+            try:
+                sheet.set_fields(j["row"], {sheets.COL_OUTREACH: f"Outreach via row {p['row']} ({p['role']})"},
+                                 company=j["company"], role=j["role"])
+            except sheets.SheetError as exc:
+                s.status, s.detail = "error", str(exc)
+                return str(exc)
+        s.detail = f"outreach on row {p['row']}" + (
+            f"; rows {', '.join(str(j['row']) for j in t.jobs[1:])} point to it" if len(t.jobs) > 1 else "")
     return ""
 
 
@@ -224,11 +268,10 @@ def process(t: Target, sheet: sheets.JobSheet, gmail, search_fn=None, client=Non
             if not t.people:
                 t.outcome = "no contact"
                 return
-            if t.new_people:
-                err = write_contacts(t, run, sheet)
-                if err:
-                    t.outcome = f"not written: {err}"
-                    return
+            err = write_contacts(t, run, sheet)
+            if err:
+                t.outcome = f"not written: {err}"
+                return
             find_email(t, run)
             cell = draft(t, run, gmail)
             if cell:
@@ -270,8 +313,12 @@ def run_outreach(
     try:
         with run.step("read sheet") as s:
             jobs = sheet.jobs()
-            todo = targets(jobs)
-            s.detail = f"{len(jobs)} rows; {len(todo)} need outreach (fit ≥ {MIN_FIT:g}, no outreach yet)"
+            todo, skipped = plan(jobs)
+            rows = sum(len(t.jobs) for t in todo)
+            s.detail = (f"{len(jobs)} rows; {rows} need outreach (fit ≥ {MIN_FIT:g}, no outreach yet) "
+                        f"at {_plural(len(todo))}; {len(skipped)} skipped (company already contacted)")
+        for j, why in skipped:
+            run.decision(j["company"], j["role"], j["row"], False, [why])
     except sheets.SheetError as exc:
         run.finish("error", str(exc))
         return str(exc)
