@@ -374,3 +374,29 @@ def test_skip_is_its_own_run(env):
     run = run_log.read_runs()[0]
     assert run["trigger"] == "skip" and run["status"] == "skipped"
     assert {s["step"]: s["status"] for s in run["steps"]}["update sheet"] == "ok"
+
+
+def test_followups_never_relabel_a_running_job(monkeypatch, env):
+    """A voice follow-up mid-run must not swap the global LLM job label the run's calls use."""
+    from aria.llm import context as llm_context
+    e = _entry(env)
+    during = []
+    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None:
+                        during.append(llm_context.current().get("job")) or row)
+    with llm_context.job("Ookla | Data Engineer | row 14", "run-a"):
+        applicator.skip_entry(e)
+    assert during == ["Ookla | Data Engineer | row 14"]
+
+
+def test_pipeline_run_is_per_thread(env):
+    import threading
+
+    from aria.observability import run_log
+    run = run_log.start("x")
+    seen = []
+    applicator._set_run(run)
+    t = threading.Thread(target=lambda: seen.append(applicator._current_run()))
+    t.start()
+    t.join()
+    assert seen == [None] and applicator._current_run() is run
+    applicator._set_run(None)

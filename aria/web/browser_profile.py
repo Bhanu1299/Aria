@@ -46,12 +46,41 @@ def cdp_up(port: int = CDP_PORT) -> bool:
         return False
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _clear_stale_lock(profile: Path) -> None:
+    """Chrome's SingletonLock is a symlink to "<host>-<pid>". After a crash or power loss
+    it outlives Chrome; remove it (and its siblings) when that pid is gone."""
+    lock = profile / "SingletonLock"
+    try:
+        pid = int(os.readlink(lock).rsplit("-", 1)[-1])
+    except (OSError, ValueError):
+        return
+    if _pid_alive(pid):
+        return
+    logger.info("Removing a stale Chrome profile lock (pid %d is gone)", pid)
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            os.unlink(profile / name)
+        except OSError:
+            pass
+
+
 def launch_chrome(port: int = CDP_PORT, wait_secs: float = 15.0) -> None:
     """Start Chrome on Aria's profile in its own session (so quitting Aria leaves it and its
     tabs open), debug port bound to 127.0.0.1. No-op if it's already up. Raises RuntimeError."""
     if cdp_up(port):
         return
     profile = Path(PROFILE_DIR)
+    _clear_stale_lock(profile)
     if os.path.lexists(profile / "SingletonLock"):
         # Chrome holds the profile but answers no debug port: an old Playwright-launched
         # window, or a crash leftover. Give it a moment in case it's still starting.

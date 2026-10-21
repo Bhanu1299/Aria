@@ -45,10 +45,11 @@ _PAUSE = re.compile(r"pause" + _APPS + r"|hold on|wait")
 _RESUME = re.compile(r"(?:resume|continue|keep going|go on|unpause)" + _APPS)
 _STOP = re.compile(r"stop" + _APPS + r"|stop the run")
 _STOP_EXPLICIT = re.compile(r"stop (?:the |my )?applications?|stop applying")
+# "submit" only — "send it" is an email phrase and must never submit an application.
 _SUBMIT_IT = re.compile(
-    r"(?:yes |ok |okay )?(?:go ahead and )?(?:submit|send)(?: it| that| this| the application| my application|"
+    r"(?:yes |ok |okay )?(?:go ahead and )?submit(?: it| that| this| the application| my application|"
     r" the form| this application| this one)?(?: now)?")
-_SUBMIT_CO = re.compile(r"(?:go ahead and )?(?:submit|send) (?:the )?(?P<co>.+?)(?:'s)?(?: application| form| one| job)?")
+_SUBMIT_CO = re.compile(r"(?:go ahead and )?submit (?:the )?(?P<co>.+?)(?:'s)?(?: application| form| one| job)?")
 _BY_HAND_IT = re.compile(
     r"i(?: have|'ve)? (?:already |just )?(?:submitted|sent)(?: it| the application| my application| this one)?|"
     r"i applied(?: to it)?|mark (?:it|this|the job) (?:as )?applied")
@@ -56,10 +57,12 @@ _BY_HAND_CO = re.compile(r"i(?: have|'ve)? (?:already |just )?(?:submitted|sent|
 _SKIP_IT = re.compile(
     r"skip (?:this |the )?(?:job|application|role|one)|don'?t apply(?: to (?:it|this(?: one)?))?|"
     r"not applying(?: to (?:it|this(?: one)?))?|pass on (?:it|this(?: one| job)?)")
-_SKIP_CO = re.compile(r"skip (?:the )?(?P<co>.+?)(?: application| job| one)?")
+# skip / close by company need the job word ("skip the Spotify application", "close the Spotify
+# tab"), so "skip ad" or "close spotify" stay with music and apps.
+_SKIP_CO = re.compile(r"skip (?:the )?(?P<co>.+?)(?:'s)? (?:application|job|role)")
 _CLOSE_IT = re.compile(r"close (?:it|this|this one|this tab|the tab|this application)")
 _CLOSE_ALL = re.compile(r"close (?:all|everything|all (?:the |my )?(?:tabs|applications|application tabs))")
-_CLOSE_CO = re.compile(r"close (?:the )?(?P<co>.+?)(?: tab| application| one)?")
+_CLOSE_CO = re.compile(r"close (?:the )?(?P<co>.+?)(?:'s)? (?:tab|application|job)")
 _DONE = re.compile(r"(?:the |my )?applications? (?:are|is) (?:done|finished)|i'?m done with (?:the |my )?applications|"
                    r"done with (?:the |my )?applications|finish (?:up )?(?:the |my )?applications")
 _YES = re.compile(r"(?:yes|yeah|yep)(?: i (?:did|applied))?|applied|i applied(?: to it)?|i did")
@@ -165,7 +168,10 @@ def _ask_next() -> str:
 
 
 def _done() -> str:
-    live = [e for e in _open_tabs() if not e.get("sheet_marked")]
+    # Submitted tabs the user already closed still get their Applied write.
+    closed_submitted = [dict(e, state=tabs.SUBMITTED) for e in tabs.all_entries()
+                        if e.get("state") == tabs.CLOSED and e.get("closed_from") == tabs.SUBMITTED]
+    live = [e for e in _open_tabs() + closed_submitted if not e.get("sheet_marked")]
     if not live:
         return "No application tabs are waiting on the sheet. Every tab stays open."
     marked, errors, unconfirmed, filling = [], [], [], []
@@ -214,6 +220,7 @@ def _answer(q: str) -> Optional[str]:
         e = tabs.get(_asking.pop(0))
         lead = f"OK, {_label(e)} stays as it is. " if e else ""
         return lead + _ask_next()
+    _asking.clear()          # moved on: a later "yes" must never mark a job Applied
     return None
 
 

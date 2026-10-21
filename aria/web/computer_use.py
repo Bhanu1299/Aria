@@ -18,12 +18,14 @@ from __future__ import annotations
 from aria.llm import gateway_client
 
 import base64
+import contextlib
 import hashlib
 import json
 import logging
 import random
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -594,22 +596,66 @@ def _claude_research_decide(
         return {"action": "stuck", "reason": f"Claude error: {exc}"}
 
 
+_guard = threading.local()
+_SUBMIT_WORDS = re.compile(r"\b(?:submit|send|apply|finish|complete)\b", re.I)
+_ADVANCE_WORDS = re.compile(r"^\s*(?:next|continue|save(?: and| &) continue|save)\b", re.I)
+_REFUSED_KEYS = re.compile(r"^(?:enter|return|numpadenter)$|^(?:meta|control|cmd|command)\+w$", re.I)
+_TARGET_JS = """el => { const t = el.closest('button, a, input, [role=button]') || el;
+  return {tag: t.tagName.toLowerCase(), type: (t.type || '').toLowerCase(),
+          text: ((t.innerText || t.value || t.getAttribute('aria-label') || '') + '').trim().slice(0, 80)}; }"""
+
+
+@contextlib.contextmanager
+def no_submit():
+    """On this thread, execute() refuses Enter, close-tab keys and clicks on anything that
+    looks like it sends the form — code backing the prompt's never-submit rule."""
+    prev = getattr(_guard, "on", False)
+    _guard.on = True
+    try:
+        yield
+    finally:
+        _guard.on = prev
+
+
+def is_submit_like(info: dict) -> bool:
+    text = (info or {}).get("text") or ""
+    if _ADVANCE_WORDS.match(text):
+        return False
+    return (info or {}).get("type") == "submit" or bool(_SUBMIT_WORDS.search(text))
+
+
 def execute(action: dict) -> None:
     """
     Execute one action on the page via the browser worker thread.
     All Playwright calls happen inside agent_browser.run() on the correct thread.
+    Inside no_submit(), anything that would send the form or close the tab raises ValueError.
     """
     act = action.get("action", "")
+    guarded = getattr(_guard, "on", False)
+    if guarded and act == "key" and _REFUSED_KEYS.match(str(action.get("key", "")).replace(" ", "")):
+        raise ValueError(f"refused key {action.get('key')!r}: Aria never submits or closes an application")
+
+    def _check(page, target) -> None:
+        if guarded and target is not None and is_submit_like(target):
+            raise ValueError(f"refused click on {target.get('text')!r}: Aria never submits an application")
 
     def _do(page):
         if act == "click":
             if "selector" in action:
-                page.locator(action["selector"]).first.click(timeout=3000)
+                loc = page.locator(action["selector"]).first
+                _check(page, loc.evaluate(_TARGET_JS, timeout=3000) if guarded else None)
+                loc.click(timeout=3000)
             else:
-                page.mouse.click(int(action.get("x", 0)), int(action.get("y", 0)))
+                x, y = int(action.get("x", 0)), int(action.get("y", 0))
+                if guarded:
+                    el = page.evaluate_handle("([x, y]) => document.elementFromPoint(x, y)", [x, y]).as_element()
+                    _check(page, el.evaluate(_TARGET_JS) if el is not None else None)
+                page.mouse.click(x, y)
         elif act == "click_text":
             _ct = action.get("text", "").replace('"', '\\"')
-            page.locator(f'text="{_ct}"').first.click(timeout=3000)
+            loc = page.locator(f'text="{_ct}"').first
+            _check(page, loc.evaluate(_TARGET_JS, timeout=3000) if guarded else None)
+            loc.click(timeout=3000)
         elif act == "type":
             if "selector" in action:
                 loc = page.locator(action["selector"]).first

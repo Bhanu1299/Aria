@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import patch, MagicMock
 import aria.web.computer_use as computer_use
 
@@ -326,3 +327,40 @@ def test_run_loop_stays_on_dom_for_a_lone_native_select():
     assert status == "confirm"
     mock_dom.assert_called()
     mock_vision.assert_not_called()
+
+
+def test_no_submit_guard_refuses_enter_and_close_keys(monkeypatch):
+    import pytest as _pytest
+
+    from aria.web import computer_use
+    pressed = []
+
+    class Keyboard:
+        def press(self, k):
+            pressed.append(k)
+
+    class Page:
+        keyboard = Keyboard()
+    monkeypatch.setattr(computer_use.agent_browser, "run", lambda fn, tab=None: fn(Page()))
+    with computer_use.no_submit():
+        for key in ("Enter", "Return", "NumpadEnter", "Meta+w", "Control+W"):
+            with _pytest.raises(ValueError, match="never"):
+                computer_use.execute({"action": "key", "key": key})
+        computer_use.execute({"action": "key", "key": "Tab"})
+    computer_use.execute({"action": "key", "key": "Enter"})        # outside the guard: allowed
+    assert pressed == ["Tab", "Enter"]
+
+
+@pytest.mark.parametrize("info,bad", [
+    ({"tag": "button", "type": "submit", "text": "Submit"}, True),
+    ({"tag": "button", "type": "submit", "text": "Next"}, False),          # multi-page forms advance
+    ({"tag": "button", "type": "button", "text": "Submit application"}, True),
+    ({"tag": "input", "type": "submit", "text": "Send"}, True),
+    ({"tag": "a", "type": "", "text": "Apply now"}, True),
+    ({"tag": "button", "type": "button", "text": "Accept"}, False),
+    ({"tag": "button", "type": "button", "text": "Add another"}, False),
+    ({"tag": "input", "type": "text", "text": ""}, False),
+])
+def test_is_submit_like(info, bad):
+    from aria.web import computer_use
+    assert computer_use.is_submit_like(info) is bad

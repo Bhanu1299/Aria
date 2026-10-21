@@ -75,35 +75,50 @@ def _prepare(page):
     return page
 
 
-def _open_browser():
-    """Connect to (launching if needed) the visible Chrome. Must be called on the worker thread."""
-    global _browser, _context, _page
-    if _context is not None and _page is not None:
-        try:
-            if not _page.is_closed():
-                _ = _page.url   # liveness check
-                return _page
-        except Exception:
-            pass
-        logger.warning("Browser connection is dead — reconnecting")
-        if _browser is not None:
-            disconnect_cdp(_browser)
-        _browser = _context = _page = None
-        _tabs.clear()
+def _connected() -> bool:
+    try:
+        return _browser is not None and _context is not None and _browser.is_connected()
+    except Exception:
+        return False
 
+
+def _connect() -> None:
+    """Connect to (launching if needed) the visible Chrome. Worker thread only. A dead
+    connection is dropped and rebuilt; the caller re-binds tabs (session.reattach)."""
+    global _browser, _context, _page
+    if _connected():
+        return
+    if _browser is not None:
+        logger.warning("Browser connection is dead — reconnecting")
+        disconnect_cdp(_browser)
+    _browser = _context = _page = None
+    _tabs.clear()
     logger.info("Connecting to the visible Chrome window...")
     launch_chrome()
     _browser, _context = connect_cdp()
-    _page = _prepare(_context.new_page())
     logger.info("Visible browser ready.")
+
+
+def _open_browser():
+    """The shared page, (re)opened on demand — closing it never drops the named tabs."""
+    global _page
+    _connect()
+    try:
+        if _page is not None and not _page.is_closed():
+            return _page
+    except Exception:
+        pass
+    blank = next((pg for pg in _context.pages if pg.url == "about:blank" and not pg.is_closed()
+                  and all(pg is not t for t in _tabs.values())), None)
+    _page = _prepare(blank or _context.new_page())
     return _page
 
 
 def _get_page(tab):
     """The shared page (tab=None) or a named tab, opened on first use. Worker thread only."""
-    page = _open_browser()
     if tab is None:
-        return page
+        return _open_browser()
+    _connect()
     named = _tabs.get(tab)
     if named is not None:
         try:
@@ -244,9 +259,9 @@ def current_gate() -> Optional[Callable[[], None]]:
 def attach(wanted: dict) -> set:
     """Bind each name to an open tab showing the same host + path. Returns the names bound."""
     def _do():
-        _open_browser()
+        _connect()
         bound = set()
-        taken = {id(p) for p in _tabs.values()} | {id(_page)}
+        taken = {id(p) for p in _tabs.values()} | ({id(_page)} if _page is not None else set())
         for name, url in wanted.items():
             if _live(name) is not None:
                 bound.add(name)
