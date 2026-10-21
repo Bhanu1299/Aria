@@ -50,3 +50,14 @@ def _user_stores_in_tmp(tmp_path, monkeypatch):
     (tests that need their own path still patch it themselves)."""
     monkeypatch.setattr("aria.features.answer_bank.BANK_PATH", tmp_path / "answer_bank.json")
     monkeypatch.setattr("aria.state.db.DB_PATH", str(tmp_path / "aria.db"))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_chrome(tmp_path, monkeypatch):
+    """No test launches or connects to the real Chrome: it runs detached and would outlive
+    the test run. The application-tab registry lives in tmp."""
+    def _refuse(*args, **kwargs):
+        raise RuntimeError("real Chrome blocked in tests — patch aria.web.agent_browser.run/navigate")
+    monkeypatch.setattr("aria.web.agent_browser.launch_chrome", _refuse)
+    monkeypatch.setattr("aria.web.agent_browser.connect_cdp", _refuse)
+    monkeypatch.setattr("aria.features.applying.tabs.REGISTRY_PATH", tmp_path / "apply_tabs.json")
