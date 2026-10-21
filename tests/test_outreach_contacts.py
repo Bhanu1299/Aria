@@ -173,14 +173,14 @@ def test_run_outreach_writes_who_to_contact_for_qualifying_rows(monkeypatch):
                         lambda *a, **k: [c.Person("Pat Lee", "Recruiter", "search")])
     monkeypatch.setattr(pipeline.channel, "find_emails", lambda domain, people, **k: people)
     monkeypatch.setattr(pipeline.writer, "linkedin_note", lambda t: None)
-    pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail=object())
+    pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail_data={}, gmail=object())
     assert svc.written() == {"'Sheet1'!H2": "Pat Lee (Recruiter) | Via Greenhouse",
                              "'Sheet1'!L2": "2026-10-20: Aria found contacts"}
 
 
 def test_run_outreach_with_nothing_to_do():
     sheet, svc = _sheet([_row("Acme", "ML Engineer", who="Pat Lee (Recruiter)")])
-    assert "already has outreach" in pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail=object())
+    assert "already has outreach" in pipeline.run_outreach(sheet=sheet, search_fn=lambda q: [], gmail_data={}, gmail=object())
     assert svc.writes == []
 
 

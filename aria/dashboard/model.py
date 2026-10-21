@@ -331,7 +331,7 @@ def build(sources: dict, now: Optional[datetime] = None) -> dict:
     me = gmail.get("me", "")
     threads_out = []
     for t in gmail.get("threads", []):
-        info = _thread_info(t, me)
+        info = thread_info(t, me)
         if info is None:
             continue
         threads_out.append(info)
@@ -382,7 +382,7 @@ def build(sources: dict, now: Optional[datetime] = None) -> dict:
             "coldstart": cs}
 
 
-def _thread_info(t: dict, me: str) -> Optional[dict]:
+def thread_info(t: dict, me: str) -> Optional[dict]:
     """Outreach thread: its first message is mine, not a reply, to a company address."""
     msgs = t.get("messages", [])
     if not msgs or not msgs[0]["from_me"] or msgs[0]["is_reply"] or _REPLY_SUBJECT.match(msgs[0]["subject"]):
