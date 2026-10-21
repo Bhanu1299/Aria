@@ -360,10 +360,11 @@ here so the code can be checked against them.
 | # | Step | Owner | Status |
 |---|---|---|---|
 | 1 | Muse writes job rows to the sheet (`Sheet1`; blank Status = new) | Muse | in use |
-| 2 | Find the people behind a posting: posting → search API → LinkedIn browse (read-only, low volume) | Aria | planned |
-| 3 | Find their emails, cache-first by company domain | Coldstart | planned |
+| 2 | Find the people behind a posting: posting → team pages → search results → GitHub org | Aria | built (`aria/features/outreach`) |
+| 3 | Find their emails, cache-first by company domain | Coldstart | built (called via its Python API) |
 | 4 | Fill the application and **stop for the user's review** | Aria | built: Greenhouse adapter, generic fallback |
-| 5 | Create Gmail **drafts**: Aria never sends | Aria | draft tool built; outreach writing planned |
+| 5 | Outreach: Gmail **drafts** (jobs account) or LinkedIn notes in the sheet. Aria never sends | Aria | built |
+| 6 | Replies and bounces → Coldstart `record_feedback` | Aria | built |
 
 Aria owns every runtime step. Claude is one model behind GateLLM, not a
 component of the pipeline.
@@ -394,6 +395,32 @@ flowchart LR
 - Every step writes `aria.db.application_runs` and a flight-log job entry with
   that job's LLM cost, keyed by sheet row. `daily_check.py report` prints
   per-row spend.
+
+### Steps 2, 3, 5, 6 in detail: outreach
+
+`aria/features/outreach/pipeline.py` is the entry point ("do my outreach", the
+`job_outreach` tool, or `python -m aria.features.outreach`).
+
+- **Which rows:** fit ≥ 3, open Status, empty outreach column, and nobody named in
+  "Who to contact". Rows are grouped by company, so **one company gets one
+  outreach**: the highest-fit row carries it and names every role, and sibling rows
+  get "Outreach via row N". A company is skipped if any of its rows already shows
+  outreach or a contact the user named.
+- **People** (`contacts.py`, code only): the posting, the company's team pages
+  (robots.txt respected), LinkedIn search results ("Name - Title - Company"), and the
+  GitHub org's public members. Ranked by title keywords: recruiters, then
+  engineering leaders, founders, engineers. The top 3 go to "Who to contact".
+- **Channel** (`channel.py`, code only): Coldstart `find_emails`, then
+  `recommend_channel`. Email when the address is verified, published, or a
+  catch-all/unknown guess at ≥ 0.8 confidence; otherwise LinkedIn.
+- **Writing** (`writer.py`): the frontier tier writes only the body. Code adds the
+  greeting, the `<Role> — <Name>` subject (the dashboard links threads with it), the
+  sign-off and the length checks. Email → jobs-Gmail draft; LinkedIn → a ≤ 300-char
+  note in the outreach column, listed on the dashboard's Today tab.
+- **Feedback** (`feedback.py`): each run first records new replies and bounces in the
+  jobs Gmail with Coldstart. An outcome Coldstart already has is skipped.
+- **Dry run:** everything runs except the writes (drafts, sheet, feedback); a report
+  goes to `~/.aria/outreach/`.
 
 ### Storage split
 
