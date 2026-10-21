@@ -6,7 +6,8 @@ A row qualifies (needs_contact) when its fit ("Profile alignment /5") is ≥ MIN
 its Status isn't closed, "Who to contact" names nobody (Muse writes placeholders like
 "Via Breezy ATS") and the outreach column is empty. For each, contacts.find_people()
 picks 1–3 people and their names go to "Who to contact"; the placeholder is kept
-after them so nothing the user wrote is lost.
+after them so nothing the user wrote is lost. Coldstart then looks up their emails
+(cache-first by domain) and channel.choose() picks the one contact + channel.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from aria.dashboard.model import contact_name, emails_in, is_company_address
+from aria.features.outreach import channel
 from aria.features.outreach import contacts as finder
 from aria.integrations import sheets
 from aria.observability import run_log
@@ -33,6 +35,9 @@ class Target:
     jobs: list = field(default_factory=list)
     domain: str = ""
     people: list = field(default_factory=list)
+    contact: object = None          # the one Person this company's outreach goes to
+    channel: str = ""               # channel.EMAIL | channel.LINKEDIN
+    why: str = ""
 
     @property
     def primary(self) -> dict:
@@ -81,6 +86,19 @@ def find_contacts(t: Target, run: run_log.Run, search_fn=None, client=None) -> N
         t.people = finder.find_people(t.company, t.domain, urls, search_fn=search_fn, client=client)
         s.detail = f"{t.company} ({t.domain or 'no domain'}): " + (
             ", ".join(f"{p.label()} [{p.source}]" for p in t.people) or "nobody found")
+
+
+def find_email(t: Target, run: run_log.Run) -> None:
+    with run.step("find email") as s:
+        if t.domain:
+            channel.find_emails(t.domain, t.people, company=t.company)
+        else:
+            s.detail = "no company domain, so no email lookup; "
+        pick = channel.choose(t.people)
+        if pick:
+            t.contact, t.channel, t.why = pick
+            addr = channel.email_of(t.contact)
+            s.detail += f"{t.contact.label()} via {t.channel}" + (f" <{addr}>" if t.channel == channel.EMAIL else "") + f" — {t.why}"
 
 
 def write_contacts(t: Target, run: run_log.Run, sheet: sheets.JobSheet) -> str:
@@ -142,7 +160,10 @@ def run_outreach(
             errors.append(t.company)
             continue
         found += 1
+        find_email(t, run)
+    emails = sum(1 for t in todo if t.channel == channel.EMAIL)
     summary = f"Found people at {found} of {len(todo)} compan{'y' if len(todo) == 1 else 'ies'}"
+    summary += f", {emails} reachable by email" if found else ""
     summary += f"; {len(errors)} failed ({', '.join(errors[:3])})." if errors else "."
     run.finish("ok" if found else "no change", summary)
     return summary + (" Their names are in Who to contact." if found else "")

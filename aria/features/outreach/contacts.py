@@ -23,7 +23,7 @@ import html as _html
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
@@ -100,6 +100,7 @@ class Person:
     url: str = ""             # where they were found (LinkedIn profile, page, GitHub user)
     email: str = ""           # only when the source published it
     score: int = 0
+    lookup: dict = field(default_factory=dict)   # Coldstart's find_emails result (channel.py)
 
     def label(self) -> str:
         return f"{self.name} ({self.title})" if self.title else self.name
