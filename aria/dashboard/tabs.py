@@ -213,7 +213,7 @@ color:var(--ink);border-radius:6px;padding:8px 10px;cursor:pointer;font:inherit}
 .rt{font-weight:600;font-size:13px}.badge{display:inline-block;margin-top:4px;font-size:11px;padding:1px 7px;border-radius:9px;background:var(--bar)}
 .st-error td:nth-child(2),.badge.st-error{color:var(--bad)}.st-running td:nth-child(2),.badge.st-running{color:var(--accent)}
 .st-not-in-this-run td{color:var(--muted)}.steps{margin-bottom:12px}
-#apptabs{margin-bottom:14px}.badge.st-filled{color:var(--warn)}.badge.st-submitted{color:var(--ok)}.badge.st-filling{color:var(--accent)}.badge.st-open{color:var(--bad)}
+#apptabs{margin-bottom:14px}#apptabs .badge{white-space:nowrap}.badge.st-filled{color:var(--warn)}.badge.st-submitted{color:var(--ok)}.badge.st-filling{color:var(--accent)}.badge.st-open{color:var(--bad)}
 ul.decisions{padding-left:18px}ul.decisions li{margin:4px 0}ul.decisions li.picked b{color:var(--ok)}
 h3.sub3{margin:18px 0 8px}details{border-top:1px solid var(--line);padding:6px 0}summary{cursor:pointer}
 #providers input,#tiers input{padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink);width:240px;max-width:100%}
