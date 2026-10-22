@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 PROFILE_DIR = str(Path.home() / ".aria" / "browser_profile")
 CDP_PORT = 9333
 CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_APP = CHROME_BIN.split("/Contents/MacOS/")[0]
 _CHROME_LOG = Path.home() / ".aria" / "logs" / "chrome.log"
 _ARGS = [
     "--no-first-run",
@@ -103,12 +104,15 @@ def launch_chrome(port: int = CDP_PORT, wait_secs: float = 15.0) -> None:
                            "quit that Chrome window and try again.")
     profile.mkdir(parents=True, exist_ok=True)
     _CHROME_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with _CHROME_LOG.open("ab") as log:
-        subprocess.Popen(
-            [CHROME_BIN, f"--user-data-dir={profile}", f"--remote-debugging-port={port}",
-             "--remote-debugging-address=127.0.0.1", "--window-size=1280,900", *_ARGS],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
-        )
+    _CHROME_LOG.touch()
+    # `open -g` launches without activating, so starting Chrome never pulls the user out of a
+    # full-screen app; -n = a separate instance even when the user's own Chrome is running.
+    subprocess.Popen(
+        ["open", "-g", "-n", "-a", CHROME_APP, "--stdout", str(_CHROME_LOG), "--stderr", str(_CHROME_LOG),
+         "--args", f"--user-data-dir={profile}", f"--remote-debugging-port={port}",
+         "--remote-debugging-address=127.0.0.1", "--window-size=1280,900", *_ARGS],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
     deadline = time.time() + wait_secs
     while time.time() < deadline:
         if cdp_up(port):

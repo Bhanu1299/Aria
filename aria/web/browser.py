@@ -8,7 +8,7 @@ Headless Chromium that never steals focus. Supports two operations:
   extract_links(url) → navigate + return top external URLs from the page (list[str])
 
 Module-level helper:
-  goto(url)          → open url in the user's default browser via macOS `open`
+  goto(url)          → open url in a background tab of Aria's Chrome
 
 Thread safety: all Playwright calls run on _browser_thread.
 fetch() and extract_links() are safe to call from any thread.
@@ -19,7 +19,6 @@ from __future__ import annotations
 from aria.core import paths as _aria_paths
 
 import queue
-import subprocess
 import threading
 import time
 import logging
@@ -84,32 +83,21 @@ def is_garbage(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Module-level helper — open a URL in the default browser (no headless)
+# Module-level helper — open a URL for the user, in Aria's Chrome
 # ---------------------------------------------------------------------------
 
 def goto(url: str) -> None:
-    """Open url in the user's default browser using macOS `open`.
-
-    This does NOT use the headless Playwright browser — it delegates to the
-    OS so the user's real browser opens the page.
-
-    Args:
-        url: Fully-qualified URL to open (must start with http/https).
+    """Open url in a new background tab of Aria's own Chrome — not the user's default
+    browser, and without taking focus (Aria works in one browser only).
 
     Raises:
-        RuntimeError: If the `open` command fails (e.g. url is malformed).
+        ValueError: url isn't http(s).
     """
     if not url.startswith(("http://", "https://")):
         raise ValueError(f"goto() requires an http/https URL, got: {url!r}")
-    try:
-        subprocess.run(["open", url], check=True, capture_output=True, text=True)
-        logger.info("Opened in default browser: %s", url)
-    except subprocess.CalledProcessError as exc:
-        logger.error("open failed for %s: %s", url, exc.stderr.strip())
-        raise RuntimeError(f"Failed to open {url}: {exc.stderr.strip()}") from exc
-    except FileNotFoundError as exc:
-        logger.error("'open' command not found — not running on macOS?")
-        raise RuntimeError("'open' command not found — macOS required.") from exc
+    import aria.web.agent_browser as agent_browser
+    agent_browser.open_in_tab(url)
+    logger.info("Opened in Aria's Chrome: %s", url)
 
 # ---------------------------------------------------------------------------
 # JavaScript — extract readable body text, strip boilerplate

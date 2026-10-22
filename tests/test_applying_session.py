@@ -35,7 +35,6 @@ def env(monkeypatch, tmp_path):
     browser = {"closed": [], "fronted": [], "attached": None}
     monkeypatch.setattr(agent_browser, "front_tabs", lambda names: [n for n in names if n in front["names"]])
     monkeypatch.setattr(agent_browser, "close_tab", lambda name: browser["closed"].append(name) or True)
-    monkeypatch.setattr(agent_browser, "bring_to_front", lambda name: browser["fronted"].append(name))
     monkeypatch.setattr(agent_browser, "navigate", lambda *a, **k: None)
     monkeypatch.setattr(session.walls, "check", lambda tab: None)
     monkeypatch.setattr(session.browser_profile, "cdp_up", lambda port=0: True)
@@ -139,7 +138,6 @@ def test_fill_one_opens_its_own_tab_and_fills_there(monkeypatch, env):
     out = session.fill_one(_row(15, "Scale AI", 4), env["said"].append, ctl=ctl)
     assert out == "Greenhouse form filled."
     assert seen["entry"]["company"] == "Scale AI" and seen["gate"] == ctl.checkpoint
-    assert env["browser"]["fronted"] == [seen["entry"]["id"]]
 
 
 def test_fill_one_waits_at_a_wall_then_continues(monkeypatch, env):
@@ -148,8 +146,7 @@ def test_fill_one_waits_at_a_wall_then_continues(monkeypatch, env):
     monkeypatch.setattr(session, "WALL_POLL_SECS", 0.01)
     monkeypatch.setattr(applicator, "run_application", lambda job, **kw: "filled")
     assert session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=control.RunControl()) == "filled"
-    assert env["said"] == ["Ookla is showing a CAPTCHA. Please clear it in the tab in front; I'll wait."]
-    assert len(env["browser"]["fronted"]) >= 2                         # opened, then brought back for the wall
+    assert env["said"] == ["Ookla is showing a CAPTCHA. Please clear it in its tab in Aria's Chrome; I'll wait."]
 
 
 def test_fill_one_stop_leaves_tab_open(monkeypatch, env):
@@ -414,7 +411,7 @@ def test_one_wall_timeout_one_announcement_no_repeat_wait(monkeypatch, env):
     monkeypatch.setattr(applicator, "run_application", run_application)
     session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=control.RunControl())
     assert [s for s in env["said"] if "CAPTCHA" in s] == [
-        "Ookla is showing a CAPTCHA. Please clear it in the tab in front; I'll wait."]
+        "Ookla is showing a CAPTCHA. Please clear it in its tab in Aria's Chrome; I'll wait."]
 
 
 @pytest.mark.parametrize("how,said", [("stop", "Stopped after 1 application"), ("crash", "hit an error and stopped")])

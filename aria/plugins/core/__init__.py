@@ -226,7 +226,7 @@ class CorePlugin(_plugin_base.PluginBase):
             display = params.get("display_name") or site.capitalize()
             try:
                 browser_goto(url)
-                return f"Opening {display}."
+                return f"{display} is open in a tab in Aria's Chrome."
             except Exception as exc:
                 logger.error("navigate failed: %s", exc)
                 return f"I couldn't open {display}."

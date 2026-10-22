@@ -11,6 +11,29 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import aria.screen.screen_qa as screen_qa
+from aria.screen import consent
+
+
+@pytest.fixture(autouse=True)
+def asked_about_screen():
+    """These tests are about answering; the user did ask about their screen."""
+    consent.set_request("what's on my screen")
+    yield
+    consent.set_request("")
+
+
+def test_screen_is_never_read_unless_the_request_asks(tmp_path):
+    """Live 2026-10-22: a garbled transcript made the agent screenshot the user's game."""
+    consent.set_request("What's going on? What happened?")
+    with patch.object(screen_qa.subprocess, "run", side_effect=AssertionError("captured the screen")):
+        assert screen_qa.answer("what's going on") == consent.REFUSAL
+        assert screen_qa.explain_visual("what happened") == consent.REFUSAL
+        assert screen_qa._capture() is None
+    for said in ("what's on my screen", "what am I looking at", "explain the highlighted text",
+                 "what does this error mean", "take a screenshot", "show me where the save button is"):
+        assert consent.asked(said), said
+    for said in ("what's going on", "open youtube", "what's the weather", "apply to some jobs"):
+        assert not consent.asked(said), said
 
 
 def _fake_vision_client(reply_text: str) -> MagicMock:

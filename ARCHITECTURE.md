@@ -422,6 +422,22 @@ user. Each application writes `~/.aria/reviews/<stem>.md` (summary: filled · un
   (`aria/features/applying/commands.py`), triggered by the user's own words, can
   click submit, and it refuses if the tab isn't showing the reviewed form.
 
+### One browser, never in your way (standing rules, set by the user 2026-10-22)
+
+1. **Aria works in one browser: its own Chrome** (`aria/web/agent_browser.py`), like a
+   browser agent working only in the tabs it was given. Every page Aria opens — "open
+   YouTube", a scene's URL, a coder preview, a job listing, vision lookups — is a tab
+   there (`browser.goto` → `agent_browser.open_in_tab`), never the user's default browser.
+2. **It never takes focus.** New tabs are created in the background (CDP
+   `Target.createTarget(background=true)`; Playwright's `new_page()` raised the window),
+   Chrome is launched with `open -g`, and nothing raises the window — no walls, no run
+   start, not even "open my dashboard". macOS never jumps out of a full-screen app. The
+   window is always there to click on.
+3. **The screen is read only when asked.** Whole-screen captures (screen_look /
+   screen_point, the app-control screen read, a saved screenshot) check the words of
+   the command being handled (`aria/screen/consent.py`, set by the dispatcher) and refuse
+   unless they ask about the screen ("what's on my screen", "this error", "highlighted").
+
 ### Applications in front (standing rules, non-negotiable)
 
 Set by the user 2026-10-21. Code that touches applications is checked against these.
@@ -431,12 +447,13 @@ Set by the user 2026-10-21. Code that touches applications is checked against th
    "let's apply to some jobs" / "start applications" brings up GateLLM, Coldstart
    (a library: import check), the dashboard and Aria's Chrome, health-checking each
    in that order. The first failure is named and nothing else starts. Then the
-   dashboard opens in a visible tab on Live run. The run speaks only for a wall
+   dashboard opens in a background tab on Live run. The run speaks only for a wall
    (CAPTCHA / login / privacy notice), and once when finished, saying how many answers
    are missing from the answer bank. Progress goes to the terminal/log.
 2. **Applications run in front, never in the background.** Every form fill happens
    in a visible, headed Chrome window. No headless mode for applications, ever.
-   Each application opens in its own new tab. Aria never closes an application tab:
+   Each application opens in its own new tab — in the background: Aria's Chrome never
+   takes focus (see "One browser, never in your way"). Aria never closes an application tab:
    only "close it" (the tab in front / "close <company>") or "close all" do.
    Background is fine for everything else (Gmail, contacts, Coldstart, sheet reads).
 3. **Submitting** happens only on the user's words; Aria never clicks submit by
@@ -455,8 +472,9 @@ Set by the user 2026-10-21. Code that touches applications is checked against th
    by URL on start. One job at a time, fit-score order (fit desc, then row). "Submit
    it" = the tab in front, "submit <company>" = that tab, unclear → ask. "Pause"
    holds before the next browser call (between fields); "stop" ends the run, tabs
-   stay open. CAPTCHA (a *visible* challenge), login wall or email code → that tab
-   comes to front, Aria says so and waits. Jobs already Applied or already open in
+   stay open. CAPTCHA (a *visible* challenge), login wall or email code → Aria says
+   which company's tab needs it and waits; the tab is not raised — the user switches
+   to Aria's Chrome when ready. Jobs already Applied or already open in
    a tab are skipped. At most 10 open application tabs. `caffeinate` for the whole run.
 
 ```mermaid

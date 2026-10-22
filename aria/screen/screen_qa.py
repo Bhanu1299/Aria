@@ -62,7 +62,12 @@ def _get_client():
 
 
 def _capture(path: str = _SCREENSHOT_PATH) -> str | None:
-    """Silently screenshot the main display and resize it. Returns path or None."""
+    """Silently screenshot the main display and resize it. Returns path or None.
+    Refuses (None) unless the user's request asked about the screen (screen/consent.py)."""
+    from aria.screen import consent
+    if not consent.asked():
+        logger.info("screen capture refused: the request didn't ask about the screen")
+        return None
     try:
         subprocess.run(
             ["screencapture", "-x", "-m", "-t", "jpg", path],
@@ -118,6 +123,9 @@ def answer(query: str) -> str:
     Returns:
         Spoken answer string. Never raises.
     """
+    from aria.screen import consent
+    if not consent.asked():
+        return consent.REFUSAL
     shot = _capture()
     if shot is None:
         return (
@@ -170,6 +178,9 @@ def explain_visual(query: str) -> str:
     Returns the spoken answer string. Never raises; a failed overlay never
     blocks the spoken answer.
     """
+    from aria.screen import consent
+    if not consent.asked():
+        return consent.REFUSAL
     shot = _capture()
     if shot is None:
         return (

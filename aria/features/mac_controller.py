@@ -406,6 +406,9 @@ end tell''')
 # ---------------------------------------------------------------------------
 
 def _screenshot() -> str:
+    from aria.screen import consent
+    if not consent.asked():
+        return consent.REFUSAL
     filename = f"Screenshot {_time.strftime('%Y-%m-%d at %H.%M.%S')}.png"
     desktop = os.path.expanduser(f"~/Desktop/{filename}")
     r = subprocess.run(
@@ -851,7 +854,10 @@ def read_screen_region(app_name: str) -> str:
 
 
 def _layer3_screen_read(app_name: str) -> str:
-    """Layer 3 wrapper — returns spoken response."""
+    """Layer 3 wrapper — returns spoken response. Only when the user asked about the screen."""
+    from aria.screen import consent
+    if not consent.asked():
+        return consent.REFUSAL
     return read_screen_region(app_name)
 
 

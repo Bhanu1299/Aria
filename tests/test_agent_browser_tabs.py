@@ -52,7 +52,6 @@ def browser(monkeypatch):
     monkeypatch.setattr(agent_browser, "_tabs", {})
     monkeypatch.setattr(agent_browser, "_open_browser", lambda: shared)
     monkeypatch.setattr(agent_browser, "_connect", lambda: None)
-    monkeypatch.setattr(agent_browser, "_activate_chrome", lambda: None)
     return ctx, shared
 
 
@@ -116,10 +115,61 @@ def test_window_title_strips_chrome_suffix():
     assert agent_browser.strip_window_title("Ookla Careers - Apply - Google Chrome - Aria") == "Ookla Careers - Apply"
 
 
-def test_bring_to_front_fronts_page(browser):
+def test_tabs_never_come_to_front(browser):
+    """Aria's Chrome never takes focus: no tab is fronted, and there's no API to do it."""
     agent_browser.run(lambda page: None, tab="apply-15")
-    agent_browser.bring_to_front("apply-15")
-    assert agent_browser._tabs["apply-15"].fronted == 1
+    name = agent_browser.open_in_tab("https://example.com/")
+    assert name.startswith("link-") and agent_browser.has_tab(name)
+    assert all(p.fronted == 0 for p in agent_browser._tabs.values())
+    assert not hasattr(agent_browser, "bring_to_front")
+
+
+def test_new_tabs_are_created_in_the_background(monkeypatch):
+    """Target.createTarget(background=True): Chrome doesn't switch to the tab or raise its window."""
+    sent = []
+    made = FakePage()
+
+    class Cdp:
+        def send(self, method, params):
+            sent.append((method, params))
+
+        def detach(self):
+            pass
+
+    class Browser:
+        def new_browser_cdp_session(self):
+            return Cdp()
+
+    class Expect:
+        value = made
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class Ctx:
+        def expect_page(self, timeout=0):
+            return Expect()
+
+        def new_page(self):
+            pytest.fail("new_page() brings the tab to front")
+    monkeypatch.setattr(agent_browser, "_browser", Browser())
+    monkeypatch.setattr(agent_browser, "_context", Ctx())
+    assert agent_browser._new_tab() is made
+    assert sent == [("Target.createTarget", {"url": "about:blank", "background": True})]
+
+
+def test_chrome_launches_without_activating(monkeypatch, tmp_path):
+    monkeypatch.setattr(browser_profile, "PROFILE_DIR", str(tmp_path / "profile"))
+    monkeypatch.setattr(browser_profile, "_CHROME_LOG", tmp_path / "chrome.log")
+    ups = iter([False, True])
+    monkeypatch.setattr(browser_profile, "cdp_up", lambda port=0: next(ups, True))
+    launched = []
+    monkeypatch.setattr(browser_profile.subprocess, "Popen", lambda *a, **k: launched.append(a[0]))
+    browser_profile.launch_chrome(wait_secs=1)
+    assert launched[0][:3] == ["open", "-g", "-n"]                 # -g: don't bring Chrome forward
 
 
 def test_close_tab_forgets_name(browser):

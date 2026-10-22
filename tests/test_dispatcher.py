@@ -185,3 +185,13 @@ def test_timer_done_speaks_and_notifies(monkeypatch):
     SystemPlugin(speaker=speaker)._timer_done("pasta")
     speaker.say.assert_called_once_with("Your pasta timer is done.")
     assert sent == ["Your pasta timer is done."]
+
+
+def test_every_command_sets_the_screen_consent_words():
+    """Screen captures check the words of the command being handled — follow-ups included."""
+    from aria.screen import consent
+    d, _agent = _dispatcher()
+    d.handle("what's on my screen")
+    assert consent.asked()
+    d.handle("what's going on")
+    assert not consent.asked()

@@ -342,9 +342,9 @@ def _check_jobs_followup(question: str) -> Optional[str]:
 
     # "Apply for the third job" / "open the first listing" → open in browser
     if url and _APPLY_RE.search(question):
-        import webbrowser
-        webbrowser.open(url)
-        return f"Opening the job listing for {job['title']} at {job['company']}."
+        from aria.web.browser import goto
+        goto(url)                       # Aria's Chrome, background tab
+        return f"The job listing for {job['title']} at {job['company']} is open in a tab in Aria's Chrome."
 
     # Detail questions ("tell me more", "what's the salary") → vision screenshot
     if url:

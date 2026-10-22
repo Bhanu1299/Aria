@@ -213,8 +213,9 @@ def play_youtube_video(query: str) -> str:
             return "Couldn't find that on YouTube."
 
         url = f"https://www.youtube.com/watch?v={video_id}"
-        subprocess.Popen(["open", url])
-        return f"Opening YouTube for {query}."
+        from aria.web.browser import goto
+        goto(url)                       # Aria's Chrome, background tab
+        return f"Opened YouTube for {query} in a tab in Aria's Chrome."
 
     except subprocess.TimeoutExpired:
         return "YouTube took too long to respond."

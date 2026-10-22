@@ -52,6 +52,8 @@ class Dispatcher:
         self.pre_handlers = list(pre_handlers)
 
     def handle(self, text: str) -> DispatchResult:
+        from aria.screen import consent
+        consent.set_request(text)          # screen captures check these words (screen/consent.py)
         before = meter.snapshot()
         result = self._route(text)
         result.usage = meter.since(before)

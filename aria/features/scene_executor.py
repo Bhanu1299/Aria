@@ -146,7 +146,8 @@ def _open_url(url: str) -> None:
     if not url:
         return
     try:
-        subprocess.run(["open", url], check=False, timeout=10)
+        from aria.web.browser import goto
+        goto(url)                       # Aria's Chrome, background tab
     except Exception as exc:
         logger.error("open_url(%r) failed: %s", url, exc)
 

@@ -145,11 +145,11 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
 
 
 def wait_wall(entry: dict, kind: str, say, ctl: Optional[control.RunControl]) -> bool:
-    """Bring the tab to front, note what's blocking, wait until it's gone. False on timeout."""
+    """Say what's blocking and wait until it's gone. False on timeout. The tab is NOT raised:
+    Aria's Chrome never takes focus; the user switches to it when they're ready."""
     tab, company = entry["id"], entry.get("company") or "This job"
-    agent_browser.bring_to_front(tab)
     label = walls.NAMES.get(kind, "something only you can clear")
-    _speak(say, f"{company} is showing {label}. Please clear it in the tab in front; I'll wait.")
+    _speak(say, f"{company} is showing {label}. Please clear it in its tab in Aria's Chrome; I'll wait.")
     deadline = time.time() + WALL_TIMEOUT_SECS
     while time.time() < deadline:
         if ctl is not None:
@@ -176,7 +176,6 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
         if job.get("url"):
             with agent_browser.use_tab(tab, gate=gate):
                 agent_browser.navigate(job["url"], settle_secs=2.0)
-            agent_browser.bring_to_front(tab)
             kind = walls.check(tab)
             if kind and not wait_wall(entry, kind, say, ctl):
                 tabs.update(tab, state=tabs.OPEN, note=f"blocked by {walls.NAMES[kind]}")

@@ -208,9 +208,10 @@ def _run_server(command: str, cwd: str) -> str:
             out, err = proc.communicate()
             return f"Server exited early:\n{(out + err).decode()[:500]}"
 
-        # Open browser
+        # Open the preview in Aria's Chrome (background tab)
         try:
-            subprocess.Popen(["open", f"http://localhost:{port}"])
+            from aria.web.browser import goto
+            goto(f"http://localhost:{port}")
         except Exception:
             pass
 

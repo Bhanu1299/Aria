@@ -14,16 +14,22 @@ Public API:
   use_tab(name, gate=None)              context manager: this thread's tab=None calls go to
                                         `name`; gate() runs before each of them (pause/stop)
   attach({name: url})                   bind names to already-open tabs by host + path
-  has_tab / close_tab / bring_to_front / front_tabs(names)
+  open_in_tab(url)                      "open X": a new background tab, returns its name
+  has_tab / close_tab / front_tabs(names)
   close()                               disconnect (Chrome keeps running) and stop the worker
 
 tab: None is the shared page every tool uses. A name (e.g. "apply-15") gets its own
 tab in the same window, so a form left open for review survives other browsing.
+
+Aria's Chrome never takes focus: new tabs open in the background, nothing raises the
+window, and macOS never jumps out of a full-screen app — even for "open X" requests.
+The window is there to look at whenever the user clicks it.
 """
 
 from __future__ import annotations
 
 import contextlib
+import itertools
 import logging
 import queue
 import re
@@ -58,6 +64,7 @@ _browser = None
 _context = None
 _page = None
 _tabs: dict = {}      # name → Page, for work that must not be navigated away
+_link_seq = itertools.count(1)   # open_in_tab names: link-1, link-2, …
 
 _local = threading.local()   # caller-thread defaults set by use_tab()
 
@@ -111,7 +118,7 @@ def _open_browser():
         pass
     blank = next((pg for pg in _context.pages if pg.url == "about:blank" and not pg.is_closed()
                   and all(pg is not t for t in _tabs.values())), None)
-    _page = _prepare(blank or _context.new_page())
+    _page = _prepare(blank or _new_tab())
     return _page
 
 
@@ -127,9 +134,25 @@ def _get_page(tab):
                 return named
         except Exception:
             pass
-    named = _prepare(_context.new_page())
+    named = _prepare(_new_tab())
     _tabs[tab] = named
     return named
+
+
+def _new_tab():
+    """A tab opened in the background: Chrome doesn't switch to it or raise its window
+    (Playwright's new_page() does both). Falls back to new_page() if CDP refuses."""
+    try:
+        cdp = _browser.new_browser_cdp_session()
+        try:
+            with _context.expect_page(timeout=5000) as info:
+                cdp.send("Target.createTarget", {"url": "about:blank", "background": True})
+            return info.value
+        finally:
+            cdp.detach()
+    except Exception as exc:
+        logger.debug("background tab failed (%s); opening a normal one", exc)
+        return _context.new_page()
 
 
 def _live(name: str):
@@ -189,14 +212,6 @@ def _submit(fn):
 
 def _tab(tab):
     return tab if tab is not None else getattr(_local, "tab", None)
-
-
-def _activate_chrome() -> None:
-    try:
-        subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate'],
-                       capture_output=True, timeout=5)
-    except Exception as exc:
-        logger.debug("couldn't activate Chrome: %s", exc)
 
 
 def _same_page(a: str, b: str) -> bool:
@@ -298,14 +313,12 @@ def close_tab(name: str) -> bool:
     return _submit(_do)
 
 
-def bring_to_front(name: str) -> None:
-    """Show this tab and raise the Chrome window."""
-    def _do():
-        page = _live(name)
-        if page is not None:
-            page.bring_to_front()
-    _submit(_do)
-    _activate_chrome()
+def open_in_tab(url: str, settle_secs: float = 0.0) -> str:
+    """The user asked to open a page: a new background tab in Aria's Chrome (never their
+    default browser, never in front). Returns the tab's name."""
+    name = f"link-{next(_link_seq)}"
+    navigate(url, settle_secs=settle_secs, tab=name)
+    return name
 
 
 def strip_window_title(title: str) -> str:

@@ -46,7 +46,9 @@ class ScreenPlugin(_plugin_base.PluginBase):
         return ToolDescriptor(
             name="screen_look",
             description=(
-                "Look at the user's CURRENT screen and answer their question about it. "
+                "Look at the user's CURRENT screen and answer their question about it. ONLY when "
+                "the user's own words ask about their screen; it refuses otherwise. Everything else "
+                "you do happens in Aria's browser. "
                 "Use for: 'what's on my screen', 'what does this error mean', 'read my screen', "
                 "'explain what is highlighted', 'summarize this', 'what am I looking at', "
                 "'translate the selected text'. If the question references highlighted or "
@@ -69,7 +71,8 @@ class ScreenPlugin(_plugin_base.PluginBase):
         return ToolDescriptor(
             name="screen_point",
             description=(
-                "Look at the user's screen, answer, AND draw labeled boxes directly on the "
+                "ONLY when the user's own words ask about their screen: look at it, answer, AND "
+                "draw labeled boxes directly on the "
                 "screen over the relevant spots. Use when the user wants something located "
                 "or pointed at visually: 'show me where X is', 'point out the error', "
                 "'circle what I should click', 'where is the save button on my screen'. "
