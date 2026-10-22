@@ -4,7 +4,7 @@ Train a custom wake word classifier using MFCC features + RandomForest.
 
 Pipeline:
   1. Load all positive + augmented + negative WAV files
-  2. Extract 20 MFCC features per clip (mean over time axis)
+  2. Extract aria.voice.wake_features per clip (loudest 1 s: MFCC mean/std/delta, 60 floats)
   3. Train RandomForestClassifier
   4. Export to ONNX via skl2onnx
   5. Save checkpoint to models/checkpoints/clf_latest.joblib
@@ -14,6 +14,8 @@ Usage:
 
 Output: models/aria.onnx
 """
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
@@ -27,10 +29,13 @@ from sklearn.model_selection import train_test_split
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # repo root → aria package
+from aria.voice.wake_features import N_FEATURES, wake_features  # noqa: E402
+
 from common import (
     POSITIVE_DIR, NEGATIVE_DIR, AUGMENTED_DIR,
     MODELS_DIR, CHECKPOINTS_DIR, ONNX_MODEL_NAME,
-    SAMPLE_RATE, N_MFCC,
+    SAMPLE_RATE,
 )
 
 N_ESTIMATORS = 200
@@ -38,15 +43,10 @@ RANDOM_STATE = 42
 
 
 def extract_features(wav_path: str) -> np.ndarray:
-    """
-    Extract 20 MFCC features from a WAV file.
-    Returns shape (20,) float32 — mean over time axis.
-    Returns None if file cannot be processed.
-    """
+    """Features the live detector computes (aria.voice.wake_features). None if unreadable."""
     try:
         audio, sr = librosa.load(wav_path, sr=SAMPLE_RATE, mono=True, dtype=np.float32)
-        mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=N_MFCC)
-        return np.mean(mfcc, axis=1).astype(np.float32)
+        return wake_features(audio, sr)
     except Exception as exc:
         print(f"  [warn] Could not process {Path(wav_path).name}: {exc}")
         return None
@@ -106,7 +106,7 @@ def train_and_export(
     print(f"  Checkpoint saved → {ckpt_path}")
 
     # Export to ONNX
-    initial_type = [("float_input", FloatTensorType([None, N_MFCC]))]
+    initial_type = [("float_input", FloatTensorType([None, N_FEATURES]))]
     onnx_model = convert_sklearn(clf, initial_types=initial_type)
     out_path = models / ONNX_MODEL_NAME
     with open(str(out_path), "wb") as f:
