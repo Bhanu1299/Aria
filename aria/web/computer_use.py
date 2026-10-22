@@ -600,8 +600,18 @@ _guard = threading.local()
 _SUBMIT_WORDS = re.compile(r"\b(?:submit|send|apply|finish|complete)\b", re.I)
 _ADVANCE_WORDS = re.compile(r"^\s*(?:next|continue|save(?: and| &) continue|save)\b", re.I)
 _REFUSED_KEYS = re.compile(r"^(?:enter|return|numpadenter)$|^(?:meta|control|cmd|command)\+w$", re.I)
+# Buttons that OPEN an application (Workday's "Apply Manually", "Apply now", "Start application").
+# "apply" alone was refused as a submit word, so the run stalled on the posting page.
+_START_WORDS = re.compile(r"^\s*(?:apply(?: now| manually| for this (?:job|position|role)| to this (?:job|position|role)|"
+                          r"| with (?:resume|linkedin|indeed))|start(?: your| my)? application|i'?m interested)\s*$", re.I)
 _TARGET_JS = """el => { const t = el.closest('button, a, input, [role=button]') || el;
+  // Filled fields around it: its form, or the whole page (React forms often have no <form>).
+  const scope = t.closest('form') || document;
+  const filled = Array.from(scope.querySelectorAll('input, textarea, select')).filter(i =>
+      !['hidden', 'checkbox', 'radio', 'submit', 'button', 'search'].includes((i.type || '').toLowerCase()) &&
+      i.value && String(i.value).trim()).length;
   return {tag: t.tagName.toLowerCase(), type: (t.type || '').toLowerCase(),
+          explicit_submit: (t.getAttribute('type') || '').toLowerCase() === 'submit', filled: filled,
           text: ((t.innerText || t.value || t.getAttribute('aria-label') || '') + '').trim().slice(0, 80)}; }"""
 
 
@@ -620,6 +630,11 @@ def no_submit():
 def is_submit_like(info: dict) -> bool:
     text = (info or {}).get("text") or ""
     if _ADVANCE_WORDS.match(text):
+        return False
+    # Opening a form is not sending one: allowed only when nothing is filled in around it (its
+    # form, else the whole page) and the page didn't mark it type="submit". `filled` missing
+    # (no DOM info) counts as filled.
+    if _START_WORDS.match(text) and not (info or {}).get("explicit_submit") and (info or {}).get("filled", 1) == 0:
         return False
     return (info or {}).get("type") == "submit" or bool(_SUBMIT_WORDS.search(text))
 

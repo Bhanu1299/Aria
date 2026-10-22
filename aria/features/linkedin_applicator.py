@@ -404,16 +404,17 @@ def _find_modal_fields() -> list[dict]:
 
             // Build selector
             let selector = '';
-            if (el.id) {
+            if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) {
                 selector = '#' + CSS.escape(el.id);
-            } else if (el.name) {
+            } else if (el.name && document.querySelectorAll(el.tagName.toLowerCase() + '[name="' + el.name + '"]').length === 1) {
                 selector = el.tagName.toLowerCase() + '[name="' + el.name + '"]';
             } else {
-                const tag = el.tagName.toLowerCase();
-                const siblings = el.parentElement ?
-                    Array.from(el.parentElement.querySelectorAll(':scope > ' + tag)) : [];
-                const idx = siblings.indexOf(el) + 1;
-                selector = tag + ':nth-of-type(' + idx + ')';
+                // A marker unique on the page: tag:nth-of-type(i) matched every i-th child of that type
+                // anywhere, so .first clicked the wrong element (e.g. a hidden 'Skip to main content').
+                let mark = el.getAttribute('data-aria-el');
+                if (!mark) { window.__ariaEl = (window.__ariaEl || 0) + 1; mark = String(window.__ariaEl);
+                           el.setAttribute('data-aria-el', mark); }
+                selector = '[data-aria-el="' + mark + '"]';
             }
 
             // Field type

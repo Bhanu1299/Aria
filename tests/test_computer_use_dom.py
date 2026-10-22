@@ -356,7 +356,9 @@ def test_no_submit_guard_refuses_enter_and_close_keys(monkeypatch):
     ({"tag": "button", "type": "submit", "text": "Next"}, False),          # multi-page forms advance
     ({"tag": "button", "type": "button", "text": "Submit application"}, True),
     ({"tag": "input", "type": "submit", "text": "Send"}, True),
-    ({"tag": "a", "type": "", "text": "Apply now"}, True),
+    ({"tag": "a", "type": "", "text": "Apply now"}, True),                 # no DOM info: assume a filled form
+    ({"tag": "a", "type": "", "text": "Apply now", "filled": 2}, True),     # answers on the page: it sends them
+    ({"tag": "a", "type": "", "text": "Apply now", "filled": 0}, False),    # posting page: it opens the form
     ({"tag": "button", "type": "button", "text": "Accept"}, False),
     ({"tag": "button", "type": "button", "text": "Add another"}, False),
     ({"tag": "input", "type": "text", "text": ""}, False),
