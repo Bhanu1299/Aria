@@ -118,8 +118,25 @@ def launch_chrome(port: int = CDP_PORT, wait_secs: float = 15.0) -> None:
     raise RuntimeError(f"Chrome didn't open its debug port within {wait_secs:.0f} s.")
 
 
+def ensure_window(port: int = CDP_PORT) -> bool:
+    """Open a blank tab if Chrome is running with every window closed (macOS keeps it alive).
+    A windowless Chrome rejects connect_over_cdp ("Browser context management is not
+    supported"). True if a tab was opened."""
+    try:
+        targets = httpx.get(f"http://127.0.0.1:{port}/json/list", timeout=2.0).json()
+        if any(t.get("type") == "page" for t in targets):
+            return False
+        httpx.put(f"http://127.0.0.1:{port}/json/new?about:blank", timeout=5.0)
+        logger.info("Chrome had no windows open; opened a blank tab")
+        return True
+    except Exception as exc:
+        logger.warning("Couldn't check Chrome's open tabs: %s", exc)
+        return False
+
+
 def connect_cdp(port: int = CDP_PORT):
     """(browser, context) for the running Chrome. Closing `browser` only disconnects."""
+    ensure_window(port)
     pw = sync_playwright().start()
     try:
         browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
