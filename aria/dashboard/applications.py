@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from aria.dashboard import model as m
-from aria.dashboard.render import _date, _no_data, _thread_url, e
+from aria.dashboard.render import _date, _no_data, _thread_url, e, initials, pill
 
 FILTERS = [("all", "All"), ("needs_action", "Needs action"), ("waiting", "Waiting"), ("no_contact", "No contact yet"),
            ("replied", "Replied"), ("closed", "Closed")]
@@ -67,6 +67,18 @@ def build(mdl: dict) -> list:
     return companies
 
 
+# Next action: what kind of to-do it is. Response: how it went.
+ACTION_TONE = {"needs_action": "bad", "replied": "bad", "waiting": "warn", "no_contact": "warn", "todo": ""}
+SORTS = [("recent", "Recent activity"), ("fit", "Fit"), ("applied", "Applied date"), ("company", "Company")]
+
+
+def response_pill(text: str) -> str:
+    low = text.lower()
+    tone = ("ok" if low.startswith("replied") or low == "offer" else "bad" if low == "bounced"
+            else "warn" if low == "interview" else "gray")
+    return pill(text, tone)
+
+
 def _role_row(r: dict, me: str) -> str:
     j = r["job"]
     conf = "" if j.email_confidence is None else f" · {j.email_confidence:.2f}"
@@ -81,8 +93,8 @@ def _role_row(r: dict, me: str) -> str:
             f'<td><details><summary>{e(j.role)}</summary><ul class="timeline">{tl}</ul></details></td>'
             f'<td>{e(_date(m.applied_date(j)) or ("yes" if m.has_applied(j) else ""))}</td><td>{contact}</td>'
             f'<td>{e(channel)}</td><td>{e(j.email)}<span class="muted small">{e(conf)}</span></td>'
-            f'<td>{e(_date(r["sent"]))}</td><td>{e(m.response(j))}</td>'
-            f'<td><b>{e(r["action"])}</b></td></tr>')
+            f'<td>{e(_date(r["sent"]))}</td><td>{response_pill(m.response(j))}</td>'
+            f'<td>{pill(r["action"], ACTION_TONE.get(r["bucket"], ""))}</td></tr>')
 
 
 def render(mdl: dict) -> str:
@@ -92,31 +104,47 @@ def render(mdl: dict) -> str:
     me = (g.data or {}).get("me", "") if g is not None and g.ok else ""
     companies = build(mdl)
     counts = {k: sum(1 for c in companies for r in c["roles"] if k == "all" or r["bucket"] == k) for k, _ in FILTERS}
-    pills = "".join(f'<button class="filter{" on" if k == "all" else ""}" data-f="{k}">{e(v)} <span class="count">{counts[k]}</span></button>'
-                    for k, v in FILTERS)
+    tabs = "".join(f'<button type="button" class="utab filter{" on" if k == "all" else ""}" data-f="{k}">{e(v)} '
+                   f'<span class="count">{counts[k]}</span></button>' for k, v in FILTERS)
+    sorts = "".join(f'<option value="{k}">{e(v)}</option>' for k, v in SORTS)
     rows = []
     for c in companies:
-        warn = ' <span class="warnpill">outreach sent for more than one role</span>' if c["dup_outreach"] else ""
-        rows.append(f'<tr class="company" data-fit="{c["best_fit"]}"><td colspan="8"><b>{e(c["company"])}</b>'
+        warn = f' {pill("outreach sent for more than one role", "warn")}' if c["dup_outreach"] else ""
+        applied = max((m.applied_date(r["job"]) for r in c["roles"] if m.applied_date(r["job"])), default=None)
+        rows.append(f'<tr class="company" data-fit="{c["best_fit"]}" data-applied="{e(_date(applied))}" '
+                    f'data-name="{e(c["company"].lower())}"><td colspan="8"><span class="av" aria-hidden="true">'
+                    f'{e(initials(c["company"]))}</span><b>{e(c["company"])}</b>'
                     f' <span class="muted small">{len(c["roles"])} role{"s" if len(c["roles"]) != 1 else ""}</span>{warn}</td></tr>')
         rows.extend(_role_row(r, me) for r in c["roles"])
     head = "".join(f"<th>{e(h)}</th>" for h in ("Role", "Applied", "Contact", "Channel", "Email · confidence",
                                                   "Sent", "Response", "Next action"))
-    return (f'<div class="filters">{pills}</div>'
+    return (f'<section class="card"><div class="utabs filters">{tabs}</div>'
+            '<div class="toolbar"><input id="appq" type="search" placeholder="Search company, role, contact…" autocomplete="off">'
+            f'<label>Sort <select id="appsort">{sorts}</select></label></div>'
             '<p class="muted small" id="nocontact-note" hidden>Applied jobs with nobody to reach out to, best fit first.</p>'
             f'<div class="tablewrap"><table id="apps"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
-            '<p class="muted small">Click a role for its timeline. One company row: outreach goes to one person per company.</p>')
+            '<p class="muted small" id="apps-empty" hidden>No roles match.</p>'
+            '<p class="muted small">Click a role for its timeline. One company row: outreach goes to one person per company.</p>'
+            '</section>')
 
 
+# Filter (tab) + search + sort, all client-side over the rows already on the page.
 JS = r"""
 (function(){var t=document.getElementById('apps');if(!t)return;var tb=t.tBodies[0];var note=document.getElementById('nocontact-note');
-var orig=Array.prototype.slice.call(tb.rows);
-function apply(f){note.hidden=f!=='no_contact';var rows=orig.slice();
-if(f==='no_contact'){rows=rows.filter(function(r){return r.classList.contains('role')&&r.dataset.bucket==='no_contact'});
-rows.sort(function(a,b){return parseFloat(b.dataset.fit)-parseFloat(a.dataset.fit)});tb.textContent='';rows.forEach(function(r){r.style.display='';tb.appendChild(r)});return}
-tb.textContent='';orig.forEach(function(r){tb.appendChild(r)});var show=null;
-orig.forEach(function(r){if(r.classList.contains('company')){show=r;r.style.display='none';r._any=false;return}
-var on=f==='all'||r.dataset.bucket===f;r.style.display=on?'':'none';if(on&&show){show.style.display='';}})}
+var q=document.getElementById('appq'),sortSel=document.getElementById('appsort'),empty=document.getElementById('apps-empty');
+var groups=[],cur=null,f='all';
+Array.prototype.forEach.call(tb.rows,function(r,i){if(r.classList.contains('company')){cur={head:r,roles:[],i:i};groups.push(cur)}else if(cur)cur.roles.push(r)});
+function key(g,s){var d=g.head.dataset;if(s==='fit')return -parseFloat(d.fit||0);if(s==='applied')return d.applied?-Date.parse(d.applied):Infinity;
+if(s==='company')return d.name;return g.i}
+function cmp(a,b){return a<b?-1:a>b?1:0}
+function hit(r,g,s){return !s||(g.head.dataset.name+' '+r.textContent.toLowerCase()).indexOf(s)>=0}
+function apply(){var s=q.value.trim().toLowerCase(),shown=0;note.hidden=f!=='no_contact';tb.textContent='';
+if(f==='no_contact'){var flat=[];groups.forEach(function(g){g.roles.forEach(function(r){if(r.dataset.bucket==='no_contact'&&hit(r,g,s))flat.push(r)})});
+flat.sort(function(a,b){return parseFloat(b.dataset.fit)-parseFloat(a.dataset.fit)});flat.forEach(function(r){r.style.display='';tb.appendChild(r)});
+empty.hidden=flat.length>0;return}
+var so=sortSel.value,gs=groups.slice().sort(function(a,b){return cmp(key(a,so),key(b,so))||a.i-b.i});
+gs.forEach(function(g){var any=false;tb.appendChild(g.head);g.roles.forEach(function(r){var on=(f==='all'||r.dataset.bucket===f)&&hit(r,g,s);
+r.style.display=on?'':'none';if(on){any=true;shown++}tb.appendChild(r)});g.head.style.display=any?'':'none'});empty.hidden=shown>0}
 document.querySelectorAll('.filter').forEach(function(b){b.onclick=function(){document.querySelectorAll('.filter').forEach(function(x){x.classList.remove('on')});
-b.classList.add('on');apply(b.dataset.f)}});apply('all')})();
+b.classList.add('on');f=b.dataset.f;apply()}});q.addEventListener('input',apply);sortSel.addEventListener('change',apply);apply()})();
 """

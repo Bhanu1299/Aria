@@ -4,7 +4,7 @@ from __future__ import annotations
 from rapidfuzz import fuzz, process
 
 from aria.dashboard import model as m
-from aria.dashboard.render import _sources_bar, _thread_url, e
+from aria.dashboard.render import _sources_bar, _thread_url, e, stat
 
 LINK_NOTE = ("Linking is shown as a suggestion only: saving a link needs a place to store it, and the "
              "dashboard may only write to the answer bank and GateLLM keys.")
@@ -26,7 +26,16 @@ def render(mdl: dict) -> str:
     jobs = mdl["jobs"]
     g = mdl["sources"].get("gmail")
     me = (g.data or {}).get("me", "") if g is not None and g.ok else ""
-    out = [f'<h3 class="sub3">Sources</h3>{_sources_bar(mdl["sources"])}']
+    no_date = [j for j in jobs if not j.found_date]
+    nameless = [j for j in jobs if j.email and not j.contact]
+    cs = mdl.get("coldstart") or {}
+    cs_nameless = [c for c in cs.get("contacts", []) if not (c.get("name") or "").strip()]
+    no_conf = [j for j in jobs if j.email and j.email_confidence is None]
+    out = [f'<h3 class="sub3">Sources</h3>{_sources_bar(mdl["sources"])}',
+           '<div class="stats" style="margin-top:16px">'
+           + stat(len(mdl["unmatched"]), "records matching no job") + stat(len(no_date), "jobs missing a found date")
+           + stat(len(nameless) + len(cs_nameless), "contacts missing names") + stat(len(no_conf), "emails with no confidence")
+           + '</div>']
 
     rows = []
     for u in mdl["unmatched"]:
@@ -41,21 +50,16 @@ def render(mdl: dict) -> str:
                + (f'<div class="tablewrap"><table><thead><tr><th>Source</th><th>What it is</th><th>Likely job</th></tr></thead>'
                   f'<tbody>{"".join(rows)}</tbody></table></div>' if rows else '<p class="muted">None.</p>'))
 
-    no_date = [j for j in jobs if not j.found_date]
     out.append(f'<h3 class="sub3">Jobs missing a found date <span class="count">{len(no_date)}</span></h3>'
                '<p class="muted small">The sheet has no found-date column; dates are read from Source / Updates text '
                '(“Oct 20”, “2026-10-20”). Without one, “jobs found this week” can’t count the job.</p>'
                + _job_list(no_date, 40))
 
-    nameless = [j for j in jobs if j.email and not j.contact]
-    cs = mdl.get("coldstart") or {}
-    cs_nameless = [c for c in cs.get("contacts", []) if not (c.get("name") or "").strip()]
     cs_items = "".join(f"<li>Coldstart contact {e(c['email'])} has no name</li>" for c in cs_nameless[:20])
     out.append(f'<h3 class="sub3">Contacts missing names <span class="count">{len(nameless) + len(cs_nameless)}</span></h3>'
                + _job_list(nameless, 40, lambda j: e(j.email))
                + (f"<ul>{cs_items}</ul>" if cs_items else ""))
 
-    no_conf = [j for j in jobs if j.email and j.email_confidence is None]
     out.append(f'<h3 class="sub3">Emails with no confidence <span class="count">{len(no_conf)}</span></h3>'
                '<p class="muted small">The address came from the sheet or Gmail, not from Coldstart, so nothing scored it.</p>'
                + _job_list(no_conf, 40, lambda j: e(j.email) + f' <span class="muted small">'

@@ -49,7 +49,7 @@ def render_page(token: str = "") -> str:
 def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = None, flight: Optional[list] = None,
               runs: Optional[list] = None) -> str:
     """Every tab from already-loaded sources (tests pass fixtures here). Each tab is guarded."""
-    from aria.dashboard import answers, applications, costs, health, model, render, tabs, today
+    from aria.dashboard import answers, applications, costs, health, model, outreach, render, tabs, today
     from aria.dashboard import settings as st
     from aria.observability import run_log
     mdl = model.build(srcs, now)
@@ -62,7 +62,9 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
             logger.exception("dashboard: %s tab failed", key)
             built[key] = render._no_data(f"{type(exc).__name__}: {exc}")
 
-    guard("today", lambda: today.render(mdl) + render.today_extras(mdl))
+    questions = answers.open_count(srcs.get("reviews"))
+    guard("today", lambda: today.render(mdl, questions) + render.today_extras(mdl))
+    guard("outreach", lambda: outreach.render(mdl))
     guard("answers", lambda: answers.render(srcs.get("reviews")))
     guard("applications", lambda: applications.render(mdl) + render.funnel_details(mdl) + render.all_jobs_table(mdl))
     guard("health", lambda: health.render(mdl))
@@ -75,7 +77,19 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
         return tabs.costs_tab(summary, got["via"]) + render.pipeline_cost(mdl)
     guard("costs", costs_html)
     guard("settings", lambda: tabs.settings_tab(st.providers(), st.tiers()))
-    return render.page(mdl, built, token)
+    return render.page(mdl, built, token, badges(mdl, questions))
+
+
+def badges(mdl: dict, questions: Optional[int]) -> dict:
+    """Sidebar counts: Today = what Today lists, Outreach = LinkedIn notes, My answers = open questions."""
+    from aria.dashboard import today
+    try:
+        d = today.build(mdl)
+    except Exception:
+        logger.exception("dashboard: badge counts failed")
+        return {"answers": questions}
+    return {"today": len(d["finish"]) + len(d["interviews"]) + len(d["deadlines"]) + (questions or 0),
+            "outreach": len(d["linkedin"]), "answers": questions}
 
 
 def open_apps() -> list:

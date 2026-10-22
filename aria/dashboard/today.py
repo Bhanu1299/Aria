@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import re
 from datetime import timedelta
-from urllib.parse import quote
+from typing import Optional
 
 from aria.dashboard import model as m
-from aria.dashboard.render import _date, _down, _no_data, _thread_url, e
+from aria.dashboard.render import _date, _down, _no_data, _thread_url, e, label, pill, row
 
 INTERVIEW = re.compile(r"(?i)interview|schedul|availability|phone screen|next steps|chat with|call with")
 WINDOW = timedelta(days=m.NEEDS_ME_WINDOW_DAYS)
@@ -56,85 +56,121 @@ def build(mdl: dict) -> dict:
             "drafts": drafts, "finish": finish, "linkedin": linkedin, "deadlines": deadlines}
 
 
-def linkedin_item(j) -> str:
-    who, _, where = (j.linkedin_to or j.contact).partition(" — ")
-    profile = f' <a href="{e(where)}" target="_blank" rel="noopener">profile</a>' if where.startswith("http") else ""
-    head = (f'{e(j.company)} — {e(j.role)} <span class="muted small">fit {e(j.fit or "?")}/5'
-            f'{(" · " + e(who)) if who else ""}</span>{profile}')
-    if not j.linkedin_note:
-        return head
-    return head + f'<div class="fix small">Note (Aria, not sent): {e(j.linkedin_note)}</div>'
+def _fit(j) -> float:
+    try:
+        return float(j.fit)
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def summary_line(d: dict) -> str:
-    parts = [(len(d["replies"]), "reply to answer", "replies to answer"),
-             (len(d["interviews"]), "interview", "interviews"), (len(d["bounces"]), "bounce", "bounces"),
-             (len(d["follow_ups"]), "follow-up due", "follow-ups due"),
-             (len(d["finish"]), "application to finish", "applications to finish"),
-             (len(d["drafts"]), "draft to send", "drafts to send"),
-             (len(d["linkedin"]), "LinkedIn note to send", "LinkedIn notes to send"),
-             (len(d["deadlines"]), "deadline in 3 days", "deadlines in 3 days")]
-    out = [f"{n} {one if n == 1 else many}" for n, one, many in parts if n]
+def parts(d: dict, questions: Optional[int] = None) -> list:
+    """[(count, singular, plural, link)] in order of urgency; the first non-zero one is Today's headline."""
+    return [(len(d["interviews"]), "interview", "interviews", ""),
+            (len(d["replies"]), "reply to answer", "replies to answer", "#outreach"),
+            (len(d["finish"]), "application to finish", "applications to finish", "#applications"),
+            (len(d["deadlines"]), "deadline in 3 days", "deadlines in 3 days", ""),
+            (questions or 0, "question needs an answer", "questions need answers", "#answers"),
+            (len(d["bounces"]), "bounce", "bounces", "#outreach"),
+            (len(d["follow_ups"]), "follow-up due", "follow-ups due", "#outreach"),
+            (len(d["drafts"]), "draft to send", "drafts to send", "#outreach"),
+            (len(d["linkedin"]), "LinkedIn note to send", "LinkedIn notes to send", "#outreach")]
+
+
+def summary_line(d: dict, questions: Optional[int] = None) -> str:
+    out = [f"{n} {one if n == 1 else many}" for n, one, many, _ in parts(d, questions) if n]
     return " · ".join(out) if out else "Nothing needs you right now."
 
 
-SHOWN = 5        # items per group before "show more"
+SHOWN = 5        # rows per group before "show more" / "view all"
 
 
-def _group(title: str, items: list, item, hint: str = "", down: str = "") -> str:
-    """One to-do group; empty groups render nothing."""
+def group(title: str, items: list, item, hint: str = "", down: str = "", shown: int = SHOWN,
+          more_href: str = "", more_label: str = "") -> str:
+    """One card of rows; empty groups render nothing. Past `shown` rows: a link to the full tab
+    (more_href) or an inline "Show N more"."""
     if down:
-        return f'<div class="todo"><h3>{e(title)}</h3>{_no_data(down)}</div>'
+        return f'<section class="card">{label(title)}{_no_data(down)}</section>'
     if not items:
         return ""
-    lis = lambda xs: "".join(f"<li>{item(i)}</li>" for i in xs)
-    more = (f'<details><summary>Show {len(items) - SHOWN} more</summary><ul>{lis(items[SHOWN:])}</ul></details>'
-            if len(items) > SHOWN else "")
-    hint_html = f'<p class="hint">{e(hint)}</p>' if hint else ""
-    return (f'<div class="todo"><h3>{e(title)} <span class="count">{len(items)}</span></h3>{hint_html}'
-            f'<ul>{lis(items[:SHOWN])}</ul>{more}</div>')
+    rows = lambda xs: "".join(item(i) for i in xs)
+    more = ""
+    if len(items) > shown:
+        more = (f'<p class="more"><a href="{e(more_href)}">{e(more_label)} →</a></p>' if more_href else
+                f'<details class="showmore"><summary>Show {len(items) - shown} more</summary>'
+                f'<div class="rows">{rows(items[shown:])}</div></details>')
+    return f'<section class="card">{label(title, hint, len(items))}<div class="rows">{rows(items[:shown])}</div>{more}</section>'
 
 
-def render(mdl: dict) -> str:
+# What each source's outage hides on Today and Outreach.
+OUTAGE = {"gmail": "replies, bounces, follow-ups and drafts hidden",
+          "sheet": "applications, LinkedIn notes and deadlines hidden",
+          "aria_db": "filled forms and missing-answer counts hidden"}
+
+
+def outage_bar(srcs: dict) -> str:
+    """One amber bar for every source that's down, never a scatter of "no data" lines."""
+    down = [n for n in OUTAGE if _down(srcs, n)]
+    if not down:
+        return ""
+    lines = "<br>".join(f"{e(_down(srcs, n))} — {e(OUTAGE[n])}" for n in down)
+    return f'<div class="alertbar" role="status"><div>{lines}</div><a href="#health">Data health →</a></div>'
+
+
+def hero(now, counts: list, outage: bool) -> str:
+    live = [c for c in counts if c[0]]
+    if live:
+        n, one, many, _ = live[0]
+        head = f'<span class="n">{n}</span> {e(one if n == 1 else many)}'
+        rest = " · ".join((f'<a href="{href}">{n} {e(one if n == 1 else many)}</a>' if href else
+                           f'{n} {e(one if n == 1 else many)}') for n, one, many, href in live[1:])
+    else:
+        head = "No to-dos in the sources that loaded" if outage else "Nothing needs you right now."
+        rest = ""
+    sub = f'<p class="subline">{rest}</p>' if rest else '<p class="subline"></p>'
+    return (f'<section class="card hero"><div class="dlabel">// Today · {now:%a, %b %d}</div>'
+            f'<h1 class="headline">{head}</h1>{sub}<div class="actions"><a class="btn primary" href="#applications">'
+            'Applications →</a><a class="btn" href="#outreach">Outreach →</a></div></section>')
+
+
+def questions_card(n: int) -> str:
+    if not n:
+        return f'<section class="card">{label("Questions waiting")}<p class="muted">No questions waiting.</p></section>'
+    return (f'<section class="card">{label("Questions waiting")}<div class="bignum"><span class="v">{n}</span>'
+            f'<span class="t">question{"s" if n != 1 else ""} from your application forms need{"" if n != 1 else "s"} '
+            'your answer</span><a class="btn" href="#answers">Answer them →</a></div></section>')
+
+
+def render(mdl: dict, questions: Optional[int] = None) -> str:
+    """questions: the "Needs your answer" count from My answers (None = answer bank unreadable)."""
     srcs = mdl["sources"]
     g = srcs.get("gmail")
     me = (g.data or {}).get("me", "") if g is not None and g.ok else ""
     d = build(mdl)
-    link = lambda t: f' · <a href="{e(_thread_url(me, t["id"]))}" target="_blank" rel="noopener">open thread</a>' if me and t.get("id") else ""
-    job = lambda j: f"<b>{e(j.company)}</b> — {e(j.role)}" if j is not None else "(no matching job)"
+    link = lambda t: (f'<a href="{e(_thread_url(me, t["id"]))}" target="_blank" rel="noopener">open thread</a>'
+                      if me and t.get("id") else "")
     missing = {id(i["job"]): i["count"] for i in m.needs_me(mdl)["fields"]} if srcs.get("aria_db") and srcs["aria_db"].ok else {}
 
     def finish(j) -> str:
         human = j.status.lower() == "needs human"
-        state = '<span class="pill bad">Needs you</span>' if human else '<span class="pill warn">Filled, not submitted</span>'
+        state = pill("Needs you", "bad") if human else pill("Filled, not submitted", "warn")
         n = missing.get(id(j), 0)
-        gap = (f' · <a href="#answers">{n} answer{"s" if n != 1 else ""} missing</a>') if n else ""
-        return f'{job(j)} {state}<span class="muted small">{gap}</span>'
+        gap = f'<a href="#answers">{n} answer{"s" if n != 1 else ""} missing</a>' if n else ""
+        return row(j.company, j.role, f"fit {e(j.fit)}/5" if j.fit else "", state + gap)
 
-    gm = _down(srcs, "gmail")
-    groups = [
-        _group("Applications to finish", d["finish"], finish,
-               "Each is open in its own Chrome tab. Answer what's missing, then say “submit it”."),
-        _group("Replies to answer", d["replies"], lambda t: f'{job(t.get("job"))} <span class="muted small">· {e(t["to"])} · last {_date(t["last"])}{link(t)}</span>', down=gm),
-        _group("Interviews", d["interviews"], lambda i: f'{job(i["job"])} <span class="muted small">· {e(i["why"])}'
-               + (link(i["thread"]) if i.get("thread") else "") + "</span>"),
-        _group("Bounced emails", d["bounces"], lambda t: f'{job(t.get("job"))} <span class="muted small">· {e(t["to"])} bounced {_date(t["bounced"])}{link(t)}</span>'
-               f'<div class="fix small">{e(t["fix"])}</div>', down=gm),
-        _group(f"Follow-ups due (no reply in {m.FOLLOW_UP_DAYS}+ days)", d["follow_ups"],
-               lambda t: f'{job(t["job"])} <span class="muted small">· {e(t["to"])} · sent {_date(t["sent"])}{link(t)}</span>', down=gm),
-        _group(f"Drafts waiting to send ({m.DRAFT_STALE_DAYS}+ days old)", d["drafts"],
-               lambda x: f'{job(x.get("job"))} <span class="muted small">· {e(x["to"] or "no recipient")} · “{e(x["subject"][:50])}”'
-               + link({"id": x["thread_id"]}) + "</span>", down=gm),
-        _group("Deadlines in the next 3 days", d["deadlines"], lambda j: f'{job(j)} <span class="muted small">· {_date(j.deadline)}</span>'),
-        _group("LinkedIn notes to send", d["linkedin"], linkedin_item,
-               "From the sheet's outreach columns. Aria can't see LinkedIn, so some may already be sent."),
-    ]
-    body = "".join(groups)
-    down = [n for n in ("sheet", "gmail", "aria_db") if _down(srcs, n)]
-    summary = summary_line(d)
-    if down:                       # an outage is never "nothing needs you"
-        summary = f"{_down(srcs, *down)} — what's below may be incomplete." + \
-            ("" if summary.startswith("Nothing") else f" {summary}")
-    elif not body:
-        body = '<p class="allclear">Nothing needs you right now.</p>'
-    return f'<p class="summary">{e(summary)}</p>{body}'
+    def interview(i) -> str:
+        j = i["job"]
+        return row(j.company if j else "", j.role if j else "", e(i["why"]), link(i["thread"]) if i.get("thread") else "")
+
+    finish_rows = sorted(d["finish"], key=lambda j: -_fit(j))        # stable: no fit → sheet order
+    outage = any(_down(srcs, n) for n in OUTAGE)
+    return "".join([
+        hero(mdl["now"], parts(d, questions), outage),
+        outage_bar(srcs),
+        group("Applications to finish", finish_rows, finish,
+              "each is open in its own Chrome tab; answer what's missing, then say “submit it”",
+              more_href="#applications", more_label="View all in Applications"),
+        questions_card(questions) if questions is not None else "",
+        group("Interviews", d["interviews"], interview),
+        group("Deadlines in the next 3 days", d["deadlines"],
+              lambda j: row(j.company, j.role, right=pill(_date(j.deadline), "warn"))),
+    ])

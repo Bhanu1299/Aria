@@ -25,7 +25,10 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 CACHE_TTL = 300.0
-_BATCH = 50
+# Gmail allows 250 quota units per user per second and threads.get costs 10: 10 reads per
+# batch, then a pause, stays well under it (a batch of 50 was 500 units in one burst).
+_BATCH = 10
+_BATCH_PAUSE = 0.6
 
 
 @dataclass
@@ -144,6 +147,8 @@ def _batch_get(svc, requests: list, sleep: Callable[[float], None] = time.sleep)
             sleep(wait)
         errors = {}
         for start in range(0, len(todo), _BATCH):
+            if start:
+                sleep(_BATCH_PAUSE)
             batch = svc.new_batch_http_request()
             for i in todo[start:start + _BATCH]:
                 def cb(_rid, resp, exc, i=i):
@@ -175,44 +180,58 @@ def _parse_thread(t: dict, me: str) -> dict:
     return {"id": t["id"], "messages": msgs}
 
 
-def fetch_gmail(service=None, days: int = 365) -> dict:
+def _list_all(call: Callable[[Optional[str]], dict], key: str) -> list:
+    items, tok = [], None
+    while True:
+        resp = call(tok)
+        items += resp.get(key, [])
+        tok = resp.get("nextPageToken")
+        if not tok:
+            return items
+
+
+def fetch_gmail(service=None, days: int = 365, cache_path: Optional[Path] = None) -> dict:
+    from aria.dashboard import gmail_cache
     from aria.integrations import google_auth
     svc = service or google_auth.build_service("gmail", "v1", [google_auth.GMAIL_MODIFY],
                                                account=google_auth.JOBS)
     users = svc.users()
     me = users.getProfile(userId="me").execute()["emailAddress"].lower()
+    path = cache_path or gmail_cache.PATH
+    cache = gmail_cache.read(path, me)
 
-    thread_ids, tok = [], None
-    while True:
-        resp = users.threads().list(userId="me", q=f"in:sent newer_than:{days}d", maxResults=500,
-                                    pageToken=tok).execute()
-        thread_ids += [t["id"] for t in resp.get("threads", [])]
-        tok = resp.get("nextPageToken")
-        if not tok:
-            break
-    threads = _batch_get(svc, [users.threads().get(userId="me", id=tid, format="metadata",
-                                                   metadataHeaders=_GMAIL_HDRS) for tid in thread_ids])
+    listed = _list_all(lambda tok: users.threads().list(userId="me", q=f"in:sent newer_than:{days}d", maxResults=500,
+                                                        pageToken=tok).execute(), "threads")
+    threads = {t["id"]: cache["threads"][t["id"]] for t in listed
+               if t["id"] in cache["threads"] and cache["threads"][t["id"]].get("h") == t.get("historyId")}
+    stale = [t for t in listed if t["id"] not in threads]
+    got = _batch_get(svc, [users.threads().get(userId="me", id=t["id"], format="metadata",
+                                               metadataHeaders=_GMAIL_HDRS) for t in stale])
+    for t, raw in zip(stale, got):
+        if raw:
+            threads[t["id"]] = {"h": t.get("historyId"), "t": _parse_thread(raw, me)}
 
-    draft_ids, tok = [], None
-    while True:
-        resp = users.drafts().list(userId="me", maxResults=500, pageToken=tok).execute()
-        draft_ids += [d["id"] for d in resp.get("drafts", [])]
-        tok = resp.get("nextPageToken")
-        if not tok:
-            break
-    drafts_raw = _batch_get(svc, [users.drafts().get(userId="me", id=did, format="metadata")
-                                  for did in draft_ids])
-    drafts = []
-    for d in drafts_raw:
+    # A draft's message id changes whenever it's edited, so it's the cache key.
+    listed_drafts = _list_all(lambda tok: users.drafts().list(userId="me", maxResults=500, pageToken=tok).execute(),
+                              "drafts")
+    drafts = {(d.get("message") or {}).get("id", ""): cache["drafts"][(d.get("message") or {}).get("id", "")]
+              for d in listed_drafts if (d.get("message") or {}).get("id", "") in cache["drafts"]}
+    new = [d for d in listed_drafts if (d.get("message") or {}).get("id", "") not in drafts]
+    for d in _batch_get(svc, [users.drafts().get(userId="me", id=d["id"], format="metadata") for d in new]):
         if not d:
             continue
         m = d.get("message", {})
         h = _headers(m)
-        drafts.append({"id": d["id"], "thread_id": m.get("threadId", ""),
-                       "ts": int(m.get("internalDate", 0)) / 1000.0,
-                       "to": [a.lower() for _, a in getaddresses([h.get("To", ""), h.get("Cc", "")]) if a],
-                       "subject": h.get("Subject", "")})
-    return {"me": me, "threads": [_parse_thread(t, me) for t in threads if t], "drafts": drafts}
+        drafts[m.get("id", "")] = {"id": d["id"], "thread_id": m.get("threadId", ""),
+                                   "ts": int(m.get("internalDate", 0)) / 1000.0,
+                                   "to": [a.lower() for _, a in getaddresses([h.get("To", ""), h.get("Cc", "")]) if a],
+                                   "subject": h.get("Subject", "")}
+
+    gmail_cache.write(path, {"me": me, "threads": threads, "drafts": drafts})   # only what's still listed
+    logger.info("dashboard: Gmail read %d of %d threads, %d of %d drafts (rest cached)",
+                len(stale), len(listed), len(new), len(listed_drafts))
+    return {"me": me, "threads": [threads[t["id"]]["t"] for t in listed if t["id"] in threads],
+            "drafts": list(drafts.values())}
 
 
 def load_gmail() -> Source:

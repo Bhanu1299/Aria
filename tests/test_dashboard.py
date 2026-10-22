@@ -376,8 +376,11 @@ def test_dashboard_has_no_write_calls():
                          r"\.trash\(|\.delete\(|INSERT |UPDATE |DELETE |\.commit\(|record_feedback|find_emails|"
                          r"get_company|set_status|write_text|open\([^)]*['\"][wa]")
     offenders = [f"{p.name}: {mm.group(0)}" for p in sorted((ARIA / "dashboard").glob("*.py"))
-                 if p.name not in ("settings.py", "answers.py") for mm in pattern.finditer(p.read_text())]
+                 if p.name not in ("settings.py", "answers.py", "gmail_cache.py") for mm in pattern.finditer(p.read_text())]
     assert not offenders, offenders
+    # gmail_cache.py writes one file: its own cache under ~/.aria, nothing else.
+    cache_src = (ARIA / "dashboard" / "gmail_cache.py").read_text()
+    assert cache_src.count("write_text(") == 1 and not re.search(r"sqlite3|google|\.execute\(", cache_src)
 
 
 def test_answers_tab_writes_only_through_answer_bank():
@@ -428,11 +431,127 @@ def test_needs_me_skips_old_items_and_non_outreach(srcs):
 
 def test_gmail_outage_says_gmail_unavailable_never_nothing_needs_you(srcs):
     """#5: a Gmail outage used to read as an empty Today."""
-    from aria.dashboard import today
+    from aria.dashboard import outreach, today
     srcs["gmail"] = Source(False, None, "token expired")
-    html = today.render(m.build(srcs, NOW))
-    assert html.count("Gmail (jobs) unavailable") >= 3                   # replies, follow-ups, drafts (+ bounces)
+    mdl = m.build(srcs, NOW)
+    html = today.render(mdl)
+    assert html.count("Gmail (jobs) unavailable") == 1 and html.count('class="alertbar"') == 1   # one amber bar
+    assert "replies, bounces, follow-ups and drafts hidden" in html
     assert "Nothing needs you" not in html
+    out = outreach.render(mdl)                                           # one muted card, no sub-tabs
+    assert out.count("Gmail (jobs) unavailable") == 1 and "utabs" not in out
     down = {k: Source(False, None, "boom") for k in ("sheet", "gmail", "aria_db", "coldstart", "reviews")}
     html = today.render(m.build(down, NOW))
     assert "Gmail (jobs) unavailable" in html and "Nothing needs you" not in html
+
+
+# ── restyle: sidebar, Outreach tab, theme toggle (2026-10-22) ───────────────
+
+def test_page_has_six_tabs_badges_and_theme_toggle(srcs):
+    html = page_from(srcs, NOW, calls={"calls": [], "via": "none"}, flight=[], runs=[])
+    for key in ("today", "applications", "outreach", "answers", "costs", "system"):
+        assert f'id="{key}-tab"' in html and f'href="#{key}"' in html, key
+    assert 'id="themebtn"' in html and "dash.theme" in html               # toggle, remembered per browser
+    assert 'class="nb"' in html                                          # sidebar count badges
+    outreach_tab = html[html.index('id="outreach-tab"'):html.index('id="answers-tab"')]
+    assert "Follow-ups due" in outreach_tab and "LinkedIn notes to send" in outreach_tab
+    today_tab = html[html.index('id="today-tab"'):html.index('id="applications-tab"')]
+    assert "Follow-ups due" not in today_tab                             # email moved off Today
+
+
+def test_today_shows_five_then_links_to_applications(srcs):
+    from aria.dashboard import today
+    srcs["sheet"].data["current"] += [sheet_row(20 + i, f"Co{i}", "Role", Status="Needs human") for i in range(6)]
+    html = today.render(m.build(srcs, NOW), questions=3)
+    finish = html[html.index("Applications to finish"):]
+    assert finish.count('class="row"') >= 5 and "View all in Applications" in finish
+    assert "Answer them" in html and 'class="headline"' in html
+
+
+def test_row_truncates_company_and_escapes():
+    from aria.dashboard.render import initials, row
+    assert initials("Scale AI") == "SA" and initials("Ookla") == "OO" and initials("") == "?"
+    html = row("<b>Co</b>", "Data Engineer")
+    assert "&lt;b&gt;Co&lt;/b&gt;" in html and 'class="co"' in html and "Data Engineer" in html
+
+
+# ── Gmail quota: paced batches + incremental cache (2026-10-22) ─────────────
+
+class _GmailSvc:
+    """Gmail stand-in counting every threads.get / drafts.get the dashboard makes."""
+
+    def __init__(self, threads, drafts=()):
+        self.threads, self.drafts, self.gets = dict(threads), list(drafts), []
+
+    def users(self):
+        svc = self
+
+        class Call:
+            def __init__(self, fn):
+                self.fn = fn
+
+            def execute(self):
+                return self.fn()
+
+        class Threads:
+            def list(self, **kw):
+                return Call(lambda: {"threads": [{"id": k, "historyId": h} for k, h in svc.threads.items()]})
+
+            def get(self, id, **kw):
+                return Call(lambda: svc.gets.append(id) or {"id": id, "messages": [
+                    {"id": id + "m", "internalDate": "1000", "payload": {"headers": [
+                        {"name": "From", "value": ME}, {"name": "To", "value": "pat@acme.test"},
+                        {"name": "Subject", "value": f"hi {svc.threads[id]}"}]}}]})
+
+        class Drafts:
+            def list(self, **kw):
+                return Call(lambda: {"drafts": [{"id": d, "message": {"id": d + "-m1"}} for d in svc.drafts]})
+
+            def get(self, id, **kw):
+                return Call(lambda: svc.gets.append(id) or {"id": id, "message": {
+                    "id": id + "-m1", "threadId": "t" + id, "internalDate": "2000", "payload": {"headers": []}}})
+
+        class Users:
+            def getProfile(self, **kw):
+                return Call(lambda: {"emailAddress": ME})
+
+            def threads(self):
+                return Threads()
+
+            def drafts(self):
+                return Drafts()
+        return Users()
+
+    def new_batch_http_request(self):
+        class Batch:
+            def __init__(self):
+                self.items = []
+
+            def add(self, req, callback):
+                self.items.append((req, callback))
+
+            def execute(self):
+                for req, cb in self.items:
+                    cb(None, req.execute(), None)
+        return Batch()
+
+
+def test_gmail_reload_only_reads_changed_threads(tmp_path, monkeypatch):
+    monkeypatch.setattr(sources, "_BATCH_PAUSE", 0)
+    cache = tmp_path / "gmail.json"
+    svc = _GmailSvc({"t1": "100", "t2": "200"}, drafts=["d1"])
+    first = sources.fetch_gmail(svc, cache_path=cache)
+    assert sorted(svc.gets) == ["d1", "t1", "t2"] and len(first["threads"]) == 2 and len(first["drafts"]) == 1
+    svc.gets.clear()
+    svc.threads["t2"] = "201"                         # a reply landed on t2
+    svc.threads["t3"] = "300"                         # a new thread
+    again = sources.fetch_gmail(svc, cache_path=cache)
+    assert sorted(svc.gets) == ["t2", "t3"]           # t1 and the draft come from the cache
+    assert [t["messages"][0]["subject"] for t in again["threads"]] == ["hi 100", "hi 201", "hi 300"]
+    assert oct(cache.stat().st_mode & 0o777) == "0o600"
+
+
+def test_batch_pauses_between_batches(monkeypatch):
+    waits = []
+    sources._batch_get(_FakeSvc(), [_Req(i) for i in range(25)], sleep=waits.append)
+    assert waits.count(sources._BATCH_PAUSE) >= 2 and sources._BATCH * 10 <= 250    # ≤ Gmail's per-second units

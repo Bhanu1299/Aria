@@ -6,6 +6,7 @@ from datetime import date, datetime
 import pytest
 
 from aria.dashboard import model as m
+from aria.dashboard import outreach as outreach_tab
 from aria.dashboard import today
 from aria.dashboard.sources import Source
 from aria.features.outreach import pipeline, writer
@@ -174,7 +175,7 @@ def test_cost_goes_to_the_flight_log_per_company(monkeypatch):
 
 # ── dashboard ───────────────────────────────────────────────────────────────
 
-def test_today_tab_lists_aria_linkedin_notes_with_the_text():
+def test_outreach_tab_lists_aria_linkedin_notes_with_the_text():
     row = {"_row": 2, "Company": "Acme", "Role": "ML Engineer", "Status": "", "Profile alignment /5": "4",
            "Apply link": "", "Post link": "", "Who to contact": "Pat Lee (Recruiter)",
            "Outreach_2": "LinkedIn (Aria): Pat Lee (Recruiter) — https://linkedin.com/in/patlee\nNote: Hi Pat, hello."}
@@ -184,5 +185,5 @@ def test_today_tab_lists_aria_linkedin_notes_with_the_text():
     assert m.next_action(job, mdl["now"])[0] == "Send the LinkedIn note"
     d = today.build(mdl)
     assert d["linkedin"] == [job]          # listed even before applying
-    html = today.linkedin_item(job)
+    html = outreach_tab.linkedin_row(job)               # the notes live on the Outreach tab now
     assert "Hi Pat, hello." in html and 'href="https://linkedin.com/in/patlee"' in html

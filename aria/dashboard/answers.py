@@ -111,6 +111,15 @@ def cards(bank: dict, reviews: dict) -> tuple:
     return result, skipped
 
 
+def open_count(reviews_src) -> Optional[int]:
+    """How many "Needs your answer" cards there are (Today and the sidebar badge); None if the bank is unreadable."""
+    reviews = reviews_src.data if reviews_src is not None and reviews_src.ok else {}
+    try:
+        return len(cards(ab.load(), reviews)[0])
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Check these (LLM guesses)
 # ---------------------------------------------------------------------------
@@ -271,7 +280,7 @@ def _group_html(g: dict, floor: Optional[int], ask_salary: bool) -> str:
     return (f'<section class="infogroup"><div class="ghead"><h4>{e(g["group"])}</h4>'
             f'<button class="editgroup">Edit</button></div><div class="view">{"".join(view) or "<span class=muted>Nothing here yet.</span>"}</div>'
             f'<div class="edit" hidden><table class="answers"><tbody>{edit}</tbody></table>'
-            '<button class="savegroup">Save</button> <button class="cancelgroup">Cancel</button>'
+            '<button class="savegroup primary">Save</button> <button class="cancelgroup">Cancel</button>'
             ' <span class="result small"></span></div><!--/edit--></section>')
 
 
@@ -288,7 +297,7 @@ def render(reviews_src) -> str:
     out.append(f'<h3 class="sub3">Needs your answer <span class="count">{len(open_cards)}</span></h3>')
     if open_cards:
         out.append(f'<div class="cards">{"".join(_card_html(c) for c in open_cards)}</div>'
-                   '<div class="saveall"><button id="saveall">Save</button> <span id="saveresult" class="result small"></span>'
+                   '<div class="saveall"><button id="saveall" class="primary">Save answers</button> <span id="saveresult" class="result small"></span>'
                    '<span class="muted small"> Answers apply to every form unless you pick “only for”.</span></div>')
     else:
         out.append('<p class="muted">Nothing is waiting on you.</p>')
@@ -304,7 +313,7 @@ def render(reviews_src) -> str:
             ' <span class="result small"></span></td></tr>' for g in guesses[:40])
         out.append(f'<h3 class="sub3">Check these <span class="count">{len(guesses)}</span></h3>'
                    '<p class="muted small">The LLM filled these, not your answers. Keep one to make it yours.</p>'
-                   f'<div class="tablewrap"><table class="answers"><tbody>{trs}</tbody></table></div>')
+                   f'<div class="card"><div class="tablewrap"><table class="answers"><tbody>{trs}</tbody></table></div></div>')
 
     floor = int(bank.get("salary_rule", {}).get("floor") or ab.DEFAULT_SALARY_FLOOR)
     ask_salary = "salary_rule" in (bank.get("always_ask") or [])
@@ -344,16 +353,21 @@ def _short(raw: Optional[str]) -> str:
 
 
 CSS = r"""
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
-.card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--panel)}
-.card .q{font-weight:600;margin-bottom:2px}.cardrow{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
-.cardrow input.ans{flex:1;min-width:160px}.yn button{margin-right:4px}.yn button.on{border-color:var(--accent);color:var(--accent);font-weight:600}
-.scope a{color:var(--muted);margin-right:6px}.scope a.on{color:var(--accent);font-weight:600}
-.saveall{margin:10px 0 4px}.infogroups{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px}
-.infogroup{border:1px solid var(--line);border-radius:8px;padding:8px 12px}.ghead{display:flex;justify-content:space-between;align-items:center}
-.ghead h4{margin:4px 0}.kv{display:flex;gap:10px;padding:2px 0;font-size:13px}.kv .k{color:var(--muted);min-width:150px}
-.kv.unset .k,.kv.unset .v{color:var(--bad);font-weight:600}
+.card .q{font-weight:600;margin-bottom:2px}.cardrow{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.cardrow input.ans{flex:1;min-width:160px}.yn{display:inline-flex;gap:6px}
+.yn button.on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.scope a{color:var(--muted);margin-right:8px}.scope a.on{color:var(--accent);font-weight:600}
+.saveall{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 22px}
+.infogroups{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin:0 0 22px}
+.infogroup{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;min-width:0}
+.ghead{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.ghead button{padding:4px 10px;font-size:12px}
+.kv{display:grid;grid-template-columns:minmax(110px,40%) minmax(0,1fr) auto;gap:12px;padding:7px 0;font-size:13px;
+border-top:1px solid var(--line);overflow-wrap:anywhere}.view .kv:first-child{border-top:none}
+.kv .k{color:var(--muted)}.kv.unset .k,.kv.unset .v{color:var(--bad);font-weight:600}
 .infogroup.editing{grid-column:1/-1}.infogroup .edit label{white-space:nowrap}.infogroup .edit td:first-child{width:30%}
+.infogroup .edit button{margin-top:10px}
+details.history{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px}
+details.history>summary{font:500 11px/1.5 var(--mono);text-transform:uppercase;letter-spacing:.09em}
 """
 
 JS = r"""
