@@ -41,7 +41,7 @@ def test_extract_features_shape(dummy_dataset):
     from train_model import extract_features
     wav = list(dummy_dataset["positive"].glob("*.wav"))[0]
     feat = extract_features(str(wav))
-    assert feat.shape == (20,)   # 20 MFCC features
+    assert feat.shape == (60,)   # aria.voice.wake_features: MFCC mean + std + |delta|
     assert feat.dtype == np.float32
 
 
@@ -49,7 +49,7 @@ def test_train_saves_onnx(tmp_path, dummy_dataset):
     """train_and_export() saves aria.onnx to models_dir."""
     from train_model import train_and_export
 
-    X = np.random.randn(10, 20).astype(np.float32)
+    X = np.random.randn(10, 60).astype(np.float32)
     y = np.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])
     models_dir = tmp_path / "models"
     models_dir.mkdir()

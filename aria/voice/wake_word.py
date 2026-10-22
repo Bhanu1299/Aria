@@ -40,9 +40,21 @@ from typing import Callable
 import numpy as np
 
 import aria.ui.listening_indicator as listening_indicator
+from aria.voice.wake_features import N_FEATURES, wake_features
 import aria.observability.wake_stats as wake_stats
 
 logger = logging.getLogger(__name__)
+
+
+def fires_on_silence(predict: Callable[[np.ndarray], list]) -> bool:
+    """True if the custom model scores 2s of digital silence at or above the trigger
+    threshold. predict(features) → the model's probability output ([{1: p, ...}])."""
+    try:
+        feat = wake_features(np.zeros(int(_SAMPLE_RATE * _CUSTOM_WINDOW_SECS), np.float32)).reshape(1, -1)
+        return float(predict(feat)[0].get(1, 0.0)) >= _CUSTOM_THRESHOLD
+    except Exception as exc:
+        logger.warning("Wake model silence check failed: %s", exc)
+        return False
 
 # ---------------------------------------------------------------------------
 # Tuning constants
@@ -90,7 +102,6 @@ _PORCUPINE_KEY_ENV = "PORCUPINE_KEY"
 # Custom OWW model (set up by training pipeline)
 _CUSTOM_MODEL_PATH = os.path.expanduser("~/.aria/aria.onnx")
 _CUSTOM_THRESHOLD = 0.7   # starting point — tune after real-world testing
-_CUSTOM_N_MFCC = 20
 _CUSTOM_WINDOW_SECS = 2.0
 
 
@@ -394,6 +405,19 @@ class WakeWordListener:
             print(f"[Aria] Custom model load failed: {exc} — falling back to openwakeword")
             return self._run_openwakeword()
 
+        # A model built for other features would fail every inference (silently deaf).
+        width = session.get_inputs()[0].shape[-1]
+        if width != N_FEATURES:
+            print(f"[Aria] Custom wake model expects {width} features, not {N_FEATURES} "
+                  "(retrain: training/prepare_data.py + train_model.py) — falling back to openwakeword")
+            return self._run_openwakeword()
+        # A model trained without negatives scores everything (even silence) as the wake
+        # word and fires every cooldown. Refuse it instead of waking up on a quiet room.
+        if fires_on_silence(lambda f: session.run([label_name], {input_name: f})[0]):
+            print("[Aria] Custom wake model fires on silence (retrain with negatives: "
+                  "training/prepare_data.py + train_model.py) — falling back to openwakeword")
+            return self._run_openwakeword()
+
         pa = _pa.PyAudio()
         stream = None
         window_samples = int(_SAMPLE_RATE * _CUSTOM_WINDOW_SECS)
@@ -432,11 +456,7 @@ class WakeWordListener:
 
                 # Extract MFCC features and run inference
                 try:
-                    audio_f32 = buffer.astype(np.float32) / 32768.0
-                    mfcc = librosa.feature.mfcc(
-                        y=audio_f32, sr=_SAMPLE_RATE, n_mfcc=_CUSTOM_N_MFCC
-                    )
-                    feat = np.mean(mfcc, axis=1).astype(np.float32).reshape(1, -1)
+                    feat = wake_features(buffer.astype(np.float32) / 32768.0).reshape(1, -1)
                     probs = session.run([label_name], {input_name: feat})[0]
                     score = float(probs[0][1])
                 except Exception as exc:
