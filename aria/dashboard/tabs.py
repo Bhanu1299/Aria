@@ -67,7 +67,7 @@ if(r.decisions.length){detail.appendChild(el('h3',null,'Why this job'));var u=el
 r.decisions.slice().reverse().forEach(function(d){var li=el('li',d.picked?'picked':'');li.appendChild(el('b',null,(d.picked?'Picked: ':'Skipped: ')+(d.company||'?')+' — '+(d.role||'?')+' (row '+d.row+')'));
 li.appendChild(el('div','muted small',(d.reasons||[]).join(' · ')));u.appendChild(li)});detail.appendChild(u)}}
 draw();drawApps();
-function poll(){if(!document.getElementById('live-tab').classList.contains('on')){return}fetch('/api/runs',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){runs=d.runs;draw();apps=d.apps||[];drawApps();
+function poll(){if(!document.getElementById('system-tab').classList.contains('on')){return}fetch('/api/runs',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){runs=d.runs;draw();apps=d.apps||[];drawApps();
 status.textContent='Updated '+new Date().toLocaleTimeString()+' · polling every 2 s · read-only'}).catch(function(){status.textContent='Live updates paused (dashboard server not reachable).'})}
 setInterval(poll,2000)})();
 """
@@ -85,7 +85,7 @@ def costs_tab(summary: Optional[dict], via: str, error: str = "") -> str:
            "none": "no GateLLM call log yet"}.get(via, via)
     since = f" since {_date(s['first_call'])}" if s["first_call"] else ""
     stat = lambda v, l, n="": (f'<div class="stat"><div class="v">{v}</div><div class="l">{e(l)}</div>'
-                               f'{f"<div class=muted small>{e(n)}</div>" if n else ""}</div>')
+                               f'{f"<div class=note>{e(n)}</div>" if n else ""}</div>')
     out = [f'<p class="muted small">Per-call data: {e(src)}{e(since)}, {s["calls"]} calls ({s["errors"]} failed). '
            f'Older spend from the flight log ({s["history_entries"]} entries, totals only).</p>',
            '<div class="stats">', stat(_money(s["today"]), "today"), stat(_money(s["week"]), "this week"),
@@ -203,9 +203,9 @@ post('/api/settings/tier',{tier:row.dataset.tier,models:models}).then(function(d
 """
 
 TABS_CSS = """
-nav.tabs{display:flex;gap:4px;margin-top:12px;border-bottom:1px solid var(--line)}
-nav.tabs a{padding:7px 14px;text-decoration:none;color:var(--muted);border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0}
-nav.tabs a.on{color:var(--ink);background:var(--panel);border-color:var(--line);margin-bottom:-1px}
+nav.tabs{display:flex;gap:2px}
+nav.tabs a{padding:8px 14px 10px;text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;font-weight:500}
+nav.tabs a:hover{color:var(--ink)}nav.tabs a.on{color:var(--ink);border-bottom-color:var(--accent)}
 .tab{display:none}.tab.on{display:block}
 .live{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:14px}
 .runlist{display:flex;flex-direction:column;gap:6px}.run{text-align:left;border:1px solid var(--line);background:var(--panel);
@@ -232,10 +232,13 @@ img.crop{display:block;max-width:420px;margin-top:6px;border:1px solid var(--lin
 """
 
 TABS_JS = r"""
-(function(){function saved(){try{return localStorage.getItem('dash.tab')}catch(e){return null}}
-function show(){var h=location.hash||saved()||'#today';if(!document.querySelector(h+'-tab'))h='#today';
+(function(){var OLD={'#live':1,'#costs':1,'#settings':1,'#health':1};
+function saved(){try{return localStorage.getItem('dash.tab')}catch(e){return null}}
+function show(){var h=location.hash||saved()||'#today',sub=null;
+if(OLD[h]){sub=document.getElementById(h.slice(1)+'-sub');h='#system'}
+if(!document.querySelector(h+'-tab'))h='#today';
 try{localStorage.setItem('dash.tab',h)}catch(e){}
 document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('on','#'+t.id===h+'-tab')});
-document.querySelectorAll('nav.tabs a').forEach(function(a){a.classList.toggle('on',a.getAttribute('href')===h)})}
-window.addEventListener('hashchange',show);if(!location.hash&&saved())history.replaceState(null,'',saved());show()})();
-"""
+document.querySelectorAll('nav.tabs a').forEach(function(a){a.classList.toggle('on',a.getAttribute('href')===h)});
+if(sub)sub.scrollIntoView()}
+window.addEventListener('hashchange',show);if(!location.hash&&saved())history.replaceState(null,'',saved());show()})();"""

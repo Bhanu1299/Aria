@@ -67,7 +67,8 @@ def test_today(mdl):
     assert [i["job"].company for i in d["interviews"] if i.get("job")] == ["Initech"]
     assert [j.company for j in d["linkedin"]] == ["Globex"]
     assert "1 reply to answer" in today.summary_line(d) and "1 bounce" in today.summary_line(d)
-    assert "no Deadline column" in today.render(mdl)
+    html = today.render(mdl)
+    assert "Interviews" in html and "Deadlines" not in html and "Nothing." not in html   # empty groups are hidden
 
 
 def test_applications_group_by_company(mdl):

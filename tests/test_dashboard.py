@@ -404,7 +404,7 @@ def test_unlabeled_fields_without_context_are_dropped_and_draft_subject_shows(sr
     srcs["gmail"].data["drafts"].append({"id": "d3", "thread_id": "td3", "to": [], "subject": "Intro for a role",
                                          "ts": ts(5)})
     html = page_from(srcs, NOW, calls={"calls": [], "via": "none"}, flight=[], runs=[])
-    answers_tab = html[html.index('id="answers-tab"'):html.index('id="applications-tab"')]
+    answers_tab = html[html.index('id="answers-tab"'):html.index('id="system-tab"')]
     assert "cards[abc-123]" not in answers_tab                     # no captured context → nothing to go on
     assert "Current location" in answers_tab and "Needs your answer" in answers_tab
     assert "no recipient" in html and "Intro for a role" in html

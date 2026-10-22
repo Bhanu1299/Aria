@@ -193,7 +193,7 @@ def _week(mdl: dict) -> str:
     w = m.this_week(mdl)
     srcs = mdl["sources"]
     stat = lambda label, value, note="": (f'<div class="stat"><div class="v">{value}</div><div class="l">{e(label)}</div>'
-                                         f'{f"<div class=muted small>{e(note)}</div>" if note else ""}</div>')
+                                         f'{f"<div class=note>{e(note)}</div>" if note else ""}</div>')
     gm = srcs.get("gmail") is not None and srcs["gmail"].ok
     db = srcs.get("aria_db") is not None and srcs["aria_db"].ok
     found_note = f"{w['found_undated']} jobs have no found date" if w["found_undated"] else ""
@@ -226,35 +226,44 @@ def _cost(mdl: dict) -> str:
 # ---------------------------------------------------------------------------
 
 CSS = """
-:root{--bg:#f7f7f5;--panel:#fff;--ink:#1d1d1b;--muted:#6b6b66;--line:#e3e2dd;--accent:#2f5d8a;
---ok:#2e7d4f;--bad:#b3261e;--warn:#8a5a00;--bar:#c9d8e8}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141413;--panel:#1d1d1b;--ink:#ecebe6;
---muted:#9b9a94;--line:#33322f;--accent:#8ab4e0;--ok:#6cc08b;--bad:#ef8a80;--warn:#e0b25c;--bar:#2c4258}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
-font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
-header{padding:20px 24px 8px;max-width:1280px;margin:0 auto}h1{margin:0 0 6px;font-size:20px}
-main{max-width:1280px;margin:0 auto;padding:0 24px 40px}
-section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin:14px 0}
-h2{font-size:15px;margin:0 0 12px}h3{font-size:13px;margin:0 0 6px}.sub{font-weight:400;color:var(--muted);font-size:12px}
-table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap}#jobs th{cursor:pointer;user-select:none}
+:root{color-scheme:light;--bg:#ffffff;--panel:#ffffff;--soft:#f6f7f9;--ink:#16181d;--muted:#5f6670;--line:#e6e8ec;
+--accent:#1f5fbf;--ok:#1d7a46;--bad:#b42318;--warn:#8a5300;--bar:#dbe6f6}
+*{box-sizing:border-box}html,body{background:var(--bg)}body{margin:0;color:var(--ink);
+font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+header .in{max-width:1080px;margin:0 auto;padding:16px 24px 0}h1{margin:0;font-size:19px;font-weight:650}
+.meta{margin:2px 0 10px}
+main{max-width:1080px;margin:0 auto;padding:8px 24px 48px}
+section{padding:18px 0;margin:0;border-bottom:1px solid var(--line)}section:last-child{border-bottom:none}
+h2{font-size:17px;margin:0 0 12px;font-weight:650}h3{font-size:14px;margin:0 0 6px;font-weight:650}
+.sub{font-weight:400;color:var(--muted);font-size:13px}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap;background:var(--soft)}#jobs th{cursor:pointer;user-select:none}
 #jobs th.asc:after{content:" ▲"}#jobs th.desc:after{content:" ▼"}
-.num{text-align:right;font-variant-numeric:tabular-nums}.muted{color:var(--muted)}.small{font-size:12px}
+.num{text-align:right;font-variant-numeric:tabular-nums}.muted{color:var(--muted)}.small{font-size:13px}
 .bar{width:28%}.bar span{display:block;height:10px;background:var(--bar);border-radius:3px;min-width:2px}
 .drop{color:var(--bad)}.nodata{color:var(--warn);margin:0}.warn{color:var(--warn);margin:0 0 8px}
-.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid var(--line);background:var(--soft)}
 .chip.ok{color:var(--ok)}.chip.bad{color:var(--bad);border-color:var(--bad)}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-.card{border:1px solid var(--line);border-radius:6px;padding:10px 12px;overflow-wrap:anywhere;min-width:0}
+.card{border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-wrap:anywhere;min-width:0}
 td{overflow-wrap:anywhere}.card ul{margin:0;padding-left:18px}
 .card li{margin:3px 0}.count{color:var(--muted);font-weight:400}
-.stats{display:flex;flex-wrap:wrap;gap:12px}.stat{min-width:150px;border:1px solid var(--line);border-radius:6px;padding:10px 12px}
-.stat .v{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}.stat .l{color:var(--muted);font-size:12px}
-#q{width:100%;max-width:420px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);margin-bottom:10px}
-.tablewrap{overflow-x:auto}.stage{display:inline-block;padding:1px 7px;border-radius:9px;font-size:12px;background:var(--bar);white-space:nowrap}
-.stage.s8,.stage.s9{background:var(--ok);color:var(--panel)}a{color:var(--accent)}
+.stats{display:flex;flex-wrap:wrap;gap:10px}.stat{min-width:140px;border:1px solid var(--line);border-radius:8px;padding:10px 14px;background:var(--soft)}
+.stat .v{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums}.stat .l,.stat .note{color:var(--muted);font-size:12px}
+#q{width:100%;max-width:420px;padding:8px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);margin-bottom:10px}
+.tablewrap{overflow-x:auto}.stage{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;background:var(--bar);white-space:nowrap}
+.stage.s8,.stage.s9{background:var(--ok);color:#fff}a{color:var(--accent)}
 details.unmatched{margin-top:12px}details.unmatched ul{padding-left:18px}
-@media (max-width:720px){header,main{padding-left:16px;padding-right:16px}.bar{display:none}}
+.todo{padding:14px 0;border-bottom:1px solid var(--line)}.todo:last-child{border-bottom:none}
+.todo ul{margin:6px 0 0;padding:0;list-style:none}.todo li{padding:7px 0;border-top:1px solid var(--soft)}
+.todo li:first-child{border-top:none}.todo .hint{margin:0;color:var(--muted);font-size:13px}
+.todo details summary{color:var(--accent);font-size:13px;margin-top:4px}
+.pill{display:inline-block;font-size:12px;padding:0 8px;border-radius:999px;background:var(--soft);border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.pill.bad{color:var(--bad);border-color:#f2c4bf;background:#fdf1f0}.pill.warn{color:var(--warn);border-color:#f0dcb8;background:#fdf7ec}
+.allclear{font-size:16px;color:var(--ok);margin:8px 0}
+.subsec{padding-top:6px;scroll-margin-top:120px}.subsec+.subsec{border-top:1px solid var(--line);margin-top:18px;padding-top:18px}
+@media (max-width:720px){header .in,main{padding-left:16px;padding-right:16px}.bar{display:none}}
 """
 
 JS = """
@@ -270,24 +279,29 @@ rows.forEach(function(r){tb.appendChild(r)})})})})();
 """
 
 
-TAB_NAMES = [("today", "Today"), ("answers", "My answers"), ("applications", "Applications"), ("live", "Live run"),
-             ("costs", "Costs"), ("settings", "Settings"), ("health", "Data health")]
-TAB_SUBS = {"today": "what needs you now", "answers": "what Aria fills into application forms",
+TAB_NAMES = [("today", "Today"), ("applications", "Applications"), ("answers", "My answers"), ("system", "System")]
+TAB_SUBS = {"today": "what needs you now, most urgent first",
             "applications": "one row per company, roles nested; click a role for its timeline",
-            "live": "current or last pipeline run, from Aria's run log",
-            "costs": "from GateLLM's per-call log + Aria's flight log",
-            "settings": "LLM providers and tier models",
-            "health": "sources, unmatched records and gaps in the data"}
+            "answers": "what Aria fills into application forms",
+            "system": "the run log, LLM costs, settings and data sources"}
+# The System tab holds what used to be four tabs; old links (#live …) still land on them.
+SYSTEM_PARTS = [("live", "Live run", "current or last pipeline run, from Aria's run log"),
+                ("costs", "Costs", "from GateLLM's per-call log + Aria's flight log"),
+                ("settings", "Settings", "LLM providers and tier models"),
+                ("health", "Data health", "sources, unmatched records and gaps in the data")]
 
 
 def page(mdl: dict, tabs: Optional[dict] = None, token: str = "") -> str:
-    """tabs: {key: html} for every TAB_NAMES key (each already guarded)."""
+    """tabs: {key: html} for today / applications / answers and every SYSTEM_PARTS key."""
     from aria.dashboard import tabs as tabmod
     srcs = mdl["sources"]
-    tabs = tabs or {}
+    tabs = dict(tabs or {})
     down = [SOURCE_LABELS.get(k, k) for k, v in srcs.items() if v is not None and not v.ok]
     warn = (f' <a class="downwarn" href="#health">{len(down)} source{"s" if len(down) != 1 else ""} down: '
             f'{e(", ".join(down))}</a>') if down else ""
+    tabs["system"] = "".join(
+        f'<div class="subsec" id="{key}-sub"><h3>{e(label)} <span class="sub">{e(sub)}</span></h3>'
+        f'{tabs.get(key, _no_data("not loaded"))}</div>' for key, label, sub in SYSTEM_PARTS)
     nav = "".join(f'<a href="#{k}">{e(v)}</a>' for k, v in TAB_NAMES)
     panes = []
     for key, label in TAB_NAMES:
@@ -296,19 +310,23 @@ def page(mdl: dict, tabs: Optional[dict] = None, token: str = "") -> str:
                      f'{content}</section></div>')
     meta = f'<meta name="dashboard-token" content="{e(token)}">' if token else ""
     from aria.dashboard import answers as ans, applications as apps
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}<title>Job Pipeline</title>'
-            f'<style>{CSS}{tabmod.TABS_CSS}{ans.CSS}</style></head><body><header><h1>Job pipeline</h1>'
-            f'<p class="muted small">Loaded {mdl["now"]:%Y-%m-%d %H:%M}. Gmail and the sheet are cached for 5 minutes. '
-            f'Writes only: your answer bank (My answers) and GateLLM keys (Settings).{warn}</p>'
-            f'<nav class="tabs">{nav}</nav></header><main>{"".join(panes)}</main>'
+            f'<style>{CSS}{tabmod.TABS_CSS}{ans.CSS}</style></head><body><header><div class="in"><h1>Job pipeline</h1>'
+            f'<p class="muted small meta">Loaded {mdl["now"]:%b %d, %H:%M} · Gmail and the sheet refresh every 5 minutes.{warn}</p>'
+            f'<nav class="tabs">{nav}</nav></div></header><main>{"".join(panes)}</main>'
             f'<script>{tabmod.TABS_JS}{JS}{tabmod.LIVE_JS}{tabmod.SETTINGS_JS}{ans.JS}{apps.JS}</script></body></html>')
 
 
 def today_extras(mdl: dict) -> str:
-    """Funnel + this week, kept under Today."""
-    return (_section("Funnel", lambda: _funnel(mdl), "jobs that reached each stage; a job sits at its furthest stage with evidence", "funnel")
-            + _section("This week", lambda: _week(mdl), "", "week"))
+    """This week's numbers, under Today's to-do list."""
+    return _section("This week", lambda: _week(mdl), "", "week")
+
+
+def funnel_details(mdl: dict) -> str:
+    return ('<details class="flat"><summary>Funnel: how far each job got</summary>'
+            + _section("Funnel", lambda: _funnel(mdl), "jobs that reached each stage; a job sits at its furthest stage with evidence", "funnel")
+            + "</details>")
 
 
 def all_jobs_table(mdl: dict) -> str:
