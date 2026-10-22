@@ -2,7 +2,7 @@
 
 Pure code, zero tokens, never an agent tool: no LLM can submit or close anything.
 
-  start applications              bring everything up (startup), re-attach tabs, start the run
+  start applications / let's apply to some jobs   bring everything up (startup), re-attach tabs, start the run
   pause / resume / stop           only while a run is active (else not claimed: music keeps them)
   submit it | submit <company>    the tab in front | that company's tab; unclear → ask
   I submitted it | … <company>    the user submitted by hand
@@ -40,7 +40,15 @@ def configure(say: Callable[[str], None], voice_ask: Optional[Callable[[str], st
 
 
 _APPS = r"(?: (?:the |my )?applications?| applying)?"
-_START = re.compile(r"start (?:the |my )?(?:job )?applications?|start applying(?: to jobs)?")
+_START = re.compile(
+    r"start (?:the |my )?(?:job )?applications?|start applying(?: (?:to|for) (?:some )?jobs)?|"
+    r"(?:let'?s|let us|i want to|time to)(?: go)?(?: start)? apply(?:ing)?(?: (?:to|for) (?:some |a few |a couple of |my )?jobs)?(?: now)?|"
+    r"apply (?:to|for) (?:some|a few|a couple of) jobs")
+# Whisper puts stray words in front ("here, let us start applying to jobs"): allow two,
+# never a negation or a question word ("don't start applying", "why did you start…")
+_START_LEAD = re.compile(
+    r"(?:(?!(?:don'?t|do|not|never|no|stop|why|how|when|what|should|did|didn'?t)\b)[\w']+ ){0,2}"
+    r"(?:" + _START.pattern + r")")
 _PAUSE = re.compile(r"pause" + _APPS + r"|hold on|wait")
 _RESUME = re.compile(r"(?:resume|continue|keep going|go on|unpause)" + _APPS)
 _STOP = re.compile(r"stop" + _APPS + r"|stop the run")
@@ -234,7 +242,7 @@ def handle(text: str) -> Optional[str]:
     if answered is not None:
         return answered
 
-    if _START.fullmatch(q):
+    if _START_LEAD.fullmatch(q):
         ok, message = startup.bring_up()
         if not ok:
             return message

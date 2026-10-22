@@ -1,16 +1,14 @@
-"""python -m aria start — the one start command, from a terminal.
+"""python -m aria start — run Aria from a terminal.
 
-Brings up GateLLM, Coldstart, the dashboard and Aria's Chrome (health-checked; the
-first failure is printed and nothing else starts), opens the dashboard on Live run,
-then runs Aria with ARIA_START_APPLICATIONS=1 so it starts filling new sheet jobs as
-soon as it's ready — the same as saying "Aria, start applications".
+Starts Aria only: no dashboard, no job applications. Those start when you ask by voice
+("let's apply to some jobs" / "start applications"), which brings up GateLLM,
+Coldstart, the dashboard and Chrome first.
 """
 from __future__ import annotations
 
-import os
 import sys
 
-USAGE = "usage: python -m aria start   (GateLLM + Coldstart + dashboard + Aria, then start applications)"
+USAGE = "usage: python -m aria start   (runs Aria; say \"let's apply to some jobs\" to start applications)"
 
 
 def _run_aria() -> int:
@@ -29,13 +27,6 @@ def main(argv: list) -> int:
     if argv[:1] != ["start"]:
         print(USAGE)
         return 2
-    from aria.features.applying import startup
-    print("Starting GateLLM, Coldstart, the dashboard and Chrome...")
-    ok, message = startup.bring_up()
-    print(message)
-    if not ok:
-        return 1
-    os.environ["ARIA_START_APPLICATIONS"] = "1"
     return _run_aria()
 
 
