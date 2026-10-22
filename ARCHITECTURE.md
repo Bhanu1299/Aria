@@ -362,7 +362,7 @@ here so the code can be checked against them.
 | 1 | Muse writes job rows to the sheet (`Sheet1`; blank Status = new) | Muse | in use |
 | 2 | Find the people behind a posting: posting → team pages → search results → GitHub org | Aria | built (`aria/features/outreach`) |
 | 3 | Find their emails, cache-first by company domain | Coldstart | built (called via its Python API) |
-| 4 | Fill the application and **stop for the user's review** | Aria | built: Greenhouse adapter, generic fallback |
+| 4 | Fill the application and **stop for the user's review** | Aria | built: Greenhouse adapter, DOM form engine (any other ATS) |
 | 5 | Outreach: Gmail **drafts** (jobs account) or LinkedIn notes in the sheet. Aria never sends | Aria | built |
 | 6 | Replies and bounces → Coldstart `record_feedback` | Aria | built |
 
@@ -376,8 +376,8 @@ flowchart LR
     V["apply to the next job from Muse"] --> R["dispatcher rule → apply_job"]
     R --> S["sheet: next blank-Status row"]
     S --> D{"detect ATS<br/>(code)"}
-    D -->|Greenhouse| G["schema from page JSON<br/>answer bank → needs_me → small guess → frontier draft"]
-    D -->|other| C["generic browser loop<br/>never-submit goal"]
+    D -->|Greenhouse| G["schema from page JSON<br/>planner → fill → verify"]
+    D -->|other| C["form engine: scan → planner → fill<br/>→ re-scan → verify → Next (never Submit)"]
     G & C --> RV["review: screenshot + markdown<br/>sheet → In review · cost → flight log"]
     RV --> U{"your words<br/>(pre-handler, not a tool)"}
     U -->|submit it| SB["learn corrections → click form's submit<br/>→ verify → Applied"]
@@ -386,7 +386,35 @@ flowchart LR
 ```
 
 - `aria/features/applicator.py` is the single entry point. `aria/features/ats/` holds
-  detection, the Greenhouse adapter, the two LLM tasks and the submit helper.
+  detection, the Greenhouse adapter, the form engine, the shared planner, the two LLM
+  tasks and the submit helper.
+
+### Form filling: code controls the flow, the LLM only writes
+
+`planner.py` classifies every field by rules (upload · consent · fact · sensitive ·
+choice · open_text) and decides its source; `form_engine.py` does the page work for
+every non-Greenhouse form (Ashby, Lever, Jobvite, JazzHR …).
+
+| Field | Filled from | If missing |
+|---|---|---|
+| fact (name, links, education, location) | answer bank | UNKNOWN → asked |
+| sensitive (salary, sponsorship, work auth, EEO) | answer bank only, never guessed | UNKNOWN → asked |
+| your preferences (offices, deadlines) | answer bank | UNKNOWN → asked |
+| choice the bank doesn't cover | LLM picks an option from the resume | UNKNOWN → asked |
+| open_text ("why us", "best project") | frontier LLM, resume + job, char limit kept | **never asked**; written again, else FAILED |
+| upload | resume file (filename verified on the page) | asked |
+| consent / agreement | the user ticks it when approving the submit | — |
+
+The LLM's profile is the answer bank plus the resume's text (`resume_text.py`,
+pdftotext). Generic open-text answers are saved in aria.db `generated_answers` and
+reused on the same question; company-specific ones are rewritten. After every answer
+the page is re-scanned for revealed fields; every value is read back and refilled up
+to 2 times, then FAILED. Next / Continue is clicked only when the page verified and
+nothing required is left; Submit never. A wall that appears mid-form (CAPTCHA, login,
+an "I Accept / I Decline" privacy notice) brings the tab to front and waits for the
+user. Each application writes `~/.aria/reviews/<stem>.md` (summary: filled · unknown
+· failed) and `<stem>.log.json` (every field: type, value, source, status).
+`scripts/manual_fill_test.py` is the acceptance test on real postings.
 - Every application gets its own visible tab (`aria/features/applying/tabs.py`
   registry, `~/.aria/apply_tabs.json`; the entry id is the `agent_browser` tab
   name), so other tools can't navigate it away while it waits for review.
@@ -398,10 +426,14 @@ flowchart LR
 
 Set by the user 2026-10-21. Code that touches applications is checked against these.
 
-1. **One start command.** "Aria, start applications" and `python -m aria start`
-   bring up GateLLM, Coldstart (a library: import check), the dashboard and Aria's
-   Chrome, health-checking each in that order. The first failure is named out loud
-   and nothing else starts. Then the dashboard opens in a visible tab on Live run.
+1. **Starts only when asked, by voice.** Launching Aria (Aria.app, `main.py`,
+   `python -m aria start`) never opens the dashboard or starts applications. Saying
+   "let's apply to some jobs" / "start applications" brings up GateLLM, Coldstart
+   (a library: import check), the dashboard and Aria's Chrome, health-checking each
+   in that order. The first failure is named and nothing else starts. Then the
+   dashboard opens in a visible tab on Live run. The run speaks only for a wall
+   (CAPTCHA / login / privacy notice), and once when finished, saying how many answers
+   are missing from the answer bank. Progress goes to the terminal/log.
 2. **Applications run in front, never in the background.** Every form fill happens
    in a visible, headed Chrome window. No headless mode for applications, ever.
    Each application opens in its own new tab. Aria never closes an application tab:
@@ -495,13 +527,14 @@ fields, answer-bank lookups, the salary rule, dates, regex parsing of
 permutations, MX/SMTP checks, caching, reply detection and follow-up timing.
 
 An LLM is allowed only for:
-- **small:** unknown short form fields; parse/rank fallbacks when regex fails or ties; reply classification
-- **frontier:** "why us" and other free-text answers; outreach emails
+- **small:** picking an option for a background choice question from the resume; parse/rank fallbacks when regex fails or ties; reply classification
+- **frontier:** every open-text form answer, from the resume; outreach emails
 - **vision:** only when the DOM fails
 
 Legal and personal facts (sponsorship, work authorization, demographics,
-agreements and consents) are never guessed. An unanswered one is left empty
-and flagged `needs_me`.
+preferences, agreements and consents) are never guessed. An unanswered one is left
+empty and flagged `needs_me` (UNKNOWN). Open-text questions are never flagged
+`needs_me`.
 
 ### Model routing
 

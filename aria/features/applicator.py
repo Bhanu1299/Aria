@@ -3,8 +3,10 @@
 run_application(job, progress_fn, voice_ask_fn, entry=None, gate=None) → spoken one-liner
   0. tab      every application gets its own visible tab (applying.tabs entry; its id is
               the agent_browser tab name). Aria never closes it.
-  1. fill     Greenhouse adapter / LinkedIn Easy Apply / generic browser loop — never submits
-  2. review   full-page screenshot + markdown summary in ~/.aria/reviews/ (needs-you first)
+  1. fill     Greenhouse adapter / LinkedIn Easy Apply / the generic form engine — never submits
+  2. review   full-page screenshot + markdown summary in ~/.aria/reviews/ (summary: filled
+              count, UNKNOWN list, FAILED list) + <stem>.log.json — every field with its
+              category, value, source and status
   3. record   tab entry → filled; sheet Status "In review" (+ note in Updates), aria.db
               application_runs, flight log job entry with this job's LLM cost, by sheet row
 
@@ -47,12 +49,16 @@ REVIEWS_DIR = Path.home() / ".aria" / "reviews"
 
 _ATS_NAME = {"greenhouse": "Greenhouse", "linkedin": "LinkedIn Easy Apply", "generic": "Application"}
 _SECTIONS = [
-    ("needs_me", "Needs you"),
-    ("llm_draft", "Drafted by the LLM: check the wording"),
-    ("llm_guess", "Guessed by the LLM: check these"),
+    ("needs_me", "Unknown — missing from your answer bank"),
+    ("failed", "Failed — Aria couldn't set these"),
+    ("consent", "Agreements — tick these yourself before you submit"),
+    ("llm_draft", "Written by the LLM from your resume"),
+    ("reused", "Reused LLM answers"),
+    ("llm_guess", "Picked by the LLM from your resume"),
     ("bank", "From your answer bank"),
     ("skipped", "Left empty (optional)"),
 ]
+_FILLED = ("bank", "llm_draft", "reused", "llm_guess")
 # Corrections to these aren't reusable answers (files, company-specific essays, consents).
 _NO_LEARN_KINDS = {"file", "textarea", "checkbox"}
 
@@ -163,6 +169,10 @@ def build_summary(job: dict, result, company: str, role: str, screenshot: str = 
                  "say \"I submitted it\". Say \"skip this job\" to skip it.")
     if result.error:
         lines.append(f"- **Problem:** {result.error}")
+    filled = sum(result.count(src) for src in _FILLED)
+    unknown = [r["label"] for r in result.review if r["source"] == "needs_me"]
+    failed = [r["label"] for r in result.review if r["source"] == "failed"]
+    lines.append(f"- **Summary:** {filled} filled · {len(unknown)} unknown · {len(failed)} failed")
     lines.append("")
     for source, title in _SECTIONS:
         rows = [r for r in result.review if r["source"] == source]
@@ -170,7 +180,7 @@ def build_summary(job: dict, result, company: str, role: str, screenshot: str = 
             continue
         lines.append(f"## {title} ({len(rows)})")
         lines.append("")
-        if source == "llm_draft":
+        if source in ("llm_draft", "reused"):
             for r in rows:
                 lines.append(f"### {r['label']}")
                 lines.append("")
@@ -199,8 +209,36 @@ def _write_review(job: dict, result, company: str, role: str) -> tuple:
     except Exception as exc:
         logger.warning("applicator: screenshot failed: %s", exc)
     md.write_text(build_summary(job, result, company, role, shot))
+    write_log(REVIEWS_DIR / f"{stem}.log.json", job, result, company, role)
     _capture_unlabeled(result, REVIEWS_DIR / f"{stem}.fields.json", stem)
     return str(md), shot
+
+
+_STATUS = {"needs_me": "unknown", "failed": "failed", "consent": "consent", "skipped": "skipped"}
+
+
+def build_log(job: dict, result, company: str, role: str) -> dict:
+    """The per-application log: every field with its type, value, source and status."""
+    return {
+        "company": company, "role": role, "job_url": job.get("url", ""), "form_url": result.form_url,
+        "sheet_row": job.get("row"), "ats": result.ats, "identified": getattr(result, "identified", ""),
+        "date": date.today().isoformat(), "pages": getattr(result, "pages", 1),
+        "stopped_at": getattr(result, "stopped_at", ""), "error": result.error,
+        "summary": {"filled": sum(result.count(s) for s in _FILLED), "unknown": result.count("needs_me"),
+                    "failed": result.count("failed"), "consent": result.count("consent")},
+        "fields": [{"label": r.get("label", ""), "type": r.get("category") or "", "kind": r.get("kind", ""),
+                    "value": r.get("value", ""), "source": r.get("source", ""),
+                    "status": _STATUS.get(r.get("source", ""), "filled"), "required": bool(r.get("required")),
+                    "note": r.get("note", ""), "page": r.get("page", 1)} for r in result.review],
+    }
+
+
+def write_log(path: Path, job: dict, result, company: str, role: str) -> None:
+    import json as _json
+    try:
+        path.write_text(_json.dumps(build_log(job, result, company, role), indent=1))
+    except Exception as exc:
+        logger.warning("applicator: log write failed: %s", exc)
 
 
 _MACHINE_NAME = re.compile(r"^[\w-]+\[|^[\w-]*\d{3,}[\w-]*$|^(?:field|input|question)[_-]?\d+$", re.I)
@@ -257,12 +295,16 @@ def _capture_unlabeled(result, out: Path, stem: str) -> None:
 
 def spoken_result(result, company: str, role: str) -> str:
     ats_name = _ATS_NAME.get(result.ats, "Application")
-    n_me, drafts = result.count("needs_me"), result.count("llm_draft")
+    n_me, n_failed = result.count("needs_me"), result.count("failed")
+    drafts = result.count("llm_draft") + result.count("reused")
     need = ("Nothing needs you." if n_me == 0
-            else "1 field needs you." if n_me == 1 else f"{n_me} fields need you.")
+            else "1 fact is missing from your answer bank." if n_me == 1
+            else f"{n_me} facts are missing from your answer bank.")
     out = f"{ats_name} form filled for {role} at {company}. {need}"
+    if n_failed:
+        out += f" {n_failed} field{'s' if n_failed != 1 else ''} wouldn't take a value."
     if drafts:
-        out += f" I drafted {drafts} answer{'s' if drafts != 1 else ''} — check the wording."
+        out += f" I wrote {drafts} answer{'s' if drafts != 1 else ''} from your resume."
     if result.error:
         out += " Something went wrong partway, so check it closely."
     return out + " Say submit it when you're ready."
@@ -328,15 +370,17 @@ def run_application(
     run: Optional[run_log.Run] = None,
     entry: Optional[dict] = None,
     gate: Optional[Callable[[], None]] = None,
+    wait_fn: Optional[Callable[[str], bool]] = None,
 ) -> str:
     """Fill the application for a job (sheet row dict or {"url": ...}) in its own tab and
     stop for review. Returns one spoken sentence or two. Never submits, never raises —
     except control.Stopped (from `gate`, the run's pause/stop checkpoint), which leaves the
     tab open and propagates so the run ends. `entry` is the tab entry the caller already
-    opened; else one is created. `run` continues a pipeline run the caller started."""
+    opened; else one is created. `run` continues a pipeline run the caller started.
+    `wait_fn(kind)` waits out a wall that appears mid-form (True = cleared)."""
     job = dict(job or {})
     run = run or run_log.start("apply_job")
-    return _run_logged(run, job, lambda: _run_application(job, progress_fn, voice_ask_fn, entry, gate))
+    return _run_logged(run, job, lambda: _run_application(job, progress_fn, voice_ask_fn, entry, gate, wait_fn))
 
 
 def _run_application(
@@ -345,6 +389,7 @@ def _run_application(
     voice_ask_fn: Optional[Callable[[str], str]],
     entry: Optional[dict] = None,
     gate: Optional[Callable[[], None]] = None,
+    wait_fn: Optional[Callable[[str], bool]] = None,
 ) -> str:
     import aria.web.agent_browser as agent_browser
     say = progress_fn or (lambda _msg: None)
@@ -363,7 +408,12 @@ def _run_application(
         entry = entry or tabs.add(job)
         tab = entry["id"]
         with _step("fill form") as step, agent_browser.use_tab(tab, gate=gate):
-            result = _fill_linkedin(job, voice_ask_fn) if _is_linkedin(url) else ats.fill_application(job, say, tab=tab)
+            if _is_linkedin(url):
+                result = _fill_linkedin(job, voice_ask_fn)
+            elif wait_fn is not None:
+                result = ats.fill_application(job, say, tab=tab, wait_fn=wait_fn)
+            else:
+                result = ats.fill_application(job, say, tab=tab)
             n_need = result.count("needs_me") if result.review else 0
             step.detail = (f"{_ATS_NAME.get(result.ats, result.ats or 'form')}: {len(result.filled or {})} filled, "
                            f"{n_need} need you" + (f" — {result.error}" if result.error else ""))
@@ -393,7 +443,7 @@ def _run_application(
         sheet_err = _sheet_update(
             job, sheets.STATUS_IN_REVIEW,
             f"Aria filled the {_ATS_NAME.get(result.ats, 'application')} form, "
-            f"{n_me} field{'s' if n_me != 1 else ''} need you; not submitted",
+            f"{n_me} unknown, {result.count('failed')} failed; not submitted",
         )
         _finish(job, result.ats, "filled", before, ok=not result.error,
                 note=result.error or sheet_err, needs_me=n_me, review_path=md)

@@ -10,6 +10,7 @@ Tables owned here:
   learned_answers  — form answers the user gave by voice / in review (features/answer_bank.py)
   application_runs — every apply-pipeline step: fill / submit / skip / error, with cost
   answer_changes   — every edit to the answer bank (dashboard / review), for history + undo
+  generated_answers — LLM-written open-text form answers, reused on the same question
 """
 
 from __future__ import annotations
@@ -92,6 +93,16 @@ CREATE TABLE IF NOT EXISTS answer_changes (
 )
 """
 
+_CREATE_GENERATED_ANSWERS = """
+CREATE TABLE IF NOT EXISTS generated_answers (
+    question   TEXT    PRIMARY KEY,       -- normalized field label
+    answer     TEXT    NOT NULL,
+    company    TEXT    NOT NULL DEFAULT '',
+    max_chars  INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 
 def get_connection() -> sqlite3.Connection:
     """
@@ -109,5 +120,6 @@ def get_connection() -> sqlite3.Connection:
     conn.execute(_CREATE_LEARNED_ANSWERS)
     conn.execute(_CREATE_APPLICATION_RUNS)
     conn.execute(_CREATE_ANSWER_CHANGES)
+    conn.execute(_CREATE_GENERATED_ANSWERS)
     conn.commit()
     return conn

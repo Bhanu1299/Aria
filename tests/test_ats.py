@@ -177,7 +177,7 @@ class Spy:
         self.guess_calls.append(questions)
         return {q["name"]: self.guesses[q["label"]] for q in questions if q["label"] in self.guesses}
 
-    def draft_fn(self, label, job_text, profile):
+    def draft_fn(self, label, job_text, profile, max_chars=0, short=False, allow_unknown=False):
         self.draft_calls.append(label)
         return self.draft
 
@@ -204,7 +204,7 @@ def test_plan_agreements_are_never_filled():
     spy = Spy()
     plans = _plan("anthropic_jobboards", spy)
     for label in ("AI Policy for Application", "Please read the arbitration agreement below", "Agreement to Arbitrate"):
-        assert plans[label].source == "needs_me", label
+        assert (plans[label].source, plans[label].value) == ("consent", ""), label
     asked = [q["label"] for call in spy.guess_calls for q in call]
     assert not any("arbitrat" in a.lower() or "policy" in a.lower() for a in asked)
 
@@ -283,7 +283,7 @@ def test_review_reads_actual_dom_values():
     rows = {r["name"]: r for r in gh.build_review(plans, {"first_name": "Alex T", "q1": "", "race": None,
                                                            "resume": "Alex_Resume.pdf"})}
     assert rows["first_name"]["value"] == "Alex T"                   # what the DOM holds, not the plan
-    assert (rows["q1"]["source"], rows["q1"]["note"]) == ("needs_me", "didn't stick — fill it in")
+    assert (rows["q1"]["source"], rows["q1"]["note"]) == ("failed", "didn't stick after 2 retries")
     assert (rows["race"]["source"], rows["race"]["note"]) == ("skipped", "not on the form")
     assert rows["resume"]["value"] == "Alex_Resume.pdf" and rows["resume"]["source"] == "bank"
 
@@ -392,11 +392,11 @@ def test_review_country_option_already_has_dial_code():
     assert gh.build_review([gh.Planned(f, "United States +1", "bank")], {"country": "+1"})[0]["value"] == "United States +1"
 
 
-def test_plan_without_gateway_leaves_llm_fields_for_the_user():
+def test_plan_without_gateway_marks_open_text_failed_never_needs_me():
     spy = Spy(guesses={"What is your highest completed degree?": "Master's"})
     form = gh.parse_form(page("anthropic_jobboards"))
     plans = {p.field.label: p for p in gh.plan(form, {}, "profile", spy.guess, spy.draft_fn, llm_available=False)}
-    assert (plans["Why Anthropic?"].source, plans["Why Anthropic?"].note) == ("needs_me", "LLM gateway was down")
+    assert (plans["Why Anthropic?"].source, plans["Why Anthropic?"].note) == ("failed", "LLM gateway was down")
     assert spy.guess_calls == [] and spy.draft_calls == []
     assert plans["First Name"].source == "bank"
 
@@ -407,8 +407,8 @@ def test_upload_confirmed_by_filename_chip_when_input_is_gone():
     values = gh.confirm_uploads({"resume": None}, plans, "Resume/CV\nAlex_Resume.pdf ×\nCover Letter")
     row = gh.build_review(plans, values)[0]
     assert (row["value"], row["source"]) == ("Alex_Resume.pdf", "bank")
-    missing = gh.confirm_uploads({"resume": None}, plans, "Resume/CV Attach Dropbox")
-    assert gh.build_review(plans, missing)[0]["source"] == "needs_me"
+    missing = gh.confirm_uploads({"resume": ""}, plans, "Resume/CV Attach Dropbox")
+    assert gh.build_review(plans, missing)[0]["source"] == "failed"
 
 
 def test_fixtures_carry_no_keys_or_tokens():

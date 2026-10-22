@@ -109,3 +109,8 @@ def test_checkpoint_raises_after_stop():
     assert errs == ["stopped"]
     with pytest.raises(control.Stopped):
         ctl.checkpoint()
+
+
+def test_privacy_notice_with_accept_and_decline_is_a_wall():
+    assert walls.detect("Privacy notice\n\nI AcceptI Decline", "", []) == "agreement"     # buttons' innerText runs together
+    assert walls.detect("I agree to the privacy policy", "", []) is None          # a form checkbox isn't a wall

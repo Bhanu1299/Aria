@@ -1,11 +1,13 @@
 """applying/walls.py — is the page blocked by something only the user can clear?
 
-detect(text, url, frames) → "captcha" | "login" | "email_code" | None   (pure)
+detect(text, url, frames) → "captcha" | "login" | "email_code" | "agreement" | None   (pure)
 check(tab)                → the same for an open tab; None on any error
 
 A CAPTCHA counts only when its challenge is VISIBLE: Greenhouse and others load an
 invisible reCAPTCHA on every form, which is not a wall. Login = sign-in wording plus a
 visible password box (WALL_JS appends "[password-field]" to the text when there is one).
+Agreement = an "I Accept / I Decline" privacy notice in front of the form — the user's
+consent to give, never clicked by Aria.
 """
 from __future__ import annotations
 
@@ -15,11 +17,15 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-NAMES = {"captcha": "a CAPTCHA", "login": "a login page", "email_code": "an email code check"}
+NAMES = {"captcha": "a CAPTCHA", "login": "a login page", "email_code": "an email code check",
+         "agreement": "a privacy notice only you can accept"}
 
 _CHALLENGE_FRAME = re.compile(r"recaptcha/api2/bframe|hcaptcha\.com/.*challenge|challenges\.cloudflare\.com", re.I)
 _HUMAN_TEXT = re.compile(r"verify (?:that )?you(?:'re| are) (?:a )?human|are you a robot|press (?:and|&) hold", re.I)
 _LOGIN_TEXT = re.compile(r"\b(?:sign in|log in|login)\b", re.I)
+# Buttons' innerText runs together ("I AcceptI Decline"), so no word boundaries; both must show.
+_ACCEPT_TEXT = re.compile(r"I\s*accept", re.I)
+_DECLINE_TEXT = re.compile(r"I\s*decline", re.I)
 _CODE_TEXT = re.compile(r"enter the (?:\d-digit )?code|verification code (?:we )?sent|code (?:we )?sent to your email|"
                         r"check your email for a code", re.I)
 PASSWORD_MARK = "[password-field]"
@@ -44,6 +50,8 @@ def detect(text: str, url: str, frames: list) -> Optional[str]:
         return "email_code"
     if PASSWORD_MARK in text and _LOGIN_TEXT.search(text):
         return "login"
+    if _ACCEPT_TEXT.search(text) and _DECLINE_TEXT.search(text):
+        return "agreement"
     return None
 
 
