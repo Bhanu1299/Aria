@@ -78,34 +78,58 @@ def summary_line(d: dict) -> str:
     return " · ".join(out) if out else "Nothing needs you right now."
 
 
+SHOWN = 5        # items per group before "show more"
+
+
+def _group(title: str, items: list, item, hint: str = "", down: str = "") -> str:
+    """One to-do group; empty groups render nothing."""
+    if down:
+        return f'<div class="todo"><h3>{e(title)}</h3>{_no_data(down)}</div>'
+    if not items:
+        return ""
+    lis = lambda xs: "".join(f"<li>{item(i)}</li>" for i in xs)
+    more = (f'<details><summary>Show {len(items) - SHOWN} more</summary><ul>{lis(items[SHOWN:])}</ul></details>'
+            if len(items) > SHOWN else "")
+    hint_html = f'<p class="hint">{e(hint)}</p>' if hint else ""
+    return (f'<div class="todo"><h3>{e(title)} <span class="count">{len(items)}</span></h3>{hint_html}'
+            f'<ul>{lis(items[:SHOWN])}</ul>{more}</div>')
+
+
 def render(mdl: dict) -> str:
     srcs = mdl["sources"]
     g = srcs.get("gmail")
     me = (g.data or {}).get("me", "") if g is not None and g.ok else ""
     d = build(mdl)
-    link = lambda t: f' <a href="{e(_thread_url(me, t["id"]))}" target="_blank" rel="noopener">thread</a>' if me and t.get("id") else ""
-    job = lambda j: f"{e(j.company)} — {e(j.role)}" if j is not None else "(no matching job)"
+    link = lambda t: f' · <a href="{e(_thread_url(me, t["id"]))}" target="_blank" rel="noopener">open thread</a>' if me and t.get("id") else ""
+    job = lambda j: f"<b>{e(j.company)}</b> — {e(j.role)}" if j is not None else "(no matching job)"
+    missing = {id(i["job"]): i["count"] for i in m.needs_me(mdl)["fields"]} if srcs.get("aria_db") and srcs["aria_db"].ok else {}
 
-    def card(title, items, item, down="", empty="Nothing."):
-        body = _no_data(down) if down else ('<p class="muted">' + e(empty) + '</p>' if not items else
-                                            "<ul>" + "".join(f"<li>{item(i)}</li>" for i in items) + "</ul>")
-        return f'<div class="card"><h3>{e(title)} <span class="count">{len(items)}</span></h3>{body}</div>'
+    def finish(j) -> str:
+        human = j.status.lower() == "needs human"
+        state = '<span class="pill bad">Needs you</span>' if human else '<span class="pill warn">Filled, not submitted</span>'
+        n = missing.get(id(j), 0)
+        gap = (f' · <a href="#answers">{n} answer{"s" if n != 1 else ""} missing</a>') if n else ""
+        return f'{job(j)} {state}<span class="muted small">{gap}</span>'
 
     gm = _down(srcs, "gmail")
-    cards = [
-        card("Replies to answer", d["replies"], lambda t: f'{job(t.get("job"))} · {e(t["to"])} — last {_date(t["last"])}{link(t)}', gm),
-        card("Interviews", d["interviews"], lambda i: f'{job(i["job"])} <span class="muted small">{e(i["why"])}</span>'
-             + (link(i["thread"]) if i.get("thread") else "")),
-        card("Bounces", d["bounces"], lambda t: f'{job(t.get("job"))} · {e(t["to"])} bounced {_date(t["bounced"])}{link(t)}'
-             f'<div class="fix small">Fix: {e(t["fix"])}</div>', gm),
-        card(f"Follow-ups due (no reply in {m.FOLLOW_UP_DAYS}+ days)", d["follow_ups"],
-             lambda t: f'{job(t["job"])} · {e(t["to"])} — sent {_date(t["sent"])}{link(t)}', gm),
-        card("Applications to finish", d["finish"], lambda j: f'{job(j)} <span class="muted small">{e(j.stage_label if j.status.lower() != "needs human" else "Needs human")}</span>'),
-        card(f"Drafts to send ({m.DRAFT_STALE_DAYS}+ days old)", d["drafts"],
-             lambda x: f'{job(x.get("job"))} · {e(x["to"] or "no recipient")} <span class="muted small">“{e(x["subject"][:50])}”</span>'
-             + link({"id": x["thread_id"]}), gm),
-        card("LinkedIn notes to send", d["linkedin"], linkedin_item, empty="Nothing.") .replace("</h3>", '</h3><p class="muted small">From the sheet’s outreach columns; Aria can’t see LinkedIn, so some may already be sent.</p>', 1),
-        card("Deadlines in the next 3 days", d["deadlines"], lambda j: f'{job(j)} — {_date(j.deadline)}',
-             empty=("None." if mdl.get("has_deadline_col") else "Your sheet has no Deadline column, so there are no deadlines to show.")),
+    groups = [
+        _group("Applications to finish", d["finish"], finish,
+               "Each is open in its own Chrome tab. Answer what's missing, then say “submit it”."),
+        _group("Replies to answer", d["replies"], lambda t: f'{job(t.get("job"))} <span class="muted small">· {e(t["to"])} · last {_date(t["last"])}{link(t)}</span>', gm),
+        _group("Interviews", d["interviews"], lambda i: f'{job(i["job"])} <span class="muted small">· {e(i["why"])}'
+               + (link(i["thread"]) if i.get("thread") else "") + "</span>"),
+        _group("Bounced emails", d["bounces"], lambda t: f'{job(t.get("job"))} <span class="muted small">· {e(t["to"])} bounced {_date(t["bounced"])}{link(t)}</span>'
+               f'<div class="fix small">{e(t["fix"])}</div>', down=gm if gm else ""),
+        _group(f"Follow-ups due (no reply in {m.FOLLOW_UP_DAYS}+ days)", d["follow_ups"],
+               lambda t: f'{job(t["job"])} <span class="muted small">· {e(t["to"])} · sent {_date(t["sent"])}{link(t)}</span>'),
+        _group(f"Drafts waiting to send ({m.DRAFT_STALE_DAYS}+ days old)", d["drafts"],
+               lambda x: f'{job(x.get("job"))} <span class="muted small">· {e(x["to"] or "no recipient")} · “{e(x["subject"][:50])}”'
+               + link({"id": x["thread_id"]}) + "</span>"),
+        _group("Deadlines in the next 3 days", d["deadlines"], lambda j: f'{job(j)} <span class="muted small">· {_date(j.deadline)}</span>'),
+        _group("LinkedIn notes to send", d["linkedin"], linkedin_item,
+               "From the sheet's outreach columns. Aria can't see LinkedIn, so some may already be sent."),
     ]
-    return f'<p class="summary">{e(summary_line(d))}</p><div class="cards">{"".join(cards)}</div>'
+    body = "".join(groups)
+    if not body:
+        body = '<p class="allclear">Nothing needs you right now.</p>'
+    return f'<p class="summary">{e(summary_line(d))}</p>{body}'

@@ -64,7 +64,7 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
 
     guard("today", lambda: today.render(mdl) + render.today_extras(mdl))
     guard("answers", lambda: answers.render(srcs.get("reviews")))
-    guard("applications", lambda: applications.render(mdl) + render.all_jobs_table(mdl))
+    guard("applications", lambda: applications.render(mdl) + render.funnel_details(mdl) + render.all_jobs_table(mdl))
     guard("health", lambda: health.render(mdl))
     guard("live", lambda: tabs.live_tab(run_log.read_runs(10) if runs is None else runs, apps=open_apps()))
 
