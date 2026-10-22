@@ -214,6 +214,8 @@ _NEXT_TEXT = re.compile(r"^\s*(?:next|continue|save (?:and|&) continue|next (?:s
 _SUBMIT_TEXT = re.compile(r"\b(?:submit|send|apply|finish|complete)\b", re.I)
 _OPTION_SEL = ('[role="option"], [role="listbox"] li, [class*="option" i]:not(select):not(option), '
                '[class*="dropdown-results" i] > *, [class*="suggestion" i], [class*="autocomplete" i] li, .pac-item')
+_MARK_PRE_JS = """(sel) => document.querySelectorAll(sel).forEach(e => {
+  const r = e.getBoundingClientRect(); if (r.width > 0 && r.height > 0) e.setAttribute('data-aria-pre', '1'); })"""
 # One-line inputs that are typeaheads on many forms: type, then click the suggestion.
 _TYPEAHEAD_LABEL = re.compile(r"\blocation\b|\bcity\b|where are you (?:based|located)", re.I)
 
@@ -270,6 +272,9 @@ def _pick_combobox(page, fid: str, value: str, wait_ms: int = 4000) -> Optional[
     """Custom dropdown / typeahead: click, type, wait for options, click the match.
     Returns the option clicked, or None."""
     el = _loc(page, fid)
+    # Only this dropdown's options: the listbox it controls, else options that appeared on
+    # opening it (anything already visible belongs to another question).
+    page.evaluate(_MARK_PRE_JS, _OPTION_SEL)
     el.click(timeout=4000)
     typed = re.split(r"[,(]", value)[0].strip()[:40]
     try:
@@ -278,14 +283,30 @@ def _pick_combobox(page, fid: str, value: str, wait_ms: int = 4000) -> Optional[
             el.press_sequentially(typed, delay=30)
     except Exception:
         pass
-    opts = page.locator(_OPTION_SEL)
+    owned = el.get_attribute("aria-controls") or el.get_attribute("aria-owns") or ""
+    owned = owned.split()[0] if owned.split() else ""
+    if owned and page.locator(f'[id="{owned}"]').count():
+        opts = page.locator(f'[id="{owned}"]').locator('[role="option"], li')
+    else:
+        opts = page.locator(_OPTION_SEL)
     try:
         opts.first.wait_for(state="visible", timeout=wait_ms)
     except Exception:
+        try:
+            deadline = time.time() + wait_ms / 1000.0
+            while time.time() < deadline and not any(
+                    opts.nth(i).is_visible() and opts.nth(i).get_attribute("data-aria-pre") is None
+                    for i in range(opts.count())):
+                time.sleep(0.2)
+        except Exception:
+            pass
+    time.sleep(0.3)
+    visible = [i for i in range(opts.count())
+               if opts.nth(i).is_visible() and opts.nth(i).get_attribute("data-aria-pre") is None]
+    page.evaluate("() => document.querySelectorAll('[data-aria-pre]').forEach(e => e.removeAttribute('data-aria-pre'))")
+    if not visible:
         page.keyboard.press("Escape")
         return None
-    time.sleep(0.3)
-    visible = [i for i in range(opts.count()) if opts.nth(i).is_visible()]
     texts = [opts.nth(i).inner_text().strip() for i in visible]
     target = _choose(value, texts)
     if target is None:
@@ -370,8 +391,15 @@ def matches(p: Planned, got: dict) -> bool:
     if f.kind in ("text", "textarea", "date"):
         norm = lambda t: re.sub(r"\s+", " ", t).strip().lower()
         return norm(actual) == norm(_iso_date(want) if f.kind == "date" else want) or norm(actual).startswith(norm(want)[:40])
-    target = (_choose(want.split(";")[0].strip(), f.options) if f.options else None) or want
-    return target.lower()[:30] in actual.lower() or actual.lower() in target.lower()
+    norm = lambda t: re.sub(r"\s+", " ", t).strip().lower()
+    wanted = [v.strip() for v in want.split(";") if v.strip()] if f.kind == "checkgroup" else [want]
+    targets = [norm((_choose(v, f.options) if f.options else None) or v) for v in wanted]
+    if f.kind in ("select", "radio", "checkgroup", "multiselect"):
+        # native selects / radios read back the exact option text: the whole option must match
+        got = {norm(x) for x in actual.split(";")} if f.kind in ("checkgroup", "multiselect") else {norm(actual)}
+        return all(t in got for t in targets)
+    a = norm(actual)                 # custom dropdowns read back their box text: the option as a whole phrase
+    return all(re.search(r"(?<!\w)" + re.escape(t) + r"(?![\w,])", a) for t in targets)
 
 
 def find_next(page):
@@ -399,7 +427,7 @@ def _status(source: str) -> str:
 def wall(page) -> Optional[str]:
     from aria.features.applying import walls
     got = page.evaluate(walls.WALL_JS)
-    return walls.detect(got.get("text", ""), got.get("url", ""), got.get("frames") or [])
+    return walls.detect(got.get("text", ""), got.get("url", ""), got.get("frames") or [], bool(got.get("agreement")))
 
 
 def fill(job: dict, description: str = "", progress_fn: Optional[Callable[[str], None]] = None,

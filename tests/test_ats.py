@@ -204,7 +204,7 @@ def test_plan_agreements_are_never_filled():
     spy = Spy()
     plans = _plan("anthropic_jobboards", spy)
     for label in ("AI Policy for Application", "Please read the arbitration agreement below", "Agreement to Arbitrate"):
-        assert (plans[label].source, plans[label].value) == ("consent", ""), label
+        assert (plans[label].source, plans[label].value, plans[label].category) == ("needs_me", "", "consent"), label
     asked = [q["label"] for call in spy.guess_calls for q in call]
     assert not any("arbitrat" in a.lower() or "policy" in a.lower() for a in asked)
 
@@ -549,3 +549,37 @@ def test_fill_types_to_search_for_school(monkeypatch):
     assert gh._fill_one(Page(), p)
     assert seen == {"name": "school--0", "value": "University at Buffalo, SUNY",
                     "type_text": "University at Buffalo", "search": True}
+
+
+# ── review findings 2026-10-22 ──────────────────────────────────────────────
+
+def test_drafted_cover_letter_longer_than_a_path_is_written_to_a_file(tmp_path, monkeypatch):
+    """#1: an 800-char draft was fed to Path.is_file() → OSError(ENAMETOOLONG) on 3.9."""
+    from aria.features.ats import planner
+    monkeypatch.setattr(planner, "COVER_LETTER_DIR", tmp_path / "cl")
+    text = "I build voice agents in Python and care about evaluation. " * 14
+    p = gh.Planned(gh.FormField("cover_letter", "Cover Letter", "file", True), text, "llm_draft")
+    out = planner.upload_path(p)
+    assert out.endswith(".txt") and open(out).read() == text
+
+
+@pytest.mark.parametrize("label", [
+    "I confirm the information I provided is true and accurate",
+    "I certify that my answers are complete",
+    "I hereby declare the above is true and correct",
+    "I understand that false statements may result in disqualification",
+])
+def test_attestation_checkbox_is_unknown_never_the_llm_never_ticked(label):
+    """#2: attestations are the user's; Aria never asks the LLM and never ticks them."""
+    spy = Spy(guesses={label: "Yes"})
+    form = gh.ParsedForm(fields=[gh.FormField("att", label, "checkbox", True)], company="Acme")
+    [p] = gh.plan(form, {"company": "Acme"}, "profile", spy.guess, spy.draft_fn)
+    assert (p.source, p.value, p.category) == ("needs_me", "", "consent")
+    assert spy.guess_calls == [] and spy.draft_calls == []
+
+
+def test_required_plain_checkbox_is_never_ticked_by_the_llm():
+    spy = Spy(guesses={"Text me about my application": "Yes"})
+    form = gh.ParsedForm(fields=[gh.FormField("sms", "Text me about my application", "checkbox", True)])
+    [p] = gh.plan(form, {}, "profile", spy.guess, spy.draft_fn)
+    assert p.source == "needs_me" and spy.guess_calls == []

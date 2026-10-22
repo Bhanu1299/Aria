@@ -115,21 +115,26 @@ def render(mdl: dict) -> str:
     groups = [
         _group("Applications to finish", d["finish"], finish,
                "Each is open in its own Chrome tab. Answer what's missing, then say “submit it”."),
-        _group("Replies to answer", d["replies"], lambda t: f'{job(t.get("job"))} <span class="muted small">· {e(t["to"])} · last {_date(t["last"])}{link(t)}</span>', gm),
+        _group("Replies to answer", d["replies"], lambda t: f'{job(t.get("job"))} <span class="muted small">· {e(t["to"])} · last {_date(t["last"])}{link(t)}</span>', down=gm),
         _group("Interviews", d["interviews"], lambda i: f'{job(i["job"])} <span class="muted small">· {e(i["why"])}'
                + (link(i["thread"]) if i.get("thread") else "") + "</span>"),
         _group("Bounced emails", d["bounces"], lambda t: f'{job(t.get("job"))} <span class="muted small">· {e(t["to"])} bounced {_date(t["bounced"])}{link(t)}</span>'
-               f'<div class="fix small">{e(t["fix"])}</div>', down=gm if gm else ""),
+               f'<div class="fix small">{e(t["fix"])}</div>', down=gm),
         _group(f"Follow-ups due (no reply in {m.FOLLOW_UP_DAYS}+ days)", d["follow_ups"],
-               lambda t: f'{job(t["job"])} <span class="muted small">· {e(t["to"])} · sent {_date(t["sent"])}{link(t)}</span>'),
+               lambda t: f'{job(t["job"])} <span class="muted small">· {e(t["to"])} · sent {_date(t["sent"])}{link(t)}</span>', down=gm),
         _group(f"Drafts waiting to send ({m.DRAFT_STALE_DAYS}+ days old)", d["drafts"],
                lambda x: f'{job(x.get("job"))} <span class="muted small">· {e(x["to"] or "no recipient")} · “{e(x["subject"][:50])}”'
-               + link({"id": x["thread_id"]}) + "</span>"),
+               + link({"id": x["thread_id"]}) + "</span>", down=gm),
         _group("Deadlines in the next 3 days", d["deadlines"], lambda j: f'{job(j)} <span class="muted small">· {_date(j.deadline)}</span>'),
         _group("LinkedIn notes to send", d["linkedin"], linkedin_item,
                "From the sheet's outreach columns. Aria can't see LinkedIn, so some may already be sent."),
     ]
     body = "".join(groups)
-    if not body:
+    down = [n for n in ("sheet", "gmail", "aria_db") if _down(srcs, n)]
+    summary = summary_line(d)
+    if down:                       # an outage is never "nothing needs you"
+        summary = f"{_down(srcs, *down)} — what's below may be incomplete." + \
+            ("" if summary.startswith("Nothing") else f" {summary}")
+    elif not body:
         body = '<p class="allclear">Nothing needs you right now.</p>'
-    return f'<p class="summary">{e(summary_line(d))}</p>{body}'
+    return f'<p class="summary">{e(summary)}</p>{body}'

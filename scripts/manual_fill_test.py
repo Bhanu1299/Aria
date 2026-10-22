@@ -34,6 +34,7 @@ def main(argv: list) -> int:
     jobs = [("", "", u) for u in argv] if argv else DEFAULT
     OUT.mkdir(parents=True, exist_ok=True)
     passed = 0
+    table = []
     for i, (company, role, url) in enumerate(jobs, 1):
         job = {"company": company, "role": role, "url": url}
         tab = f"filltest-{int(time.time())}-{i}"
@@ -54,6 +55,9 @@ def main(argv: list) -> int:
         reached = result.ats == "greenhouse" or stop in ("final page", "needs you") or stop.startswith("blocked by")
         ok = bool(rows) and reached and not open_to_user and not result.error
         passed += ok
+        table.append((company or url[:40], "yes" if reached and not stop.startswith("blocked by") else
+                      ("wall: " + stop[len("blocked by "):] if stop.startswith("blocked by") else "no"),
+                      len(unknown), len(failed), len(open_to_user), "PASS" if ok else "FAIL"))
         print(f"   {'PASS' if ok else 'FAIL'} in {time.time() - t0:.0f}s · ats={result.ats}/{result.identified} · "
               f"stopped_at={getattr(result, 'stopped_at', '')} · {log['summary']}")
         for r in rows:
@@ -64,6 +68,9 @@ def main(argv: list) -> int:
             print("   FAILED:", failed)
         if unknown:
             print("   UNKNOWN:", unknown)
+    print(f"\n{'site':<16} {'reached review':<44} {'UNKNOWN':>7} {'FAILED':>6} {'open Qs to you':>14}  result")
+    for row in table:
+        print(f"{row[0]:<16} {row[1]:<44} {row[2]:>7} {row[3]:>6} {row[4]:>14}  {row[5]}")
     print(f"\n{passed}/{len(jobs)} passed")
     return 0 if passed >= max(1, len(jobs) - 1) else 1
 
