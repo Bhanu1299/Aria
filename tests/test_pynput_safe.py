@@ -82,3 +82,17 @@ def test_install_is_idempotent(fresh):
     assert pynput_safe.install() is True
     patched = kbd.keycode_context
     assert pynput_safe.install() is True and kbd.keycode_context is patched
+
+
+def test_media_key_without_injected_does_not_kill_the_hotkey(fresh):
+    """pynput 1.8.1 calls GlobalHotKeys._on_press(key) with no `injected` for media keys."""
+    from pynput import keyboard
+    pynput_safe, _util, _kbd = fresh
+    pynput_safe.install()
+    fired = []
+    hk = keyboard.GlobalHotKeys({"<alt>+<space>": lambda: fired.append(1)})
+    hk._on_press(keyboard.Key.media_volume_up)              # used to raise TypeError → listener stopped
+    hk._on_release(keyboard.Key.media_volume_up)
+    hk._on_press(keyboard.Key.alt, False)
+    hk._on_press(keyboard.Key.space, False)
+    assert fired == [1]

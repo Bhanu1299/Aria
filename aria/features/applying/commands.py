@@ -3,6 +3,7 @@
 Pure code, zero tokens, never an agent tool: no LLM can submit or close anything.
 
   start applications / let's apply to some jobs   bring everything up (startup), re-attach tabs, start the run
+  open my dashboard               start the job dashboard if it's down and show it (no run)
   pause / resume / stop           only while a run is active (else not claimed: music keeps them)
   submit it | submit <company>    the tab in front | that company's tab; unclear → ask
   I submitted it | … <company>    the user submitted by hand
@@ -42,8 +43,8 @@ def configure(say: Callable[[str], None], voice_ask: Optional[Callable[[str], st
 _APPS = r"(?: (?:the |my )?applications?| applying)?"
 _START = re.compile(
     r"start (?:the |my )?(?:job )?applications?|start applying(?: (?:to|for) (?:some )?jobs)?|"
-    r"(?:let'?s|let us|i want to|time to)(?: go)?(?: start)? apply(?:ing)?(?: (?:to|for) (?:some |a few |a couple of |my )?jobs)?(?: now)?|"
-    r"apply (?:to|for) (?:some|a few|a couple of) jobs")
+    r"(?:let'?s|let us|i want to|time to)(?: go)?(?: start)? apply(?:ing)?(?: it)?(?: (?:to|for) (?:some |a few |a couple of |my )?jobs)?(?: now)?|"
+    r"apply (?:it )?(?:to|for) (?:some|a few|a couple of) jobs")      # Whisper: "apply it to some jobs"
 # Whisper puts stray words in front ("here, let us start applying to jobs"): allow two,
 # never a negation or a question word ("don't start applying", "why did you start…")
 _START_LEAD = re.compile(
@@ -53,6 +54,10 @@ _START_LEAD = re.compile(
 _NEGATION = re.compile(
     r"\b(?:not|no|never|nope|cannot|stop|dont|wont|cant|shouldnt|wouldnt|couldnt|isnt|arent|wasnt|"
     r"didnt|doesnt|mustnt|havent|hasnt)\b|\w+n't\b")
+# "open my dashboard", "show the job dashboard", "open the dashboard for job applications"
+_DASHBOARD = re.compile(
+    r"(?:open|show|pull up|bring up)(?: me)?(?: the| my)?(?: jobs?| job applications?| applications?| application)?"
+    r" dashboard(?: (?:for|of) (?:my |the )?(?:jobs?|job applications?|applications?))?")
 _PAUSE = re.compile(r"pause" + _APPS + r"|hold on|wait")
 _RESUME = re.compile(r"(?:resume|continue|keep going|go on|unpause)" + _APPS)
 _STOP = re.compile(r"stop" + _APPS + r"|stop the run")
@@ -245,6 +250,9 @@ def handle(text: str) -> Optional[str]:
     answered = _answer(q)
     if answered is not None:
         return answered
+
+    if _DASHBOARD.fullmatch(q):
+        return startup.open_dashboard()
 
     if _START_LEAD.fullmatch(q) and not _NEGATION.search(q):
         ok, message = startup.bring_up()

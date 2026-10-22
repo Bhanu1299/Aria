@@ -79,6 +79,14 @@ def describe_job(job: dict) -> str:
     return f"Next job from your sheet: {job['role']} at {job['company']}{where}, row {job['row']}. {link}"
 
 
+def _terminal_progress(msg: str) -> None:
+    """Fill progress goes to the terminal / log, never the speaker: an application run speaks
+    only for walls and once when it's done (and never reads your answers aloud)."""
+    if msg:
+        print(f"[APPLY] {msg}", flush=True)
+        logger.info("apply progress: %s", msg)
+
+
 class ApplyPlugin(_plugin_base.PluginBase):
 
     def __init__(self, speaker=None, voice_capture=None, transcriber=None, keyterms_prompt: str = "") -> None:
@@ -186,7 +194,7 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 run.finish("error", f"reading the sheet failed: {exc}")
                 return "I couldn't read your job sheet right now."
             memory.set_persistent(CURRENT_JOB_KEY, job)
-            return applicator.run_application(job, progress_fn=self._progress_fn(), voice_ask_fn=self._voice_ask,
+            return applicator.run_application(job, progress_fn=_terminal_progress, voice_ask_fn=self._voice_ask,
                                               run=run)
 
         return ToolDescriptor(

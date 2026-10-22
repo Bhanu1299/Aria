@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import httpx
 
@@ -80,26 +81,52 @@ def bring_up(open_dashboard: bool = True) -> tuple:
     except Exception as exc:
         return _fail("Coldstart", exc)
 
-    if not dashboard_up():
-        try:
-            _spawn_dashboard()
-        except Exception as exc:
-            return _fail("The dashboard", exc)
-        deadline = time.time() + DASHBOARD_WAIT_SECS
-        while not dashboard_up():
-            if time.time() > deadline:
-                return _fail("The dashboard", f"nothing answered on port {DASHBOARD_PORT} (log: {_DASHBOARD_LOG})")
-            time.sleep(0.3)
+    problem = _ensure_dashboard()
+    if problem:
+        return _fail("The dashboard", problem)
 
     try:
         agent_browser.run(lambda page: page.url)
     except Exception as exc:
         return _fail("Chrome", exc)
 
-    if open_dashboard:
+    if open_dashboard:                 # in a background tab: a run never takes focus
         try:
             agent_browser.navigate(DASHBOARD_URL + "#live", settle_secs=0.5, tab=DASHBOARD_TAB)
-            agent_browser.bring_to_front(DASHBOARD_TAB)
         except Exception as exc:
             logger.warning("couldn't open the dashboard tab: %s", exc)
     return True, "GateLLM, Coldstart, the dashboard and Chrome are up."
+
+
+def _ensure_dashboard() -> Optional[str]:
+    """None once the dashboard answers /health (started detached if it was down), else why not."""
+    if dashboard_up():
+        return None
+    try:
+        _spawn_dashboard()
+    except Exception as exc:
+        return str(exc)
+    deadline = time.time() + DASHBOARD_WAIT_SECS
+    while not dashboard_up():
+        if time.time() > deadline:
+            return f"nothing answered on port {DASHBOARD_PORT} (log: {_DASHBOARD_LOG})"
+        time.sleep(0.3)
+    return None
+
+
+def _show_dashboard() -> None:
+    agent_browser.navigate(DASHBOARD_URL, settle_secs=0.5, tab=DASHBOARD_TAB)
+
+
+def open_dashboard() -> str:
+    """The user asked to see the job dashboard: start it if needed, open it in a background
+    tab of Aria's Chrome (it never takes focus). Starts no run and needs no LLM."""
+    problem = _ensure_dashboard()
+    if problem:
+        return f"The dashboard isn't working: {problem.rstrip('.')}."
+    try:
+        _show_dashboard()
+    except Exception as exc:
+        logger.warning("couldn't open the dashboard tab: %s", exc)
+        return f"The dashboard is running, but I couldn't open it in Chrome. It's at {DASHBOARD_URL}"
+    return "Your job dashboard is open in a tab in Aria's Chrome."

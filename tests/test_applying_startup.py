@@ -31,7 +31,6 @@ def up(monkeypatch):
         return "about:blank"
     monkeypatch.setattr(agent_browser, "run", run)
     monkeypatch.setattr(agent_browser, "navigate", lambda url, settle_secs=0, tab=None, **k: state["opened"].append((url, tab)))
-    monkeypatch.setattr(agent_browser, "bring_to_front", lambda name: None)
     return state
 
 
@@ -89,3 +88,33 @@ def test_launching_aria_never_starts_applications(monkeypatch):
 def test_python_m_aria_usage(capsys):
     import aria.__main__ as cli
     assert cli.main([]) == 2 and "python -m aria start" in capsys.readouterr().out
+
+
+# ── 2026-10-22 live log: "open the dashboard" went to the agent, "apply it to" missed ──
+
+def test_open_dashboard_by_voice_starts_and_shows_it_without_a_run(up, monkeypatch):
+    from aria.features.applying import commands, session
+    monkeypatch.setattr(session, "start", lambda *a, **k: pytest.fail("opening the dashboard must not start a run"))
+    up["dashboard"] = False
+    spawned = []
+    monkeypatch.setattr(startup, "_spawn_dashboard", lambda: spawned.append(1) or up.update(dashboard=True))
+    for said in ("Open the dashboard, please.", "Open my dashboard for job applications.", "show me the job dashboard"):
+        assert commands.handle(said) == "Your job dashboard is open in a tab in Aria's Chrome.", said
+    assert spawned == [1] and up["opened"][-1] == (startup.DASHBOARD_URL, startup.DASHBOARD_TAB)
+    assert commands.handle("open the dashboard folder") is None              # not ours: normal routing
+
+
+def test_whisper_it_after_apply_still_starts_and_negation_still_blocks():
+    from aria.dispatch.parse import normalize
+    from aria.features.applying import commands
+    starts = lambda s: bool(commands._START_LEAD.fullmatch(normalize(s))) and not commands._NEGATION.search(normalize(s))
+    assert starts("Arya, let's apply it to some jobs.") and starts("apply it to some jobs")
+    assert not starts("Don't apply it to some jobs.")
+
+
+def test_apply_job_tool_never_speaks_progress(monkeypatch, capsys):
+    from aria.plugins import apply as apply_plugin
+    apply_plugin._terminal_progress("Typing: someone@example.com")
+    assert "[APPLY] Typing: someone@example.com" in capsys.readouterr().out
+    import inspect
+    assert "progress_fn=_terminal_progress" in inspect.getsource(apply_plugin.ApplyPlugin._apply_job_tool)
