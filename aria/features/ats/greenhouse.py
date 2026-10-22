@@ -7,16 +7,15 @@ Pipeline (fill()):
                description); a DOM pass adds inputs it doesn't list (country,
                candidate-location, hispanic_ethnicity, consent checkboxes)
   3. options   selects with no known options (DOM-only) are opened once to read them
-  4. plan      plan(): answer bank first; a question the bank KNOWS but the user hasn't
-               answered (e.g. sponsorship: null) → needs_me, never an LLM guess;
-               required unknown short fields → SMALL-tier guess (llm_guess);
-               "why us"-style textareas → FRONTIER draft (llm_draft);
-               EEO / demographic questions are never guessed
+  4. plan      planner.plan() — the rules shared with every form (see planner.py):
+               bank facts, never-guessed sensitive answers, open text written by the LLM
+               from the resume, only missing facts left for the user
   5. fill      type / pick / upload via agent_browser — no button is ever clicked
-  6. read back every field's actual DOM value → review rows
+  6. verify    read back every field's DOM value; refill what didn't stick (2 retries)
+               → review rows; still wrong → failed
 
-Review row: {name, label, kind, value, source, required, note}
-  source: bank | llm_guess | llm_draft | needs_me | skipped
+Review row: {name, label, kind, category, value, source, required, note}
+  source: see planner.SOURCES
 """
 from __future__ import annotations
 
@@ -32,13 +31,13 @@ from typing import Callable, Optional
 
 import aria.features.answer_bank as answer_bank
 import aria.web.agent_browser as agent_browser
-from aria.core import paths as _aria_paths
-from aria.features.ats import answers as llm_answers
+from aria.features.ats import answers as llm_answers  # noqa: F401
+from aria.features.ats import planner
 from aria.features.ats.detect import greenhouse_form_url
+from aria.features.ats.planner import (FILLED_SOURCES, SOURCES, FormField, ParsedForm, Planned,  # noqa: F401
+                                       build_profile, plan, resume_path)
 
 logger = logging.getLogger(__name__)
-
-SOURCES = ("bank", "llm_guess", "llm_draft", "needs_me", "skipped")
 
 _REMIX = re.compile(r"window\.__remixContext\s*=\s*(\{.*?\});\s*</script>", re.S)
 _TYPE_KIND = {
@@ -50,44 +49,8 @@ _TYPE_KIND = {
 }
 # Alternate inputs Greenhouse renders next to a file upload ("Enter manually").
 _ALT_TEXT_FIELDS = {"resume_text", "cover_letter_text"}
-_DRAFT_LABEL = re.compile(
-    r"\bwhy\b|\bdescribe\b|\btell us\b|\bwhat (?:excites|interests|draws|motivates)\b|\bcover letter\b", re.I
-)
-# Agreements, attestations and consents are the user's to give — never filled for them.
-_ATTESTATION = re.compile(
-    r"\bagree|\backnowledg|\barbitrat|\bconsent|\bcertif|\battest|\bpolicy\b|\bterms\b|"
-    r"\bprivacy\b|\bplease (?:read|review)\b|\bsignature\b|\bsign\b",
-    re.I,
-)
 TAB = "apply"          # agent_browser tab the form stays open in for review
 _FORM_READY = '#application-form, #application_form, [id="first_name"]'
-
-
-@dataclass
-class FormField:
-    name: str                 # DOM id
-    label: str
-    kind: str                 # text | textarea | file | select | multiselect | location | checkbox
-    required: bool = False
-    options: list = field(default_factory=list)
-    section: str = "questions"  # questions | eeoc | demographic | dom
-
-
-@dataclass
-class Planned:
-    field: FormField
-    value: str = ""
-    source: str = "skipped"
-    note: str = ""
-
-
-@dataclass
-class ParsedForm:
-    fields: list
-    title: str = ""
-    company: str = ""
-    description: str = ""
-    salary_range: Optional[tuple] = None
 
 
 # ---------------------------------------------------------------------------
@@ -269,157 +232,10 @@ def parse_form(html: str, schema_html: str = "") -> ParsedForm:
 
 
 # ---------------------------------------------------------------------------
-# Planning (pure apart from the injected LLM functions)
+# Review (pure)
 # ---------------------------------------------------------------------------
 
-def _identity() -> dict:
-    try:
-        return json.loads(_aria_paths.IDENTITY_JSON.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def resume_path() -> Optional[str]:
-    """resume_path from the answer bank, else identity.json — only if the file exists."""
-    bank = answer_bank.load()
-    candidates = [bank["answers"].get("resume_path"), _identity().get("resume_path")]
-    for c in candidates:
-        if c and Path(str(c)).expanduser().is_file():
-            return str(Path(str(c)).expanduser())
-    return None
-
-
-def build_profile(job: dict) -> str:
-    """Facts the LLM may use: the user's own bank answers, identity, and the sheet row."""
-    bank = answer_bank.load()
-    lines = []
-    for k, v in bank["answers"].items():
-        if k in ("eeo", "salary_rule", "resume_path") or v in (None, "") or isinstance(v, dict):
-            continue
-        if not str(v).startswith("<"):
-            lines.append(f"{k}: {v}")
-    ident = _identity()
-    for k in ("summary", "skills", "experience", "education", "target_roles"):
-        if ident.get(k):
-            lines.append(f"{k}: {json.dumps(ident[k]) if not isinstance(ident[k], str) else ident[k]}")
-    fit = next((v for k, v in (job.get("fields") or {}).items() if k.lower().startswith("why it's a fit")), "")
-    if fit:
-        lines.append(f"notes on this role and the candidate's relevant work:\n{fit}")
-    return "\n".join(lines)
-
-
-# Greenhouse's education block: field ids say what each one is; labels ("Start date
-# year") would match the job's start date instead.
-_EDU_FIELD = re.compile(r"^(school|degree|discipline|start-month|start-year|end-month|end-year)--\d+$")
-_EDU_KEY = {"school": "school", "degree": "degree", "discipline": "major", "start-month": "edu_start_month",
-            "start-year": "edu_start_year", "end-month": "grad_month", "end-year": "grad_year"}
-# Remote-search dropdowns: the first 100 options are all that load until you type.
-_SEARCHABLE = {"school", "discipline"}
 _SEARCH_FIELD = re.compile(r"^(?:school|discipline)--\d+$")
-
-
-def _why_unfilled(key: str, f: "FormField", job_ctx: dict) -> str:
-    """The review note for a field the bank knows but couldn't fill."""
-    plain = answer_bank.lookup_key(key, job=job_ctx, label=f.label)
-    if plain and f.options:
-        return f"your answer “{plain.value}” isn't one of the options"
-    return f"no {answer_bank.key_title(key).lower()} in your bank yet"
-
-
-def plan(
-    form: ParsedForm,
-    job: dict,
-    profile: str,
-    guess_fn: Callable = llm_answers.guess_short,
-    draft_fn: Callable = llm_answers.draft_long,
-    resume: Optional[str] = None,
-    progress_fn: Optional[Callable[[str], None]] = None,
-    llm_available: bool = True,
-) -> list:
-    job_ctx = {**job, "salary_range": form.salary_range or job.get("salary_range"),
-               "description": form.description or job.get("description", "")}
-    plans: list[Planned] = []
-    to_guess: list[Planned] = []
-    to_draft: list[Planned] = []
-
-    for f in form.fields:
-        p = Planned(f)
-        plans.append(p)
-        if f.kind == "file":
-            if f.name == "resume" or "resume" in f.label.lower() or "cv" in f.label.lower().split():
-                if resume:
-                    p.value, p.source = resume, "bank"
-                else:
-                    p.source, p.note = ("needs_me" if f.required else "skipped"), "no resume_path set"
-            elif f.required:
-                p.source, p.note = "needs_me", "file upload"
-            continue
-        if f.kind == "checkbox":
-            p.source = "needs_me" if f.required else "skipped"
-            p.note = "consent/checkbox — your call" if f.required else ""
-            continue
-
-        if _ATTESTATION.search(f.label) or any(_ATTESTATION.search(o) for o in f.options):
-            p.source = "needs_me" if f.required else "skipped"
-            p.note = "agreement — yours to accept"
-            continue
-
-        if answer_bank.always_ask(f.label):
-            p.source = "needs_me" if f.required else "skipped"
-            p.note = "you asked to always answer this yourself"
-            continue
-        edu = _EDU_FIELD.match(f.name)
-        key = _EDU_KEY[edu.group(1)] if edu else None
-        if key:      # the education block: known by field name, whatever its label says
-            searchable = edu.group(1) in _SEARCHABLE
-            found = answer_bank.lookup_key(key, options=None if searchable else (f.options or None),
-                                           job=job_ctx, label=f.label)
-        else:
-            found = answer_bank.lookup(f.label, options=f.options or None, job=job_ctx, llm=llm_available)
-        if found:
-            p.value, p.source = found.value, "bank"
-            continue
-        key = key or answer_bank.matched_key(f.label, llm=llm_available)
-        if key:
-            p.source = "needs_me" if f.required else "skipped"
-            p.note = _why_unfilled(key, f, job_ctx)
-            continue
-        if f.section in ("eeoc", "demographic"):
-            p.source = "needs_me" if f.required else "skipped"
-            continue
-        if f.kind == "textarea":
-            if f.required or _DRAFT_LABEL.search(f.label):
-                to_draft.append(p)
-            continue
-        if f.required:
-            to_guess.append(p)
-
-    if not llm_available:
-        for p in to_guess + to_draft:
-            p.source = "needs_me" if p.field.required else "skipped"
-            p.note = "LLM gateway was down"
-        to_guess, to_draft = [], []
-
-    if to_guess:
-        guesses = guess_fn([{"name": p.field.name, "label": p.field.label, "options": p.field.options}
-                            for p in to_guess], profile)
-        for p in to_guess:
-            if p.field.name in guesses:
-                p.value, p.source = guesses[p.field.name], "llm_guess"
-            else:
-                p.source, p.note = "needs_me", "not answerable from your profile"
-
-    job_text = f"{form.title or job.get('role', '')} at {form.company or job.get('company', '')}\n\n{job_ctx['description']}"
-    for p in to_draft:
-        if progress_fn:
-            progress_fn(f"Drafting an answer for: {p.field.label[:60]}")
-        text = draft_fn(p.field.label, job_text, profile)
-        if text:
-            p.value, p.source = text, "llm_draft"
-        else:
-            p.source = "needs_me" if p.field.required else "skipped"
-            p.note = "draft failed"
-    return plans
 
 
 def confirm_uploads(dom_values: dict, plans: list, page_text: str) -> dict:
@@ -435,7 +251,8 @@ def confirm_uploads(dom_values: dict, plans: list, page_text: str) -> dict:
 
 
 def build_review(plans: list, dom_values: dict) -> list:
-    """Review rows from what was planned vs what the DOM actually holds."""
+    """Review rows from what was planned vs what the DOM actually holds. A value Aria
+    filled that isn't there after the retries → failed."""
     rows = []
     for p in plans:
         f = p.field
@@ -446,10 +263,12 @@ def build_review(plans: list, dom_values: dict) -> list:
             value = Path(p.value).name
         if p.value and actual and re.fullmatch(r"\+\d{1,4}", actual):   # country picker shows the dial code
             value = p.value if p.value.endswith(actual) else f"{p.value} ({actual})"
-        if p.value and not actual:
-            source = "needs_me" if f.required else "skipped"
-            note = "not on the form" if actual is None else "didn't stick — fill it in"
-        rows.append({"name": f.name, "label": f.label, "kind": f.kind, "value": value,
+        if p.value and not actual and source in FILLED_SOURCES:
+            if actual is None:
+                source, note = "skipped", "not on the form"
+            else:
+                source, note = ("failed" if f.required else "skipped"), "didn't stick after 2 retries"
+        rows.append({"name": f.name, "label": f.label, "kind": f.kind, "category": p.category, "value": value,
                      "source": source, "required": f.required, "note": note})
     return rows
 
@@ -543,7 +362,7 @@ def _fill_one(page, p: Planned) -> bool:
     if page.locator(sel).count() == 0:
         return False
     if f.kind == "file":
-        page.set_input_files(sel, p.value, timeout=10000)
+        page.set_input_files(sel, planner.upload_path(p), timeout=10000)
     elif f.kind in ("text", "textarea"):
         page.fill(sel, p.value, timeout=5000)
     elif f.kind == "location":
@@ -675,9 +494,10 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None, tab: st
         llm_up = _gateway_up()
         if not llm_up:
             say("The LLM gateway is down, so questions only it could answer are left for you.")
-        plans = plan(form, job, build_profile(job), resume=resume_path(), progress_fn=progress_fn,
+        resume = resume_path()
+        plans = plan(form, job, build_profile(job, resume), resume=resume, progress_fn=progress_fn,
                      llm_available=llm_up)
-        to_fill = [p for p in plans if p.value and p.source in ("bank", "llm_guess", "llm_draft")]
+        to_fill = [p for p in plans if p.value and p.source in FILLED_SOURCES]
         say(f"Filling {len(to_fill)} fields.")
 
         missing = [p for p in to_fill if not _fill_field(p, tab)]
@@ -685,9 +505,19 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None, tab: st
             time.sleep(1.0)
             for p in missing:
                 _fill_field(p, tab)
-        dom_values = agent_browser.run(
-            lambda page: confirm_uploads(page.evaluate(_READBACK_JS, [p.field.name for p in plans]), plans,
-                                         page.inner_text("body")), tab=tab)
+
+        def readback(page) -> dict:
+            return confirm_uploads(page.evaluate(_READBACK_JS, [p.field.name for p in plans]), plans,
+                                   page.inner_text("body"))
+        dom_values = agent_browser.run(readback, tab=tab)
+        for _retry in range(2):            # verify: refill what didn't stick
+            wrong = [p for p in to_fill if dom_values.get(p.field.name) == ""]
+            if not wrong:
+                break
+            for p in wrong:
+                _fill_field(p, tab)
+            time.sleep(0.5)
+            dom_values = agent_browser.run(readback, tab=tab)
         result.review = build_review(plans, dom_values)
         result.filled = {
             p.field.name: {"label": p.field.label, "kind": p.field.kind,

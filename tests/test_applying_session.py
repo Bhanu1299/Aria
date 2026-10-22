@@ -88,21 +88,36 @@ def test_fit_parses_loose_values():
 def test_start_fills_one_at_a_time_in_order(monkeypatch, env):
     monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: list(ROWS)})())
     order = []
-    monkeypatch.setattr(session, "fill_one", lambda job, say, voice_ask=None, ctl=None:
+    monkeypatch.setattr(session, "fill_one", lambda job, say, voice_ask=None, ctl=None, ids=None:
                         order.append(job["company"]) or f"{job['company']} filled.")
     out = session.start(env["said"].append)
     assert out.startswith("Starting 4 applications, best fit first: Scale AI, SingleStore, Ookla and ZipRecruiter.")
     session._thread.join(2)
     assert order == ["Scale AI", "SingleStore", "Ookla", "ZipRecruiter"]
-    assert "Nothing was submitted" in env["said"][-1]
+    assert env["said"] == ["Done. 4 applications filled, nothing submitted."]
     assert control.current is None
+
+
+def test_run_speaks_only_when_finished_with_whats_missing(monkeypatch, env):
+    monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: list(ROWS)})())
+
+    def fill(job, say, voice_ask=None, ctl=None, ids=None):
+        e = tabs.add(job)
+        tabs.update(e["id"], needs_me=["Do you require sponsorship?"] if job["company"] == "Ookla" else [])
+        ids.append(e["id"])
+        return f"{job['company']} filled."
+    monkeypatch.setattr(session, "fill_one", fill)
+    session.start(env["said"].append)
+    session._thread.join(2)
+    assert env["said"] == ["Done. 4 applications filled, nothing submitted. 1 answer is missing from your "
+                           "answer bank, so those tabs need you. They're listed on the dashboard."]
 
 
 def test_start_respects_ten_open_tabs(monkeypatch, env):
     for i in range(9):
         tabs.add(_row(100 + i, f"Co{i}", 3))
     monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: list(ROWS)})())
-    monkeypatch.setattr(session, "fill_one", lambda job, say, voice_ask=None, ctl=None: "ok")
+    monkeypatch.setattr(session, "fill_one", lambda job, say, voice_ask=None, ctl=None, ids=None: "ok")
     assert session.start(env["said"].append).startswith("Starting 1 application, best fit first: Scale AI.")
 
 
@@ -115,7 +130,7 @@ def test_start_refuses_at_ten_open_tabs(env):
 def test_fill_one_opens_its_own_tab_and_fills_there(monkeypatch, env):
     seen = {}
 
-    def run_application(job, progress_fn=None, voice_ask_fn=None, run=None, entry=None, gate=None):
+    def run_application(job, progress_fn=None, voice_ask_fn=None, run=None, entry=None, gate=None, wait_fn=None):
         seen.update(entry=entry, gate=gate)
         tabs.update(entry["id"], state=tabs.FILLED)
         return "Greenhouse form filled."
@@ -133,7 +148,7 @@ def test_fill_one_waits_at_a_wall_then_continues(monkeypatch, env):
     monkeypatch.setattr(session, "WALL_POLL_SECS", 0.01)
     monkeypatch.setattr(applicator, "run_application", lambda job, **kw: "filled")
     assert session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=control.RunControl()) == "filled"
-    assert any("Ookla is showing a CAPTCHA" in s for s in env["said"])
+    assert env["said"] == ["Ookla is showing a CAPTCHA. Please clear it in the tab in front; I'll wait."]
     assert len(env["browser"]["fronted"]) >= 2                         # opened, then brought back for the wall
 
 
@@ -173,6 +188,26 @@ def test_start_applications_brings_up_then_starts(monkeypatch, env):
     monkeypatch.setattr(session, "reattach", lambda: 0)
     monkeypatch.setattr(session, "start", lambda say, voice_ask=None: "Starting 4 applications.")
     assert commands.handle("Aria, start applications.") == "Starting 4 applications."
+
+
+@pytest.mark.parametrize("text", [
+    "Let's apply to some jobs.", "let's apply for jobs", "let's start applying", "start applying to jobs",
+    "Aria, let's apply to a few jobs now", "apply to some jobs", "I want to apply to jobs", "time to apply",
+    "here, let us start applying to jobs.", "okay so let's apply to some jobs",
+])
+def test_natural_phrasings_start_the_run(monkeypatch, env, text):
+    monkeypatch.setattr(commands.startup, "bring_up", lambda: (True, "All up."))
+    monkeypatch.setattr(session, "reattach", lambda: 0)
+    monkeypatch.setattr(session, "start", lambda say, voice_ask=None: "Starting 4 applications.")
+    assert commands.handle(text) == "Starting 4 applications."
+
+
+@pytest.mark.parametrize("text", ["apply to the next job from Muse", "what jobs should I apply to",
+                                  "how many jobs did I apply to", "don't start applying",
+                                  "why did you start applying to jobs", "do not start applications"])
+def test_other_job_talk_does_not_start_the_run(monkeypatch, env, text):
+    monkeypatch.setattr(commands.startup, "bring_up", lambda: pytest.fail("brought up for: " + text))
+    assert commands.handle(text) is None
 
 
 def test_start_applications_stops_when_a_service_fails(monkeypatch, env):

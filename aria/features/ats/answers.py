@@ -6,7 +6,9 @@ Both go through GateLLM (aria.llm.llm_client), tiers from aria/llm/tasks.py:
                                            length) and escalated once to frontier on failure.
                                            Returns {name: answer} only for answers the
                                            profile supports.
-  draft_long(label, job_text, profile)     task form_free_text (frontier), one call per question.
+  draft_long(label, job_text, profile, max_chars, short)
+                                           task form_free_text (frontier), one call per question;
+                                           the field's character limit is enforced in code.
 
 Callers mark the results "llm_guess" / "llm_draft" so the user reviews them.
 Never raises — failures return {} / "".
@@ -36,10 +38,20 @@ _GUESS_SYSTEM = (
 
 _DRAFT_SYSTEM = (
     "You write a job candidate's answer to one free-text application question. First person, "
-    "plain text, 80-150 words, specific and direct, no greeting or sign-off. Use ONLY facts from "
-    "the candidate profile and the job description — never invent projects, employers, numbers "
-    "or credentials. If the profile is thin, stay concrete about what it does say."
+    "plain text, specific and concrete, no greeting or sign-off, no markdown. Use ONLY facts from the "
+    "candidate profile and resume (projects, employers, numbers, skills) and the job description — "
+    "never invent a project, employer, number, credential or opinion the resume doesn't support. "
+    "Name a real project or result from the resume when the question allows it. Answer exactly "
+    "what was asked."
 )
+_UNKNOWN_RULE = (f"If this asks for a personal fact the profile doesn't state (a name, date, place, number), "
+                 f"reply with exactly {UNKNOWN}.")
+_ALWAYS_ANSWER = ("This is an open question about the candidate: always write an answer grounded in the "
+                  "resume — never refuse, never say you lack information. If it asks for something not on the "
+                  "resume, pick something the resume only implies (how a listed project was built, a hard "
+                  "trade-off it forced, what it taught) and tell that — still no new facts.")
+_REFUSAL = re.compile(r"^\s*(?:i (?:can(?:no|')t|cannot|am unable to|don't have)|unfortunately|unknown\b|n/?a\b|"
+                      r"(?:the|your) (?:profile|resume) (?:does not|doesn't))", re.I)
 
 
 def _parse_json_object(text: str) -> dict:
@@ -101,21 +113,51 @@ def guess_short(questions: list[dict], profile: str) -> dict[str, str]:
     return answers or {}
 
 
-def draft_long(label: str, job_text: str, profile: str) -> str:
+def fit_limit(text: str, max_chars: int) -> str:
+    """text cut to max_chars at the last sentence end (else the last word) inside it."""
+    text = re.sub(r"\s+\n", "\n", (text or "").strip())
+    if not max_chars or len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "), cut.rfind(".\n"))
+    if end >= max_chars // 3:
+        return cut[:end + 1].strip()
+    if cut.endswith((".", "!", "?")):
+        return cut.strip()
+    return cut[:cut.rfind(" ")].rstrip(",;:").strip() if " " in cut else cut
+
+
+def _length_rule(max_chars: int, short: bool) -> str:
+    if short:
+        limit = min(max_chars or 250, 250)
+        return f"Length: one or two sentences, at most {limit} characters."
+    if max_chars and max_chars < 900:
+        return f"Length: at most {int(max_chars * 0.9)} characters (hard limit {max_chars})."
+    return "Length: 80-150 words."
+
+
+def draft_long(label: str, job_text: str, profile: str, max_chars: int = 0, short: bool = False,
+               allow_unknown: bool = False) -> str:
+    """allow_unknown: the label may be a personal fact in a text box ("High School Name") —
+    the model may answer UNKNOWN. Otherwise it must write an answer from the resume."""
+    rule = _UNKNOWN_RULE if allow_unknown else _ALWAYS_ANSWER
     user = (
-        f"Question: {label}\n\nJob description:\n{job_text[:6000]}\n\n"
-        f"Candidate profile:\n{profile}"
+        f"Question: {label}\n{_length_rule(max_chars, short)}\n{rule}\n\nJob:\n{job_text[:6000]}\n\n"
+        f"Candidate profile and resume:\n{profile}"
     )
     try:
         resp = llm_client.complete(
             messages=[{"role": "user", "content": user}],
             task="form_free_text",
             system=_DRAFT_SYSTEM,
-            max_tokens=450,
+            max_tokens=200 if short else 500,
         )
     except Exception as exc:
         logger.error("draft_long(%r) failed: %s", label, exc)
         return ""
     if getattr(resp, "stop_reason", "") == "error":
         return ""
-    return (resp.text or "").strip()
+    text = re.sub(r"^\s*(?:answer|response)\s*:\s*", "", (resp.text or "").strip(), flags=re.I).strip().strip('"')
+    if text.upper().strip(". ") == UNKNOWN or _REFUSAL.match(text):
+        return UNKNOWN
+    return fit_limit(text, max_chars or (250 if short else 0))

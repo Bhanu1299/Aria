@@ -195,3 +195,23 @@ def test_generic_filler_gets_derived_fields_and_the_source(bank_file):
     ctx = ab.fillable_answers(ab.load(bank_file), {"company": "Ookla", "role": "DE", "source": "Instagram"})
     assert ctx["major"] == "Computer Science" and ctx["grad_month"] == "May" and ctx["grad_year"] == "2026"
     assert ctx["how_did_you_hear_about_us"] == "Instagram"
+
+
+# ── regressions from the live runs (2026-10-21) ─────────────────────────────
+
+def test_options_by_year_unique_name_and_country_alias():
+    assert ab.choose_option("05/18/2026", ["2024", "2025", "2026", "Other"]) == "2026"
+    unis = ["State University of New York - Buffalo State College",
+            "State University of New York - University at Buffalo", "University at Albany"]
+    assert ab.choose_option("University at Buffalo, SUNY", unis) == unis[1]
+    assert ab.choose_option("United States", ["US", "Canadian-French", "European Economic Area"]) == "US"
+    assert ab.choose_option("Buffalo State", unis[1:]) is None
+
+
+def test_pronounce_is_not_pronouns_and_high_school_is_not_your_university():
+    bank = ab.load()
+    assert ab.match_field(bank, ab.normalize("Name Pronunciation | How do you pronounce your name?")).key is None
+    assert ab.match_field(bank, ab.normalize("Your pronouns")).key == "eeo.pronouns"
+    assert ab.match_field(bank, ab.normalize("High School Name")).key is None
+    assert ab.match_field(bank, ab.normalize("Year of High School Graduation")).key is None
+    assert ab.match_field(bank, ab.normalize("Where did you attend university?")).key == "school"

@@ -85,8 +85,9 @@ def test_summary_puts_needs_me_first_and_quotes_drafts():
     result = FillResult(ats="greenhouse", form_url=FORM, review=REVIEW)
     md = applicator.build_summary(JOB, result, "Acme", "ML Engineer", "/r/acme.png")
     assert md.startswith("# Review: ML Engineer at Acme")
-    assert md.index("## Needs you (1)") < md.index("## Drafted by the LLM") < md.index("## Guessed by the LLM") \
-        < md.index("## From your answer bank") < md.index("## Left empty")
+    assert md.index("## Unknown — missing from your answer bank (1)") < md.index("## Written by the LLM") \
+        < md.index("## Picked by the LLM") < md.index("## From your answer bank") < md.index("## Left empty")
+    assert "- **Summary:** " in md and " unknown · 0 failed" in md
     assert "> Because agents.\n> And evals." in md
     assert "NOT submitted" in md and "Sheet row:** 7" in md
 
@@ -94,8 +95,8 @@ def test_summary_puts_needs_me_first_and_quotes_drafts():
 def test_spoken_result():
     result = FillResult(ats="greenhouse", review=REVIEW)
     s = applicator.spoken_result(result, "Acme", "ML Engineer")
-    assert s.startswith("Greenhouse form filled for ML Engineer at Acme. 1 field needs you.")
-    assert "drafted 1 answer" in s and "submit it" in s
+    assert s.startswith("Greenhouse form filled for ML Engineer at Acme. 1 fact is missing from your answer bank.")
+    assert "wrote 1 answer from your resume" in s and "submit it" in s
 
 
 # ── run_application ─────────────────────────────────────────────────────────
@@ -104,18 +105,18 @@ def test_run_fills_into_its_own_tab_and_records(monkeypatch, env):
     seen_tabs = _fake_fill(monkeypatch)
     said = []
     out = applicator.run_application(dict(JOB), progress_fn=said.append)
-    assert out.startswith("Greenhouse form filled for ML Engineer at Acme. 1 field needs you.")
+    assert out.startswith("Greenhouse form filled for ML Engineer at Acme. 1 fact is missing from your answer bank.")
 
     [entry] = tabs.live()
     assert seen_tabs == [entry["id"]]                                  # filled in the job's own tab
     assert entry["state"] == tabs.FILLED and entry["row"] == 7 and entry["form_url"] == FORM
     assert entry["needs_me"] == ["Do you require sponsorship?"] and entry["ats"] == "greenhouse"
     md = entry["review_path"]
-    assert md.endswith(".md") and "Needs you (1)" in open(md).read()
+    assert md.endswith(".md") and "Unknown — missing from your answer bank (1)" in open(md).read()
     assert env["browser"]["screens"] and entry["screenshot"].endswith(".png")
 
     row, status, note = env["sheet"][-1]
-    assert (row, status) == (7, sheets.STATUS_IN_REVIEW) and "1 field need" in note and "not submitted" in note
+    assert (row, status) == (7, sheets.STATUS_IN_REVIEW) and "1 unknown, 0 failed" in note and "not submitted" in note
 
     run = _runs()[-1]
     assert (run["sheet_row"], run["stage"], run["needs_me"], run["ats"]) == (7, "filled", 1, "greenhouse")

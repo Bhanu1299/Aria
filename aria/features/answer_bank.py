@@ -137,6 +137,7 @@ DEFAULT_PATTERNS: list[tuple[str, str]] = [
                   r"\b(?:anticipated|expected) graduation\b"),
     ("school", r"\b(?:school|university|college|institution)\b.*\b(?:attend|graduat|name|studied)|"
                r"\bcurrently attending\b|\bgraduated from\b|\bwhere did you (?:study|go to school)|"
+               r"\b(?:attend|attended|study|studied)(?: at)? (?:a |which |what )?(?:school|university|college)\b|"
                r"\bname of (?:your )?(?:school|college|university|institution)"),
     ("major", r"\bfield of study\b|\bmajor\b|\barea of study\b|\bprogram of study\b|^discipline$"),
     ("degree", r"\blevel of education\b|\bhighest (?:degree|education)\b|\bdegree\b"),
@@ -151,15 +152,20 @@ DEFAULT_PATTERNS: list[tuple[str, str]] = [
     ("eeo.disability", r"\bdisabilit"),
     ("eeo.transgender", r"\btransgender"),
     ("eeo.lgbtq", r"\blgbtq|\bsexual orientation"),
-    ("eeo.pronouns", r"\bpronoun"),
+    ("eeo.pronouns", r"\bpronouns?\b"),          # not "how do you pronounce your name"
 ]
+# Questions about high school: the bank's education answers are the user's university.
+_HIGH_SCHOOL = re.compile(r"\bhigh school\b|\bsecondary school\b")
+_EDU_KEYS = {"school", "degree", "major", "gpa", "grad_date", "grad_month", "grad_year",
+             "edu_start_month", "edu_start_year"}
 
 # Keys whose answers are yes/no: their patterns only apply to yes/no questions, so
 # "What is the address ... if you relocate ..." doesn't get "Yes".
 YES_NO_KEYS = {"relocation", "sponsorship", "work_authorization", "conflict_of_interest",
                "outside_business", "hybrid_onsite_ok", "eeo.hispanic_latino", "eeo.transgender",
                "eeo.lgbtq"}
-_OPEN_QUESTION = re.compile(r"^(?:what|where|which|when|how|who|why|please (?:describe|explain|list|provide)|describe|explain|list)\b")
+_OPEN_QUESTION = re.compile(r"^(?:what|where|which|when|how|who|why|please (?:describe|explain|list|provide|share|tell)|"
+                            r"describe|explain|list|tell|share|provide|give|walk)\b")
 # ...and the reverse: a value key (school, degree) never answers a yes/no question
 # ("Do you have a bachelor's degree in CS?" is not asking for your degree).
 _YES_NO_QUESTION = re.compile(r"^(?:do|does|are|is|have|has|will|would|can|could|did|were|was)\b")
@@ -414,6 +420,10 @@ def _salary_for(bank: dict, job: Optional[dict]) -> Optional[str]:
 # Options
 # ---------------------------------------------------------------------------
 
+COUNTRY_ALIASES = {"united states": {"us", "usa", "u s", "u s a", "united states of america", "america"},
+                   "united kingdom": {"uk", "u k", "great britain", "britain"}}
+
+
 def _core(option: str) -> str:
     """Option text without a trailing dial code or parenthetical."""
     return re.sub(r"\s*(?:\+\d[\d ]*|\([^)]*\))$", "", normalize(option)).strip()
@@ -436,11 +446,30 @@ def choose_option(value: str, options: Sequence[str]) -> Optional[str]:
         hits = [o for o in opts if normalize(o).split(" ")[0] in want]
         if len(hits) == 1:
             return hits[0]
+    aliases = next((names | {k} for k, names in COUNTRY_ALIASES.items() if nv == k or nv in names), None)
+    if aliases:                                           # United States → "US" / "USA"
+        hits = [o for o in opts if _core(o) in aliases]
+        if len(hits) == 1:
+            return hits[0]
+    years = [o for o in opts if re.fullmatch(r"\d{4}", str(o).strip())]
+    if years and len(years) >= len(opts) - 1:             # a year list: 05/18/2026 → 2026
+        y = re.findall(r"\b(19\d{2}|20\d{2})\b", str(value))
+        if len(set(y)) == 1 and y[0] in years:
+            return y[0]
     best = process.extractOne(nv, {o: normalize(o) for o in opts}, scorer=fuzz.token_sort_ratio)
     if best and best[1] >= FUZZY_THRESHOLD:
         return best[2]
     starts = [o for o in opts if normalize(o).startswith(nv) or nv.startswith(normalize(o))]
-    return starts[0] if len(starts) == 1 and len(nv) >= 4 else None
+    if len(starts) == 1 and len(nv) >= 4:
+        return starts[0]
+    # The value's name inside exactly one long option: "University at Buffalo, SUNY" →
+    # "State University of New York - University at Buffalo" (never "Buffalo State College").
+    head = normalize(re.split(r"[,(]| - ", str(value))[0])
+    if len(head) >= 8:
+        hits = [o for o in opts if re.search(r"(?:^|\s)" + re.escape(head) + r"(?:$|\s)", normalize(o))]
+        if len(hits) == 1:
+            return hits[0]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +602,12 @@ def _exact_keys(bank: dict) -> dict[str, str]:
 def match_field(bank: dict, q: str, llm: bool = False) -> Match:
     """Which bank field a normalized label means, in order:
     learned (word for word) → exact field name → alias → synonym (pattern, then fuzzy)
-    → small-LLM key pick (llm=True only). No values are read here."""
+    → small-LLM key pick (llm=True only). No values are read here. A high-school
+    question never matches the (university) education keys."""
+    return _guard(q, _match_field(bank, q, llm))
+
+
+def _match_field(bank: dict, q: str, llm: bool = False) -> Match:
     aliases = _aliases(bank)
     learned = {normalize(k): k for k in bank["learned"]}
     if q in learned:
@@ -602,9 +636,15 @@ def match_field(bank: dict, q: str, llm: bool = False) -> Match:
         return Match(None, learned[tag[2:]], best[1], "synonym")
     if llm:
         key = _llm_key(bank, q)
-        if key:
+        if key and not (yes_no_q and key not in YES_NO_KEYS):   # "Do you have a B.Tech?" isn't your degree
             return Match(key, None, 0.0, "llm")
     return Match()
+
+
+def _guard(q: str, m: "Match") -> "Match":
+    if m.key in _EDU_KEYS and _HIGH_SCHOOL.search(q):
+        return Match()
+    return m
 
 
 def _match(bank: dict, q: str) -> tuple[Optional[str], Optional[str], float, str]:
