@@ -130,7 +130,8 @@ def generate_negatives(
         print(f"  [skip] {neg_dir} already has {len(existing)} clips — skipping generation")
         return len(existing)
 
-    count = len(existing)
+    # Clips the loops below don't make (e.g. downloaded); each loop counts its own files once.
+    count = sum(1 for f in existing if not f.name.startswith(("speech_", "quiet_", "noise_")))
 
     # 1. Speech negatives via macOS say
     for i, phrase in enumerate(NON_WAKE_PHRASES):

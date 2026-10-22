@@ -388,3 +388,47 @@ def test_fill_one_error_leaves_entry_open_not_filling(monkeypatch, env):
         session.fill_one(_row(15, "Scale AI", 4), env["said"].append, ctl=control.RunControl())
     [e] = tabs.live()
     assert e["state"] == tabs.OPEN and "Chrome went away" in e["note"]
+
+
+@pytest.mark.parametrize("text", [
+    "you shouldn't start applying", "i won't start applications", "we can't start applying",
+    "i wouldn't start applying yet", "let's not apply to some jobs", "dont start applying",
+    "maybe never start applications", "it isn't time to apply",
+])
+def test_any_negation_blocks_the_start(monkeypatch, env, text):
+    """#3: only an explicit positive command starts applications."""
+    monkeypatch.setattr(commands.startup, "bring_up", lambda: pytest.fail("brought up for: " + text))
+    assert commands.handle(text) is None
+
+
+def test_one_wall_timeout_one_announcement_no_repeat_wait(monkeypatch, env):
+    """#8: the engine's mid-form wait timed out, then fill_one waited (and spoke) again on the same wall."""
+    seen = iter([None])                                 # clear before the fill, CAPTCHA from then on
+    monkeypatch.setattr(session.walls, "check", lambda tab: next(seen, "captcha"))
+    monkeypatch.setattr(session, "WALL_POLL_SECS", 0.001)
+    monkeypatch.setattr(session, "WALL_TIMEOUT_SECS", 0.01)
+
+    def run_application(job, wait_fn=None, **kw):
+        assert wait_fn("captcha") is False              # mid-form wall, user away → timeout
+        return "filled"
+    monkeypatch.setattr(applicator, "run_application", run_application)
+    session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=control.RunControl())
+    assert [s for s in env["said"] if "CAPTCHA" in s] == [
+        "Ookla is showing a CAPTCHA. Please clear it in the tab in front; I'll wait."]
+
+
+@pytest.mark.parametrize("how,said", [("stop", "Stopped after 1 application"), ("crash", "hit an error and stopped")])
+def test_run_speaks_its_end_on_stop_and_on_failure(monkeypatch, env, how, said):
+    """#9: a stopped or crashed run used to end in silence."""
+    monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: list(ROWS)})())
+    n = {"i": 0}
+
+    def fill(job, say, voice_ask=None, ctl=None, ids=None):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise control.Stopped() if how == "stop" else RuntimeError("sheet 403")
+        return "ok"
+    monkeypatch.setattr(session, "fill_one", fill)
+    session.start(env["said"].append)
+    session._thread.join(2)
+    assert any(said in s for s in env["said"]), env["said"]

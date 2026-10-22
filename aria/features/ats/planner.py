@@ -4,8 +4,8 @@ Shared by the Greenhouse adapter and the generic DOM form engine (form_engine.py
 
 classify(field) → category, by rules in this order:
   upload     file inputs (resume / cover letter)
-  consent    agreements, attestations, privacy / terms checkboxes — ticked by the user
-             when they approve the submit, never by Aria
+  consent    agreements, attestations ("I confirm … true and accurate"), privacy / terms
+             checkboxes — UNKNOWN, flagged at review; never the LLM, never ticked by Aria
   fact       the answer bank knows the question (name, email, links, education, location)
   sensitive  salary, sponsorship, work authorization, demographics, disability, veteran,
              criminal history — stored answers only, never guessed
@@ -20,7 +20,6 @@ plan(form, job, profile) → [Planned], each with a source:
              options by the LLM using the resume; UNKNOWN → needs_me
   needs_me   UNKNOWN: a fact or sensitive answer missing from the bank — the ONLY thing
              that goes to the user
-  consent    an agreement for the user to tick when approving the submit
   failed     the LLM couldn't write it (gateway down / error)
   skipped    optional, nothing to say
 
@@ -176,6 +175,11 @@ def is_sensitive(f: FormField) -> bool:
     return f.section in ("eeoc", "demographic") or bool(_SENSITIVE.search(f.label or ""))
 
 
+# Attestations: you vouch for something. Always the user's — UNKNOWN, never the LLM, never ticked.
+_ATTEST_PHRASE = re.compile(
+    r"\bi (?:hereby )?(?:confirm|declare|affirm|understand|acknowledge|certify|attest|agree)\b|"
+    r"\btrue,? (?:and |, )?(?:accurate|correct|complete)\b|\baccurate and complete\b|"
+    r"\bto the best of my knowledge\b", re.I)
 _CONSENT_OPTION = re.compile(r"\b(?:i )?(?:agree|acknowledge|consent|accept|certify|attest)\b", re.I)
 _TODAY_LABEL = re.compile(r"^(?:today'?s )?date$|^(?:signature|current|signed) date$|^date signed$", re.I)
 _RESIDENCE = re.compile(r"\bcountry\b|(?:location|country|place) of residence|\bresid(?:e|ence)\b", re.I)
@@ -184,7 +188,8 @@ _RESIDENCE = re.compile(r"\bcountry\b|(?:location|country|place) of residence|\b
 def is_consent(f: FormField) -> bool:
     """Agreement wording in the label, or options that are agreements ("I agree") — not a
     language list that happens to contain "Sign Language"."""
-    return bool(_ATTESTATION.search(f.label or "")) or any(_CONSENT_OPTION.search(o) for o in f.options)
+    return (bool(_ATTESTATION.search(f.label or "")) or bool(_ATTEST_PHRASE.search(f.label or ""))
+            or any(_CONSENT_OPTION.search(o) for o in f.options))
 
 
 def open_text_kind(f: FormField) -> bool:
@@ -248,10 +253,21 @@ def save_answer(label: str, answer: str, company: str = "", max_chars: int = 0) 
 COVER_LETTER_DIR = Path.home() / ".aria" / "cover_letters"
 
 
+def _is_file(value: str) -> bool:
+    """True only for a path to an existing file. Drafted text (long, multi-line) is text:
+    Path.is_file() raises OSError(ENAMETOOLONG) on Python 3.9 for it."""
+    if not value or len(value) > 1024 or "\n" in value:
+        return False
+    try:
+        return Path(value).expanduser().is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def upload_path(p: Planned) -> str:
     """The file to attach: the resume path as planned, or a drafted cover letter written
     to ~/.aria/cover_letters/<field>.txt."""
-    if p.source == "bank" or Path(p.value).expanduser().is_file():
+    if p.source == "bank" or _is_file(p.value):
         return p.value
     COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
     name = re.sub(r"[^\w-]+", "_", p.field.name)[:60] or "cover_letter"
@@ -349,10 +365,9 @@ def plan(
                 _unknown(p, "file upload")
             continue
 
-        if is_consent(f):
+        if is_consent(f):          # UNKNOWN, flagged at review: never the LLM, never ticked
             p.category = "consent"
-            p.source = "consent" if f.required else "skipped"
-            p.note = "agreement — tick it yourself when you approve the submit" if f.required else ""
+            _unknown(p, "agreement / attestation — yours to tick; Aria never does")
             continue
 
         if _TODAY_LABEL.match(answer_bank.normalize(f.label)) and not f.options:   # a signature block's date
@@ -386,6 +401,11 @@ def plan(
             _unknown(p, "your preference — answer it once and Aria remembers")
             continue
 
+        if f.kind == "checkbox" and not f.options:   # a single box is ticked by the bank or by you
+            p.category = "choice"
+            _unknown(p, "a checkbox only you can tick")
+            continue
+
         if f.options or f.kind in ("select", "multiselect", "radio", "checkbox"):
             p.category = "choice"
             if is_question(f.label) or f.required:
@@ -414,7 +434,7 @@ def plan(
 
     if to_guess:
         guesses = guess_fn([{"name": p.field.name, "label": p.field.label,
-                             "options": p.field.options or (["Yes", "No"] if p.field.kind == "checkbox" else [])}
+                             "options": p.field.options}
                             for p in to_guess], profile)
         for p in to_guess:
             if p.field.name in guesses:

@@ -111,6 +111,9 @@ def test_checkpoint_raises_after_stop():
         ctl.checkpoint()
 
 
-def test_privacy_notice_with_accept_and_decline_is_a_wall():
-    assert walls.detect("Privacy notice\n\nI AcceptI Decline", "", []) == "agreement"     # buttons' innerText runs together
-    assert walls.detect("I agree to the privacy policy", "", []) is None          # a form checkbox isn't a wall
+
+
+def test_agreement_wall_needs_two_real_buttons_not_page_text():
+    """#4: loose 'I accept' / 'I decline' text anywhere on a form is not a wall."""
+    assert walls.detect("I accept the privacy policy ... I decline to answer", "", []) is None
+    assert walls.detect("Privacy notice", "", [], agreement=True) == "agreement"

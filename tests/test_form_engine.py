@@ -141,9 +141,10 @@ def test_fill_end_to_end_open_text_by_llm_unknowns_only_for_missing_facts(page):
     assert rows["Gender"]["value"] == "Male"
     assert rows["Where are you based?"]["value"].startswith("Buffalo")
     assert rows["Are you open to relocation?"]["value"] == "Yes"
-    # The ONLY thing left for the user: the missing sponsorship fact. Consent is theirs at submit.
-    assert [r["label"] for r in res.review if r["source"] == "needs_me"] == ["Will you require visa sponsorship?"]
-    assert rows["I agree to the privacy policy"]["source"] == "consent"
+    # Left for the user: the missing sponsorship fact, and the agreement (UNKNOWN, never ticked).
+    assert sorted(r["label"] for r in res.review if r["source"] == "needs_me") == \
+        ["I agree to the privacy policy", "Will you require visa sponsorship?"]
+    assert rows["I agree to the privacy policy"]["category"] == "consent"
     assert not page.locator("#agree").is_checked()
     assert not any(r["source"] == "failed" for r in res.review)
     assert not page.evaluate("window.submitted === true")
@@ -259,3 +260,48 @@ def test_open_question_is_always_written_even_if_the_llm_balks(page):
         return "UNKNOWN" if len(calls) == 1 else "My first manager at Acme Robotics, who taught me to test first."
     res = form_engine.fill({"company": "Acme"}, run=_run(page), guess_fn=Spy().guess, draft_fn=draft)
     assert calls == [False, False] and res.review[0]["source"] == "llm_draft"     # never needs_me
+
+
+def test_consent_checkbox_and_decline_option_are_not_a_privacy_wall(page):
+    """#4: checkboxes and radios never count; only Accept + Decline buttons side by side."""
+    from aria.features.applying import walls
+    page.set_content("""<label><input type="checkbox"> I accept the privacy policy</label>
+      <fieldset><legend>Veteran status</legend><label><input type="radio" name="v"> I decline to answer</label></fieldset>
+      <p>Note: I accept that... I decline to ...</p>""")
+    assert form_engine.wall(page) is None
+    page.set_content("<button>I Accept</button><div style='height:2000px'></div><button>I Decline</button>")
+    assert form_engine.wall(page) is None                        # far apart: not one notice
+    page.set_content("<div><p>Privacy notice</p><button>I Accept</button><button>I Decline</button></div>")
+    assert form_engine.wall(page) == "agreement"
+    assert walls.detect(**{k: v for k, v in page.evaluate(walls.WALL_JS).items() if k != "agreement"}) is None
+
+
+def test_dropdown_clicks_its_own_option_not_another_questions(page):
+    """#6: option lookup was page-wide; an earlier Yes/No group (class *option*) got clicked."""
+    page.set_content("""
+      <div class="q"><div class="question-title">Have you worked here before? *</div>
+        <div class="option-list"><span class="option" onclick="window.wrong=true">Yes</span>
+        <span class="option" onclick="window.wrong=true">No</span></div></div>
+      <div class="q"><label for="cb">Will you relocate? *</label>
+        <input id="cb" role="combobox" aria-controls="lb" required
+          onclick="document.getElementById('lb').style.display='block'">
+        <ul role="listbox" id="lb" style="display:none">
+          <li role="option" onclick="document.getElementById('cb').value='Yes';this.parentElement.style.display='none'">Yes</li>
+          <li role="option" onclick="document.getElementById('cb').value='No';this.parentElement.style.display='none'">No</li>
+        </ul></div>""")
+    f = planner.FormField(form_engine.scan(page)[-1]["fid"], "Will you relocate?", "combobox", True)
+    assert form_engine.fill_one(page, planner.Planned(f, "Yes", "bank"))
+    assert page.input_value("#cb") == "Yes" and not page.evaluate("window.wrong === true")
+
+
+@pytest.mark.parametrize("kind,want,actual,ok", [
+    ("select", "Not applicable", "No", False), ("select", "No", "Not applicable", False),
+    ("select", "Yes", "Yes", True), ("radio", "No", "No, I do not have a disability", False),
+    ("combobox", "Male", "Gender Male", True), ("combobox", "No", "Not applicable", False),
+    ("combobox", "No", "No, I do not have a disability", False),
+])
+def test_verify_needs_the_whole_option_not_a_fragment(kind, want, actual, ok):
+    """#7: 'no' inside 'not applicable' passed verify."""
+    f = planner.FormField("x", "Q", kind, True, ["No", "Not applicable", "Yes", "No, I do not have a disability"]
+                          if kind != "combobox" else [])
+    assert form_engine.matches(planner.Planned(f, want, "bank"), {"value": actual, "error": ""}) is ok

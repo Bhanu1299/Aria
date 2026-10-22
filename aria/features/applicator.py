@@ -51,7 +51,6 @@ _ATS_NAME = {"greenhouse": "Greenhouse", "linkedin": "LinkedIn Easy Apply", "gen
 _SECTIONS = [
     ("needs_me", "Unknown — missing from your answer bank"),
     ("failed", "Failed — Aria couldn't set these"),
-    ("consent", "Agreements — tick these yourself before you submit"),
     ("llm_draft", "Written by the LLM from your resume"),
     ("reused", "Reused LLM answers"),
     ("llm_guess", "Picked by the LLM from your resume"),
@@ -174,8 +173,15 @@ def build_summary(job: dict, result, company: str, role: str, screenshot: str = 
     failed = [r["label"] for r in result.review if r["source"] == "failed"]
     lines.append(f"- **Summary:** {filled} filled · {len(unknown)} unknown · {len(failed)} failed")
     lines.append("")
+    agreements = [r for r in result.review if r["source"] == "needs_me" and r.get("category") == "consent"]
+    if agreements:
+        lines.append(f"## Agreements — yours to tick before you submit; Aria never ticks them ({len(agreements)})")
+        lines.append("")
+        lines.extend(f"- {r['label']}" for r in agreements)
+        lines.append("")
     for source, title in _SECTIONS:
-        rows = [r for r in result.review if r["source"] == source]
+        rows = [r for r in result.review if r["source"] == source
+                and not (source == "needs_me" and r.get("category") == "consent")]
         if not rows:
             continue
         lines.append(f"## {title} ({len(rows)})")

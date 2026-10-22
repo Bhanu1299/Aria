@@ -49,6 +49,10 @@ _START = re.compile(
 _START_LEAD = re.compile(
     r"(?:(?!(?:don'?t|do|not|never|no|stop|why|how|when|what|should|did|didn'?t)\b)[\w']+ ){0,2}"
     r"(?:" + _START.pattern + r")")
+# Any negation anywhere blocks a start: only an explicit positive command opens a run.
+_NEGATION = re.compile(
+    r"\b(?:not|no|never|nope|cannot|stop|dont|wont|cant|shouldnt|wouldnt|couldnt|isnt|arent|wasnt|"
+    r"didnt|doesnt|mustnt|havent|hasnt)\b|\w+n't\b")
 _PAUSE = re.compile(r"pause" + _APPS + r"|hold on|wait")
 _RESUME = re.compile(r"(?:resume|continue|keep going|go on|unpause)" + _APPS)
 _STOP = re.compile(r"stop" + _APPS + r"|stop the run")
@@ -242,7 +246,7 @@ def handle(text: str) -> Optional[str]:
     if answered is not None:
         return answered
 
-    if _START_LEAD.fullmatch(q):
+    if _START_LEAD.fullmatch(q) and not _NEGATION.search(q):
         ok, message = startup.bring_up()
         if not ok:
             return message

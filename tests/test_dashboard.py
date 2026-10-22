@@ -422,3 +422,17 @@ def test_needs_me_skips_old_items_and_non_outreach(srcs):
     assert [d["id"] for d in n["stale_drafts"]] == ["d1"]
     assert [t["id"] for t in n["follow_ups"]] == ["t1"]
     assert not {"t7", "t8", "t9"} & {t["id"] for t in mdl["threads"]}
+
+
+# ── review findings 2026-10-22 ──────────────────────────────────────────────
+
+def test_gmail_outage_says_gmail_unavailable_never_nothing_needs_you(srcs):
+    """#5: a Gmail outage used to read as an empty Today."""
+    from aria.dashboard import today
+    srcs["gmail"] = Source(False, None, "token expired")
+    html = today.render(m.build(srcs, NOW))
+    assert html.count("Gmail (jobs) unavailable") >= 3                   # replies, follow-ups, drafts (+ bounces)
+    assert "Nothing needs you" not in html
+    down = {k: Source(False, None, "boom") for k in ("sheet", "gmail", "aria_db", "coldstart", "reviews")}
+    html = today.render(m.build(down, NOW))
+    assert "Gmail (jobs) unavailable" in html and "Nothing needs you" not in html

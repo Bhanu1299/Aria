@@ -131,10 +131,12 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
             done += 1
         _speak(say, finished_line(done, _missing(ids)))
     except control.Stopped:
-        _note(f"Stopped after {done} application{'s' if done != 1 else ''}. Every tab stays open.")
+        _speak(say, f"Stopped after {done} application{'s' if done != 1 else ''}, nothing submitted. "
+                    "Every tab stays open.")
     except Exception as exc:
         logger.error("application run failed: %s", exc)
-        _note("The application run hit an error and stopped. Every tab stays open.")
+        _speak(say, f"The application run hit an error and stopped after {done} application"
+                    f"{'s' if done != 1 else ''}, nothing submitted. Every tab stays open.")
     finally:
         prevent_sleep.stop()
         ctl.active = False
@@ -180,11 +182,19 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
                 tabs.update(tab, state=tabs.OPEN, note=f"blocked by {walls.NAMES[kind]}")
                 run.finish("error", f"blocked by {walls.NAMES[kind]}")
                 return f"{job.get('company')} is still blocked, so I left its tab open unfilled."
+        timed_out: set = set()          # one wall timeout, one announcement: never wait twice
+
+        def wait_once(kind: str) -> bool:
+            if kind in timed_out:
+                return False
+            if wait_wall(entry, kind, say, ctl):
+                return True
+            timed_out.add(kind)
+            return False
         out = applicator.run_application(job, progress_fn=None, voice_ask_fn=voice_ask, run=run,
-                                         entry=entry, gate=gate,
-                                         wait_fn=lambda kind: wait_wall(entry, kind, say, ctl))
+                                         entry=entry, gate=gate, wait_fn=wait_once)
         kind = walls.check(tab) if job.get("url") else None
-        if kind and wait_wall(entry, kind, say, ctl):
+        if kind and wait_once(kind):
             out += " It asked for a check partway, so look over the fields."
         return out
     except control.Stopped:
