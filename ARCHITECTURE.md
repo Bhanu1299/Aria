@@ -499,7 +499,7 @@ Set by the user 2026-10-21. Code that touches applications is checked against th
    status except Applied, and the sheet is never edited by driving Google Sheets in the browser.
 5. **Dashboard.** The Live run tab shows each open application tab: company, role,
    state, fields needing the user (`/api/runs` → `apps`). The Sheet tab is the Muse
-   sheet itself (jobs + Applied tabs): re-read every 15 s while open, any cell
+   sheet itself (jobs + Applied tabs): read when first opened and on Refresh (never on a timer), any cell
    editable (Status as a dropdown), plus a Refresh button. Choosing Applied on the Jobs
    tab moves the row to the Applied tab (columns matched by name; added there first, then
    removed from Jobs). One cell per write through the Sheets API, found

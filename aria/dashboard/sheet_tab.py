@@ -1,7 +1,7 @@
 """dashboard/sheet_tab.py — the Muse sheet itself, live and editable.
 
-GET  /api/sheet?tab=jobs|applied   the whole tab, read fresh (the page polls it every POLL_SECS
-                                   while the Sheet tab is open, so edits made in Google Sheets show up)
+GET  /api/sheet?tab=jobs|applied   the whole tab, read fresh — when the Sheet tab is first opened
+                                   and when the user presses Refresh (never on a timer)
 POST /api/sheet/move_applied       every Jobs row already marked Applied → the Applied tab
 POST /api/sheet/cell               {tab, row, column, value, expect, company, role} → one cell;
                                    Status → Applied on the Jobs tab moves the row to the Applied tab
@@ -17,7 +17,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-POLL_SECS = 15
 MAX_VALUE = 5000
 TAB_KEYS = ("jobs", "applied")
 # Status choices besides whatever the column already holds.
@@ -131,7 +130,7 @@ def move_applied(sheet=None, applied_sheet=None) -> dict:
 
 def render() -> str:
     """The shell; the table is drawn by JS from GET /api/sheet (also how it refreshes)."""
-    return ('<section class="card sheetcard" id="sheet-root" data-poll="' + str(POLL_SECS) + '">'
+    return ('<section class="card sheetcard" id="sheet-root">'
             '<div class="toolbar"><div class="utabs"><button type="button" class="utab shtab on" data-t="jobs">Jobs</button>'
             '<button type="button" class="utab shtab" data-t="applied">Applied</button></div>'
             '<input id="shq" type="search" placeholder="Filter rows…" autocomplete="off">'
@@ -141,7 +140,7 @@ def render() -> str:
             '<div class="tablewrap shwrap"><table id="sheet"><thead></thead><tbody></tbody></table></div>'
             '<p class="muted small">Click a cell to edit it; Enter saves, Shift+Enter is a new line, Esc cancels. '
             'Saved straight to Google Sheets. Setting a job to Applied moves it to the Applied tab. '
-            f'Changes made in the sheet show up here within {POLL_SECS} seconds, or press Refresh.</p></section>')
+            'Changes made in Google Sheets show up when you press Refresh.</p></section>')
 
 
 CSS = r"""
@@ -168,7 +167,7 @@ JS = r"""
 var tokEl=document.querySelector('meta[name=dashboard-token]'),tok=tokEl?tokEl.content:'';
 var table=document.getElementById('sheet'),thead=table.tHead,tbody=table.tBodies[0];
 var state=document.getElementById('shstate'),q=document.getElementById('shq'),pane=document.getElementById('sheet-tab');
-var poll=parseInt(root.dataset.poll,10)*1000,tab='jobs',cur=null,editing=null,busy=false,lastAt=0,note=null;
+var tab='jobs',cur=null,editing=null,busy=false,lastAt=0,note=null;
 function say(t,bad){state.textContent=t;state.classList.toggle('bad',!!bad)}
 function col(name){return cur?cur.headers.findIndex(function(h){return h.trim().toLowerCase()===name}):-1}
 function ident(r){var c=col('company'),ro=col('role');return{company:c>=0?r.cells[c]:'',role:ro>=0?r.cells[ro]:''}}
@@ -194,12 +193,10 @@ if(cur&&tab==='jobs'&&s>=0)cur.rows.forEach(function(r){if(r.cells[s].trim().toL
 b.style.display=n?'':'none';b.textContent='Move '+n+' applied job'+(n===1?'':'s')+' to the Applied tab'}
 function filter(){var s=q.value.trim().toLowerCase();Array.prototype.forEach.call(tbody.rows,function(r){
 r.style.display=!s||r.textContent.toLowerCase().indexOf(s)>=0?'':'none'})}
-function load(force){if(busy||editing||(!force&&(document.hidden||!pane.classList.contains('on'))))return;busy=true;
+function load(){if(busy||editing)return;busy=true;
 fetch('/api/sheet?tab='+tab,{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){busy=false;
 if(d.error){say(d.error,true);return}if(editing)return;var prev=cur&&cur.tab===d.tab?cur:null;cur=d;draw(prev);lastAt=Date.now();
-if(note){say(note[0],note[1]);note=null}else say(d.rows.length+' rows · updated just now')}).catch(function(){busy=false;say('Dashboard server unreachable',true)})}
-function ago(){if(!lastAt||state.classList.contains('bad')||/^(Moved|Saved)/.test(state.textContent)&&Date.now()-lastAt<15000)return;var s=Math.round((Date.now()-lastAt)/1000);
-if(cur)say(cur.rows.length+' rows · updated '+(s<5?'just now':s+'s ago'))}
+var t=new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});if(note){say(note[0],note[1]);note=null}else say(d.rows.length+' rows · loaded '+t)}).catch(function(){busy=false;say('Dashboard server unreachable',true)})}
 function rowOf(td){var n=parseInt(td.parentNode.dataset.row,10);return cur.rows.find(function(r){return r.row===n})}
 function save(td,value,done){var r=rowOf(td),i=parseInt(td.dataset.c,10),was=r.cells[i];
 if(value===was){done(false);return}td.classList.add('saving');td.classList.remove('err');
@@ -209,7 +206,7 @@ body:JSON.stringify({tab:tab,row:r.row,column:cur.headers[i],value:value,expect:
 if(res.ok&&res.d.moved){cur.rows=cur.rows.filter(function(x){return x!==r});td.parentNode.remove();done(true);
 say('Moved '+(ident(r).company||'it')+' to the Applied tab (row '+res.d.row+')');lastAt=Date.now()}
 else if(res.ok){r.cells[i]=value;done(true);say('Saved row '+res.d.row+' · '+cur.headers[i]);lastAt=Date.now()}
-else{td.classList.add('err');done(false);say(res.d.error||'Save failed',true);setTimeout(function(){load(true)},1500)}})
+else{td.classList.add('err');done(false);say(res.d.error||'Save failed',true);setTimeout(load,1500)}})
 .catch(function(){td.classList.remove('saving');td.classList.add('err');done(false);say('Save failed: server unreachable',true)})}
 tbody.addEventListener('change',function(ev){var sel=ev.target;if(sel.tagName!=='SELECT')return;var td=sel.parentNode;
 save(td,sel.value,function(ok){if(!ok)sel.value=sel.dataset.was;else sel.dataset.was=sel.value})});
@@ -223,16 +220,15 @@ ta.addEventListener('keydown',function(k){if(k.key==='Escape'){k.preventDefault(
 else if(k.key==='Enter'&&!k.shiftKey){k.preventDefault();close(true)}});
 ta.addEventListener('blur',function(){close(true)})});
 root.querySelectorAll('.shtab').forEach(function(b){b.onclick=function(){if(editing)return;
-root.querySelectorAll('.shtab').forEach(function(x){x.classList.toggle('on',x===b)});tab=b.dataset.t;cur=null;say('Loading…');load(true)}});
+root.querySelectorAll('.shtab').forEach(function(x){x.classList.toggle('on',x===b)});tab=b.dataset.t;cur=null;say('Loading…');load()}});
 q.addEventListener('input',filter);
 document.getElementById('shmove').onclick=function(){var b=this;if(editing||b.disabled)return;b.disabled=true;
 say('Moving… (a couple of seconds per job)');busy=true;
 fetch('/api/sheet/move_applied',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':tok},body:'{}'})
 .then(function(x){return x.json()}).then(function(d){busy=false;b.disabled=false;var m=(d.moved||[]).length,e=(d.errors||[]);
-note=['Moved '+m+' to the Applied tab'+(e.length?' · '+e.length+' not moved: '+e.join('; '):''),e.length>0];load(true)})
+note=['Moved '+m+' to the Applied tab'+(e.length?' · '+e.length+' not moved: '+e.join('; '):''),e.length>0];load()})
 .catch(function(){busy=false;b.disabled=false;say('Move failed: server unreachable',true)})};
-document.getElementById('shrefresh').onclick=function(){if(editing)return;say('Refreshing…');load(true)};
-window.addEventListener('hashchange',function(){setTimeout(function(){load(false)},0)});
-document.addEventListener('visibilitychange',function(){load(false)});
-setInterval(function(){load(false)},poll);setInterval(ago,5000);setTimeout(function(){load(false)},0)})();
+document.getElementById('shrefresh').onclick=function(){if(editing)return;say('Refreshing…');load()};
+function first(){if(!cur&&pane.classList.contains('on'))load()}
+window.addEventListener('hashchange',function(){setTimeout(first,0)});setTimeout(first,0)})();
 """
