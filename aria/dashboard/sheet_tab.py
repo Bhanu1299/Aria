@@ -2,7 +2,8 @@
 
 GET  /api/sheet?tab=jobs|applied   the whole tab, read fresh (the page polls it every POLL_SECS
                                    while the Sheet tab is open, so edits made in Google Sheets show up)
-POST /api/sheet/cell               {tab, row, column, value, expect, company, role} → one cell
+POST /api/sheet/cell               {tab, row, column, value, expect, company, role} → one cell;
+                                   Status → Applied on the Jobs tab moves the row to the Applied tab
 
 A write goes through the Sheets API (sheets.JobSheet.set_cell) — never the browser. It re-finds
 the row by its company + role (rows move when the sheet is sorted) and refuses if the cell no
@@ -61,7 +62,7 @@ def _text(body: dict, name: str, required: bool = True) -> str:
     return v
 
 
-def edit(body: dict, sheet=None) -> dict:
+def edit(body: dict, sheet=None, applied_sheet=None) -> dict:
     """Write one cell. Raises SheetEditError (bad request) or sheets.SheetError (sheet said no)."""
     from aria.dashboard import sources
     from aria.integrations import sheets
@@ -77,7 +78,15 @@ def edit(body: dict, sheet=None) -> dict:
     if expect is not None and not isinstance(expect, str):
         raise SheetEditError("expect must be text")
     company, role = _text(body, "company", False), _text(body, "role", False)
-    sh = sheet or sheets.tab_sheet(_tab_name(str(body.get("tab") or "")))
+    key = str(body.get("tab") or "")
+    sh = sheet or sheets.tab_sheet(_tab_name(key))
+    if key == "jobs" and column.strip().lower() == "status" and value.strip().lower() == "applied":
+        if not (company or role):
+            raise SheetEditError("this row has no company or role, so it can't be moved safely")
+        dest = applied_sheet or sheets.tab_sheet(_tab_name("applied"))
+        at = sh.move_row(row, dest, sheets.STATUS_APPLIED, company, role, expect=expect)
+        sources.CACHE.drop("sheet")
+        return {"ok": True, "moved": "applied", "row": at}
     written = sh.set_cell(row, column, value, expect=expect,
                           company=company if company or role else None, role=role if company or role else None)
     sources.CACHE.drop("sheet")          # the other tabs read the new value on their next load
@@ -90,11 +99,12 @@ def render() -> str:
             '<div class="toolbar"><div class="utabs"><button type="button" class="utab shtab on" data-t="jobs">Jobs</button>'
             '<button type="button" class="utab shtab" data-t="applied">Applied</button></div>'
             '<input id="shq" type="search" placeholder="Filter rows…" autocomplete="off">'
+            '<button type="button" class="btn" id="shrefresh">Refresh</button>'
             '<span class="muted small" id="shstate">Loading the sheet…</span></div>'
             '<div class="tablewrap shwrap"><table id="sheet"><thead></thead><tbody></tbody></table></div>'
             '<p class="muted small">Click a cell to edit it; Enter saves, Shift+Enter is a new line, Esc cancels. '
-            'Saved straight to Google Sheets. Changes made in the sheet show up here within '
-            f'{POLL_SECS} seconds.</p></section>')
+            'Saved straight to Google Sheets. Setting a job to Applied moves it to the Applied tab. '
+            f'Changes made in the sheet show up here within {POLL_SECS} seconds, or press Refresh.</p></section>')
 
 
 CSS = r"""
@@ -156,7 +166,9 @@ if(value===was){done(false);return}td.classList.add('saving');td.classList.remov
 var id=ident(r);fetch('/api/sheet/cell',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':tok},
 body:JSON.stringify({tab:tab,row:r.row,column:cur.headers[i],value:value,expect:was,company:id.company,role:id.role})})
 .then(function(x){return x.json().then(function(d){return{ok:x.ok,d:d}})}).then(function(res){td.classList.remove('saving');
-if(res.ok){r.cells[i]=value;done(true);say('Saved row '+res.d.row+' · '+cur.headers[i]);lastAt=Date.now()}
+if(res.ok&&res.d.moved){cur.rows=cur.rows.filter(function(x){return x!==r});td.parentNode.remove();done(true);
+say('Moved '+(ident(r).company||'it')+' to the Applied tab (row '+res.d.row+')');lastAt=Date.now()}
+else if(res.ok){r.cells[i]=value;done(true);say('Saved row '+res.d.row+' · '+cur.headers[i]);lastAt=Date.now()}
 else{td.classList.add('err');done(false);say(res.d.error||'Save failed',true);setTimeout(function(){load(true)},1500)}})
 .catch(function(){td.classList.remove('saving');td.classList.add('err');done(false);say('Save failed: server unreachable',true)})}
 tbody.addEventListener('change',function(ev){var sel=ev.target;if(sel.tagName!=='SELECT')return;var td=sel.parentNode;
@@ -173,6 +185,7 @@ ta.addEventListener('blur',function(){close(true)})});
 root.querySelectorAll('.shtab').forEach(function(b){b.onclick=function(){if(editing)return;
 root.querySelectorAll('.shtab').forEach(function(x){x.classList.toggle('on',x===b)});tab=b.dataset.t;cur=null;say('Loading…');load(true)}});
 q.addEventListener('input',filter);
+document.getElementById('shrefresh').onclick=function(){if(editing)return;say('Refreshing…');load(true)};
 window.addEventListener('hashchange',function(){setTimeout(function(){load(false)},0)});
 document.addEventListener('visibilitychange',function(){load(false)});
 setInterval(function(){load(false)},poll);setInterval(ago,5000);setTimeout(function(){load(false)},0)})();

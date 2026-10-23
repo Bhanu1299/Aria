@@ -88,9 +88,9 @@ def test_data_reports_a_read_failure_without_raising():
 def test_edit_writes_and_drops_the_page_cache(monkeypatch):
     sh, svc = _sheet(ROWS)
     sources.CACHE._items["sheet"] = (0.0, sources.Source(True, {}))
-    out = sheet_tab.edit({"tab": "jobs", "row": 3, "column": "Status", "value": "Applied", "expect": "Not applied",
+    out = sheet_tab.edit({"tab": "jobs", "row": 3, "column": "Status", "value": "Skipped", "expect": "Not applied",
                           "company": "John Deere", "role": "Data Analyst"}, sheet=sh)
-    assert out == {"ok": True, "row": 3} and svc.written() == {"'Sheet1'!E3": "Applied"}
+    assert out == {"ok": True, "row": 3} and svc.written() == {"'Sheet1'!E3": "Skipped"}
     assert "sheet" not in sources.CACHE._items
 
 
@@ -222,3 +222,122 @@ def test_job_status_tool_writes_through_the_api(marks):
 def test_job_status_tool_never_sets_applied(marks):
     out = _tool(marks).execute({"row": 19, "status": "Applied"})
     assert marks["written"] == [] and "mark row 19 as applied" in out
+
+
+# ── Applied → moved to the Applied tab ──────────────────────────────────────
+
+APPLIED_HEADERS = ["Company", "Role", "Profile alignment /5", "Status", "Channel", "Apply link", "Post link",
+                   "Who to contact", "Source", "Why it's a fit + draft", "Outcome"]
+
+
+class Book:
+    """Two tabs of one spreadsheet: values get/append/batchUpdate + spreadsheet get/batchUpdate."""
+
+    def __init__(self, tabs):
+        self.tabs = tabs              # {title: [[...], ...]} header row first
+        self.calls = []
+
+    def for_tab(self, title):
+        book = self
+
+        class Svc:
+            def spreadsheets(self):
+                return self
+
+            def values(self):
+                return self
+
+            def get(self, spreadsheetId, range=None, fields=None):
+                if fields:
+                    return _X({"sheets": [{"properties": {"title": t, "sheetId": i}} for i, t in enumerate(book.tabs)]})
+                return _X({"values": [list(r) for r in book.tabs[title]]})
+
+            def append(self, spreadsheetId, range, valueInputOption, insertDataOption, body):
+                book.calls.append(("append", title, body["values"][0]))
+                book.tabs[title].append(body["values"][0])
+                return _X({"updates": {"updatedRange": f"'{title}'!A{len(book.tabs[title])}:K{len(book.tabs[title])}"}})
+
+            def batchUpdate(self, spreadsheetId, body):
+                for req in body.get("requests", []):
+                    rng = req["deleteDimension"]["range"]
+                    t = list(book.tabs)[rng["sheetId"]]
+                    book.calls.append(("delete", t, rng["startIndex"] + 1))
+                    del book.tabs[t][rng["startIndex"]]
+                for d in body.get("data", []):
+                    t, a1 = d["range"].split("!")
+                    t = t.strip("'")
+                    m = __import__("re").match(r"([A-Z]+)(\d+)", a1)
+                    col, row = ord(m.group(1)) - 65, int(m.group(2))
+                    r = book.tabs[t][row - 1]
+                    r += [""] * (col + 1 - len(r))
+                    r[col] = d["values"][0][0]
+                    book.calls.append(("write", t, a1, d["values"][0][0]))
+                return _X({})
+        return sheets.JobSheet("sid", title, service=Svc())
+
+
+class _X:
+    def __init__(self, r):
+        self.r = r
+
+    def execute(self):
+        return self.r
+
+
+def _book():
+    jobs = [HEADERS, ["Acme", "SWE", "NYC", "4", "Not applied", "https://a/apply", "https://a/post", "Jane", "", "fit", "",
+                      "2026-10-20: found"],
+            ["John Deere", "Data Analyst", "Moline", "3", "Not applied", "https://jd/apply"]]
+    applied = [APPLIED_HEADERS, ["Old Co", "SWE", "3", "Rejected"]]
+    b = Book({"Sheet1": jobs, "Applied": applied})
+    return b, b.for_tab("Sheet1"), b.for_tab("Applied")
+
+
+def test_applied_moves_the_row_by_column_name():
+    book, jobs, applied = _book()
+    out = sheet_tab.edit({"tab": "jobs", "row": 2, "column": "Status", "value": "Applied", "expect": "Not applied",
+                          "company": "Acme", "role": "SWE"}, sheet=jobs, applied_sheet=applied)
+    assert out == {"ok": True, "moved": "applied", "row": 3}
+    assert book.tabs["Applied"][2] == ["Acme", "SWE", "4", "Applied", "", "https://a/apply", "https://a/post", "Jane",
+                                       "", "fit", ""]
+    assert [r[0] for r in book.tabs["Sheet1"][1:]] == ["John Deere"]
+    assert [c[0] for c in book.calls] == ["append", "delete"]         # added before it's removed
+
+
+def test_move_follows_a_sort_and_never_deletes_the_wrong_row():
+    book, jobs, applied = _book()
+    book.tabs["Sheet1"][1], book.tabs["Sheet1"][2] = book.tabs["Sheet1"][2], book.tabs["Sheet1"][1]
+    sheet_tab.edit({"tab": "jobs", "row": 2, "column": "Status", "value": "Applied", "expect": "Not applied",
+                    "company": "Acme", "role": "SWE"}, sheet=jobs, applied_sheet=applied)
+    assert [r[0] for r in book.tabs["Sheet1"][1:]] == ["John Deere"] and ("delete", "Sheet1", 3) in book.calls
+
+
+def test_move_refuses_when_status_changed_meanwhile():
+    book, jobs, applied = _book()
+    book.tabs["Sheet1"][1][4] = "Skipped"
+    with pytest.raises(sheets.SheetError, match="changed"):
+        sheet_tab.edit({"tab": "jobs", "row": 2, "column": "Status", "value": "Applied", "expect": "Not applied",
+                        "company": "Acme", "role": "SWE"}, sheet=jobs, applied_sheet=applied)
+    assert book.calls == []
+
+
+def test_already_in_applied_only_sets_its_status_then_removes_the_job_row():
+    book, jobs, applied = _book()
+    book.tabs["Applied"].append(["Acme", "SWE", "4", "Not applied"])
+    out = sheet_tab.edit({"tab": "jobs", "row": 2, "column": "Status", "value": "Applied", "expect": "Not applied",
+                          "company": "Acme", "role": "SWE"}, sheet=jobs, applied_sheet=applied)
+    assert out["row"] == 3 and book.tabs["Applied"][2][3] == "Applied" and len(book.tabs["Applied"]) == 3
+    assert [c[0] for c in book.calls] == ["write", "delete"]
+
+
+def test_other_statuses_and_the_applied_tab_stay_plain_cell_edits():
+    book, jobs, applied = _book()
+    sheet_tab.edit({"tab": "jobs", "row": 3, "column": "Status", "value": "Skipped", "expect": "Not applied",
+                    "company": "John Deere", "role": "Data Analyst"}, sheet=jobs, applied_sheet=applied)
+    sheet_tab.edit({"tab": "applied", "row": 2, "column": "Status", "value": "Applied", "expect": "Rejected",
+                    "company": "Old Co", "role": "SWE"}, sheet=applied)
+    assert [c[0] for c in book.calls] == ["write", "write"]
+
+
+def test_page_has_a_refresh_button():
+    assert 'id="shrefresh"' in sheet_tab.render()

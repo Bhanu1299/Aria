@@ -277,6 +277,76 @@ class JobSheet:
         logger.info("sheets: %s row %d %s set (%d chars)", self.tab, row, column, len(value))
         return row
 
+    def _gid(self) -> int:
+        """This tab's numeric sheetId (deleting a row needs it)."""
+        self._values_api()
+        try:
+            meta = self._service.spreadsheets().get(spreadsheetId=self.sheet_id, fields="sheets.properties").execute()
+        except Exception as exc:
+            raise SheetError(f"I couldn't read the job sheet's tabs: {exc}") from exc
+        for s in meta.get("sheets", []):
+            if s.get("properties", {}).get("title") == self.tab:
+                return int(s["properties"]["sheetId"])
+        raise SheetError(f"The job sheet has no {self.tab!r} tab.")
+
+    def move_row(self, row: int, dest: "JobSheet", status: str, company: str, role: str,
+                 expect: Optional[str] = None) -> int:
+        """Move one job row to `dest` (the Applied tab) with Status = `status`: columns copied by
+        header name, then the row deleted here. Already in `dest` (same company + role) → only its
+        Status is set. The row is re-found by company + role before each step, so a sort in
+        between never moves or deletes the wrong row. Returns the row number in `dest`."""
+        values = self._read()
+        if not values:
+            raise SheetError("The job sheet is empty.")
+        headers = dedupe_headers(values[0])
+        row = self._resolve_row(values, headers, row, company, role)
+        index = self._index(headers)
+        cells = values[row - 1]
+        if expect is not None:
+            si = index.get(_norm(COL_STATUS))
+            have = cells[si] if si is not None and si < len(cells) else ""
+            if have.strip() != expect.strip():
+                raise SheetError(f"That row's Status changed in the sheet since you loaded it (it now says {have[:40]!r}).")
+        src = {_norm(h): (cells[i] if i < len(cells) else "") for i, h in enumerate(headers) if h}
+        src[_norm(COL_STATUS)] = status
+
+        dvalues = dest._read()
+        if not dvalues:
+            raise SheetError(f"The {dest.tab!r} tab has no header row.")
+        dheaders = dedupe_headers(dvalues[0])
+        try:
+            at = dest._resolve_row(dvalues, dheaders, 0, company, role)
+        except SheetError:
+            at = 0
+        if at:
+            dest.set_cell(at, COL_STATUS, status, company=company, role=role)
+        else:
+            line = [src.get(_norm(h), "") for h in dheaders]
+            try:
+                resp = dest._values_api().append(
+                    spreadsheetId=dest.sheet_id, range=dest._a1(), valueInputOption="RAW",
+                    insertDataOption="INSERT_ROWS", body={"values": [line]}).execute()
+            except Exception as exc:
+                logger.error("sheets: append to %s failed: %s", dest.tab, exc)
+                raise SheetError(f"I couldn't add the row to the {dest.tab} tab, so nothing was moved.") from exc
+            m = re.search(r"!\$?[A-Z]+\$?(\d+)", (resp.get("updates") or {}).get("updatedRange", ""))
+            at = int(m.group(1)) if m else len(dvalues) + 1
+
+        values = self._read()
+        row = self._resolve_row(values, dedupe_headers(values[0]), row, company, role)
+        try:
+            self._service.spreadsheets().batchUpdate(spreadsheetId=self.sheet_id, body={"requests": [
+                {"deleteDimension": {"range": {"sheetId": self._gid(), "dimension": "ROWS",
+                                               "startIndex": row - 1, "endIndex": row}}}]}).execute()
+        except SheetError:
+            raise
+        except Exception as exc:
+            logger.error("sheets: delete row %d from %s failed: %s", row, self.tab, exc)
+            raise SheetError(f"It's in the {dest.tab} tab (row {at}) but I couldn't remove it from "
+                             f"{self.tab}; delete row {row} there yourself.") from exc
+        logger.info("sheets: moved %s row %d → %s row %d (%s)", self.tab, row, dest.tab, at, status)
+        return at
+
     def _update_row(self, row: int, fields: dict[str, str], note: str,
                     company: Optional[str], role: Optional[str]) -> int:
         values = self._read()
