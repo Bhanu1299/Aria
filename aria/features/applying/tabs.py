@@ -70,14 +70,20 @@ def all_entries() -> list:
 def add(job: dict, ats: str = "") -> dict:
     now = time.time()
     entry = {
-        "id": f"apply-{job.get('row') or _slug(job.get('company', ''))}-{int(now * 1000)}",
-        **{k: job.get(k) for k in ("row", "company", "role", "url", "location")},
+        "id": "",
+        **{k: job.get(k) for k in ("row", "job_id", "company", "role", "url", "location")},
         "ats": ats, "form_url": "", "filled": {}, "needs_me": [], "review_path": "", "screenshot": "",
         "state": FILLING, "submitted_by": "", "sheet_marked": False, "note": "",
         "opened": now, "updated": now,
     }
+    base = f"apply-{job.get('job_id') or job.get('row') or _slug(job.get('company', ''))}-{int(now * 1000)}"
     with _lock:
         entries = _load()
+        taken = {e["id"] for e in entries}
+        entry["id"], n = base, 1
+        while entry["id"] in taken:                 # two tabs in the same millisecond
+            n += 1
+            entry["id"] = f"{base}-{n}"
         entries.append(entry)
         _save(entries)
     return dict(entry)

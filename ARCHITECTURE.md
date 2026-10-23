@@ -90,6 +90,14 @@ the regex fast path in front of Siri's LLM planner:
 3. **Agent** — everything else, plus any direct route whose slot doesn't parse
    or whose tool is unavailable or raises.
 
+The agent is the understanding layer; regex routes are only a zero-token speed-up, and
+nothing is reachable *only* through an exact phrase. `parse.normalize` drops spoken lead-ins
+("yeah, …", "so, …") and a wake word Whisper glued on ("AriaHeadSubmit"); tools resolve
+misheard names against their own data (`sheets.find_jobs`: fuzzy, never acting on a
+sound-alike without asking). Measured on real utterances: `tests/data/intent_cases.json`
+(offline: `tests/test_intent_cases.py`; live agent: `scripts/manual_intent_eval.py`, 13/13 on
+2026-10-23). Every sentence Aria trips on becomes a new case.
+
 ```mermaid
 flowchart TB
     N["transcript → normalize()"]
@@ -447,9 +455,15 @@ waits for the user without raising the tab, then carries on from the same step. 
 - Every application gets its own visible tab (`aria/features/applying/tabs.py`
   registry, `~/.aria/apply_tabs.json`; the entry id is the `agent_browser` tab
   name), so other tools can't navigate it away while it waits for review.
-- Submitting is not an agent tool. Only the dispatcher pre-handler
-  (`aria/features/applying/commands.py`), triggered by the user's own words, can
-  click submit, and it refuses if the tab isn't showing the reviewed form.
+- Submitting is never decided by an LLM. Exact phrases ("submit it") go to the dispatcher
+  pre-handler (`aria/features/applying/commands.py`). Any other wording reaches the agent's
+  `application_action` tool, which only *stages* submit / "I submitted" / close / mark
+  Applied and reads it back ("Submit Software Engineer I at RTX?"); it runs only if the
+  user's very next words are a yes, and it refuses if the tab isn't showing the reviewed form.
+- Every job has a stable ID (`J0042`, an `ID` column in the jobs and Applied tabs,
+  `sheets.ensure_ids`). Row numbers shift when rows are sorted or moved, so writes find the
+  row by ID first. The user can name a job in any words and any order (`apply_job(job=…)`,
+  `job_find`).
 
 ### One browser, never in your way (standing rules, set by the user 2026-10-22)
 

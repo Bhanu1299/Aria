@@ -504,6 +504,8 @@ def main():
         processing_event=_processing,
         transcriber=transcriber_instance,
         menubar=menubar,
+        interruptible=speaker.interruptible,    # say "Aria" while it talks → it stops and listens
+        on_barge_in=speaker.stop,
     )
     wake_word_listener.start()
 

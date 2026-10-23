@@ -153,7 +153,7 @@ def marks(monkeypatch, tmp_path):
     written = []
     monkeypatch.setattr(sheets, "get_job", lambda row: next((j for j in jobs if j["row"] == row), None))
     monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: jobs})())
-    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None:
+    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None, job_id=None:
                         written.append((row, status, company)) or row)
     last = {"job": None}
     monkeypatch.setattr(commands, "_last_job", lambda: last["job"])
@@ -166,7 +166,7 @@ def test_the_users_own_sentence_marks_the_job_aria_just_filled(marks):
     marks["last"]["job"] = marks["jobs"][1]
     out = commands.handle("Yeah, I've submitted right now. You can mark the field as applied.")
     assert marks["written"] == [(19, "Applied", "1 Data Analytics Inc")]
-    assert out == "Marked Junior Data Analyst at 1 Data Analytics Inc Applied in the sheet, row 19."
+    assert out == "Marked Junior Data Analyst at 1 Data Analytics Inc Applied in the sheet (row 19)."
 
 
 @pytest.mark.parametrize("text,row,status", [

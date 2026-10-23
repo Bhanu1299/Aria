@@ -3,11 +3,12 @@
 GET  /api/sheet?tab=jobs|applied   the whole tab, read fresh — when the Sheet tab is first opened
                                    and when the user presses Refresh (never on a timer)
 POST /api/sheet/move_applied       every Jobs row already marked Applied → the Applied tab
-POST /api/sheet/cell               {tab, row, column, value, expect, company, role} → one cell;
+POST /api/sheet/cell               {tab, row, id, column, value, expect, company, role} → one cell;
                                    Status → Applied on the Jobs tab moves the row to the Applied tab
 
-A write goes through the Sheets API (sheets.JobSheet.set_cell) — never the browser. It re-finds
-the row by its company + role (rows move when the sheet is sorted) and refuses if the cell no
+Every job row gets its stable ID (sheets.ensure_ids) before a read, and the page shows that ID,
+not the sheet row number. A write goes through the Sheets API (sheets.JobSheet.set_cell) — never
+the browser. It re-finds the row by its ID, then company + role (rows move when the sheet is sorted) and refuses if the cell no
 longer holds `expect`, the value the page showed, so an edit made in the sheet meanwhile is never
 overwritten blind.
 """
@@ -39,6 +40,11 @@ def data(key: str, sheet=None) -> dict:
     from aria.integrations import sheets
     try:
         sh = sheet or sheets.tab_sheet(_tab_name(key))
+        if sheet is None:
+            try:
+                sheets.ensure_ids()
+            except sheets.SheetError as exc:          # read-only access: show the tab without new IDs
+                logger.warning("dashboard: couldn't add job IDs: %s", exc)
         got = sh.table()
     except (SheetEditError, sheets.SheetError) as exc:
         return {"tab": key, "error": str(exc)}
@@ -78,16 +84,19 @@ def edit(body: dict, sheet=None, applied_sheet=None) -> dict:
     if expect is not None and not isinstance(expect, str):
         raise SheetEditError("expect must be text")
     company, role = _text(body, "company", False), _text(body, "role", False)
+    job_id = _text(body, "id", False).strip() or None
     key = str(body.get("tab") or "")
     sh = sheet or sheets.tab_sheet(_tab_name(key))
     if key == "jobs" and column.strip().lower() == "status" and value.strip().lower() == "applied":
         if not (company or role):
             raise SheetEditError("this row has no company or role, so it can't be moved safely")
         dest = applied_sheet or sheets.tab_sheet(_tab_name("applied"))
-        at = sh.move_row(row, dest, sheets.STATUS_APPLIED, company, role, expect=expect)
+        at = sh.move_row(row, dest, sheets.STATUS_APPLIED, company, role, expect=expect, job_id=job_id)
         sources.CACHE.drop("sheet")
         return {"ok": True, "moved": "applied", "row": at}
-    written = sh.set_cell(row, column, value, expect=expect,
+    if column.strip().lower() == sheets.COL_ID.lower():
+        raise SheetEditError("the ID column is Aria's: it never changes, so a job can always be found")
+    written = sh.set_cell(row, column, value, expect=expect, job_id=job_id,
                           company=company if company or role else None, role=role if company or role else None)
     sources.CACHE.drop("sheet")          # the other tabs read the new value on their next load
     return {"ok": True, "row": written}
@@ -116,7 +125,8 @@ def move_applied(sheet=None, applied_sheet=None) -> dict:
             errors.append(f"row {r['row']}: no company or role, left in place")
             continue
         try:
-            sh.move_row(r["row"], dest, sheets.STATUS_APPLIED, company, role, expect=r["cells"][si])
+            sh.move_row(r["row"], dest, sheets.STATUS_APPLIED, company, role, expect=r["cells"][si],
+                        job_id=r.get("id") or None)
             moved.append(company or role)
         except sheets.SheetError as exc:
             errors.append(f"{company or role}: {exc}")
@@ -176,13 +186,13 @@ function cellBody(td,v){td.textContent='';var d=document.createElement('div');d.
 if(isLink(v)){var a=document.createElement('a');a.href=v.trim();a.target='_blank';a.rel='noopener';
 try{a.textContent=new URL(v.trim()).hostname}catch(e){a.textContent=v}d.appendChild(a)}else d.textContent=v;
 td.appendChild(d);td.title=v.length>120?v:''}
-function draw(prev){var s=col('status'),keep={};
+function draw(prev){var s=col('status'),idc=col('id'),keep={};
 if(prev)prev.rows.forEach(function(r){keep[r.row]=r.cells});
-thead.textContent='';var tr=document.createElement('tr'),th=document.createElement('th');th.textContent='#';tr.appendChild(th);
-cur.headers.forEach(function(h){var t=document.createElement('th');t.textContent=h;tr.appendChild(t)});thead.appendChild(tr);
+thead.textContent='';var tr=document.createElement('tr'),th=document.createElement('th');th.textContent='ID';tr.appendChild(th);
+cur.headers.forEach(function(h,i){if(i===idc)return;var t=document.createElement('th');t.textContent=h;tr.appendChild(t)});thead.appendChild(tr);
 tbody.textContent='';cur.rows.forEach(function(r){var tr=document.createElement('tr');tr.dataset.row=r.row;
-var n=document.createElement('td');n.textContent=r.row;tr.appendChild(n);
-r.cells.forEach(function(v,i){var td=document.createElement('td');td.dataset.c=i;
+var n=document.createElement('td');n.textContent=r.id||'';n.title='Sheet row '+r.row;tr.appendChild(n);
+r.cells.forEach(function(v,i){if(i===idc)return;var td=document.createElement('td');td.dataset.c=i;
 if(i===s){var sel=document.createElement('select');var opts=cur.statuses.slice();if(opts.indexOf(v)<0)opts.unshift(v);
 opts.forEach(function(o){var op=document.createElement('option');op.value=o;op.textContent=o||'(blank)';sel.appendChild(op)});
 sel.value=v;sel.dataset.was=v;td.appendChild(sel)}else cellBody(td,v);
@@ -201,11 +211,11 @@ function rowOf(td){var n=parseInt(td.parentNode.dataset.row,10);return cur.rows.
 function save(td,value,done){var r=rowOf(td),i=parseInt(td.dataset.c,10),was=r.cells[i];
 if(value===was){done(false);return}td.classList.add('saving');td.classList.remove('err');
 var id=ident(r);fetch('/api/sheet/cell',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':tok},
-body:JSON.stringify({tab:tab,row:r.row,column:cur.headers[i],value:value,expect:was,company:id.company,role:id.role})})
+body:JSON.stringify({tab:tab,row:r.row,id:r.id||'',column:cur.headers[i],value:value,expect:was,company:id.company,role:id.role})})
 .then(function(x){return x.json().then(function(d){return{ok:x.ok,d:d}})}).then(function(res){td.classList.remove('saving');
 if(res.ok&&res.d.moved){cur.rows=cur.rows.filter(function(x){return x!==r});td.parentNode.remove();done(true);
-say('Moved '+(ident(r).company||'it')+' to the Applied tab (row '+res.d.row+')');lastAt=Date.now()}
-else if(res.ok){r.cells[i]=value;done(true);say('Saved row '+res.d.row+' · '+cur.headers[i]);lastAt=Date.now()}
+say('Moved '+(ident(r).company||'it')+' to the Applied tab');lastAt=Date.now()}
+else if(res.ok){r.cells[i]=value;done(true);say('Saved '+(r.id||ident(r).company||'it')+' · '+cur.headers[i]);lastAt=Date.now()}
 else{td.classList.add('err');done(false);say(res.d.error||'Save failed',true);setTimeout(load,1500)}})
 .catch(function(){td.classList.remove('saving');td.classList.add('err');done(false);say('Save failed: server unreachable',true)})}
 tbody.addEventListener('change',function(ev){var sel=ev.target;if(sel.tagName!=='SELECT')return;var td=sel.parentNode;

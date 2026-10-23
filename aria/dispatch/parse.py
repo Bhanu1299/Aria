@@ -1,6 +1,7 @@
 """dispatch/parse.py — deterministic text → value parsing for direct routes.
 
 normalize(text)            transcript → canonical lowercase command text
+unglue(text)               "AriaHeadSubmit" → "Head Submit" (what the agent is given)
 parse_duration(text)       "an hour and a half" → 5400 (seconds)
 parse_when(text, now)      "tomorrow at 5pm" → datetime
 split_task_when(text, now) "call mom at 5pm" → ("call mom", datetime)
@@ -30,18 +31,33 @@ _POLITE_PREFIX = re.compile(
     r"go ahead and|just)\s+"
 )
 _POLITE_SUFFIX = re.compile(r"\s+(?:please|for me|now|thanks|thank you)$")
+# Whisper glues the wake word on: "AriaHeadSubmit" → "Head Submit".
+_GLUED_WAKE = re.compile(r"^\s*(?:[Hh]ey\s*)?[Aa]ria(?=[A-Z][a-z])")
+# Spoken lead-ins that carry no command ("yeah, I submitted it", "so, open the dashboard"); only
+# stripped when words follow, so a bare "yes" / "okay" still reaches the yes/no handlers.
+_FILLER_PREFIX = re.compile(r"^(?:yeah|yes|yep|yup|okay|ok|so|alright|all right|um+|uh+|hmm+|oh|well then)\s+(?=\S)")
+
+
+def unglue(text: str) -> str:
+    """Undo Whisper gluing the wake word onto the command ("AriaHeadSubmit" → "Head Submit");
+    any other text comes back unchanged. The agent gets this, not the glued word."""
+    s = (text or "").strip()
+    if _GLUED_WAKE.match(s):
+        return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", _GLUED_WAKE.sub("", s))
+    return text
 
 
 def normalize(text: str) -> str:
-    s = (text or "").lower().strip()
+    s = unglue(text).strip().lower()
     s = s.replace("’", "'")
     s = re.sub(r"\b([ap])\.\s?m\.?", r"\1m", s)        # whisper writes "p.m."
     s = re.sub(r"[!?;]+|(?<!\d),|,(?!\d)", " ", s)        # keep 1,200
     s = re.sub(r"\.(?=\s|$)", " ", s)                     # sentence periods only: keep 2.5, google.com
     s = re.sub(r"\s+", " ", s).strip()
     s = _WAKE_PREFIX.sub("", s).strip()
-    for _ in range(3):                                    # "can you please just ..."
-        new = _POLITE_PREFIX.sub("", s)
+    for _ in range(3):                                    # "yeah so can you please just ..."
+        new = _FILLER_PREFIX.sub("", s)
+        new = _POLITE_PREFIX.sub("", new)
         new = _POLITE_SUFFIX.sub("", new).strip()
         if new == s:
             break

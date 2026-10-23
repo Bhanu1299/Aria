@@ -38,7 +38,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(ab, "BANK_PATH", tmp_path / "answer_bank.json")
     monkeypatch.setattr(tabs, "REGISTRY_PATH", tmp_path / "apply_tabs.json")
     sheet_calls = []
-    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None:
+    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None, job_id=None:
                         sheet_calls.append((row, status, note)) or row)
     applied = []
     monkeypatch.setattr(applicator.tracker, "log_application", lambda *a: applied.append(a))
@@ -382,7 +382,7 @@ def test_followups_never_relabel_a_running_job(monkeypatch, env):
     from aria.llm import context as llm_context
     e = _entry(env)
     during = []
-    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None:
+    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None, job_id=None:
                         during.append(llm_context.current().get("job")) or row)
     with llm_context.job("Ookla | Data Engineer | row 14", "run-a"):
         applicator.skip_entry(e)

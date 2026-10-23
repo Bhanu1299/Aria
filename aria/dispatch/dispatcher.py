@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence, Tuple
 
+from aria.dispatch.parse import unglue
 from aria.dispatch.rules import Escalate, RuleMatch, RuleSet
 from aria.llm import meter
 
@@ -81,7 +82,7 @@ class Dispatcher:
             escalated_from = match.rule_id
             logger.info("[dispatch] %s escalated: %s", match.rule_id, match.reason)
 
-        answer = self.agent.run(text)
+        answer = self.agent.run(unglue(text))
         return DispatchResult(
             answer,
             "agent",

@@ -1,0 +1,22 @@
+{
+  "_about": "Real things the user said (2026-10-23 log) plus natural rewordings. layer=pre: an exact-phrase pre-handler must claim it (checked offline in tests/test_intent_cases.py). layer=agent: no fast path may claim it, and the agent should pick one of `tools` with `args` (substring, any case) — measured live by scripts/manual_intent_eval.py. Every time Aria trips on a sentence, add it here.",
+  "cases": [
+    {"said": "Can you open my job dashboard?", "layer": "pre", "handler": "dashboard"},
+    {"said": "Yeah, I submitted it.", "layer": "pre", "handler": "by_hand"},
+    {"said": "Okay so submit it", "layer": "pre", "handler": "submit"},
+    {"said": "Aria, mark row 18 as applied", "layer": "pre", "handler": "mark"},
+    {"said": "Let's apply it to the Magna job.", "layer": "agent", "tools": ["apply_job", "job_find"], "args": {"job|query": "magna"}},
+    {"said": "Let's apply to the software engineer one on-site from RTX.", "layer": "agent", "tools": ["apply_job"], "args": {"job": "rtx"}},
+    {"said": "Now, such for the RTX job and the sheet, it will be there.", "layer": "agent", "tools": ["job_find", "apply_job"], "args": {"job|query": "rtx"}},
+    {"said": "AriaHeadSubmit", "layer": "agent", "tools": ["application_action"], "args": {"action": "submit"}},
+    {"said": "hit submit on the RTX one", "layer": "agent", "tools": ["application_action"], "args": {"action": "submit", "job": "rtx"}},
+    {"said": "I already sent the Deere application myself", "layer": "agent", "tools": ["application_action"], "args": {"action": "i_submitted", "job": "deere"}},
+    {"said": "did I already apply to Magna?", "layer": "agent", "tools": ["job_find"], "args": {"query": "magna"}},
+    {"said": "put John Deere down as skipped", "layer": "agent", "tools": ["application_action", "job_status"], "args": {"action|status": "skip"}},
+    {"said": "what jobs do I have from eBay", "layer": "agent", "tools": ["job_find"], "args": {"query": "ebay"}},
+    {"said": "close that tab", "layer": "agent", "tools": ["application_action"], "args": {"action": "close"}},
+    {"said": "skip the deere one", "layer": "agent", "tools": ["application_action"], "args": {"action": "skip", "job": "deere"}},
+    {"said": "fill out the application for the magnet job", "layer": "agent", "tools": ["apply_job", "job_find"], "args": {"job|query": "magnet"}},
+    {"said": "go ahead and do the michigan state one next", "layer": "agent", "tools": ["apply_job"], "args": {"job": "michigan"}}
+  ]
+}

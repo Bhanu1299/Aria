@@ -112,8 +112,8 @@ def _sheet_update_now(job: dict, status: str, note: str) -> str:
     if not job.get("row"):
         return ""
     try:
-        sheets.set_status(int(job["row"]), status, note,
-                          company=job.get("company") or None, role=job.get("role") or None)
+        sheets.set_status(int(job["row"]), status, note, company=job.get("company") or None,
+                          role=job.get("role") or None, job_id=job.get("job_id") or None)
         return ""
     except sheets.SheetError as exc:
         logger.warning("applicator: sheet update failed: %s", exc)
@@ -505,7 +505,7 @@ def _logged_followup(trigger: str):
 
 
 def _job_of(entry: dict) -> dict:
-    return {k: entry.get(k) for k in ("row", "company", "role", "url", "location")}
+    return {k: entry.get(k) for k in ("row", "job_id", "company", "role", "url", "location")}
 
 
 @_logged_followup("submit")

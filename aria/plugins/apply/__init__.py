@@ -3,9 +3,11 @@
 Tools:
   job_from_sheet — read the next not-yet-handled row (blank Status) from the job
                    sheet (MUSE_SHEET_ID / MUSE_SHEET_TAB) and remember it.
-  apply_job      — fill the application for the next sheet job, a given sheet row,
-                   or a URL, and stop for review (aria/features/applicator.py).
-                   NEVER submits.
+  job_find       — find jobs in both tabs by whatever the user calls them (company, role,
+                   place, ID, misheard names): ranked, with tab, ID and status.
+  apply_job      — fill the application for a job the user names (any order), the next
+                   sheet job, a sheet row, or a URL, and stop for review
+                   (aria/features/applicator.py). NEVER submits.
   job_status     — set a sheet row's Status (Not applied / In review / Skipped / Not gonna
                    apply) through the Sheets API. Never "Applied": that comes only from the
                    user's own words ("mark row 19 as applied") via the applying pre-handler.
@@ -17,9 +19,14 @@ Tools:
 
 Every Google call here uses the jobs account (google_auth.JOBS), never personal.
 
-Submitting is deliberately NOT a tool: only the user's own words ("submit it",
-"I submitted it", "skip this job") reach aria.features.applying.commands, a dispatcher
-pre-handler, so no LLM can decide to send an application.
+  application_action — submit / I submitted / skip / close / mark a job, for wordings the
+                   exact phrases miss. Submit, I submitted, close and mark Applied are only
+                   STAGED and read back; they run on the user's next "yes"
+                   (aria.features.applying.commands.request / _confirm).
+
+No LLM can send an application: exact phrases ("submit it", "I submitted it") go straight to
+the aria.features.applying.commands pre-handler, and everything the agent understands in other
+words still waits for the user's own yes.
 """
 from __future__ import annotations
 
@@ -27,6 +34,7 @@ import logging
 from typing import Optional
 from urllib.parse import urlparse
 
+import aria.core.config as config
 import aria.core.plugin as _plugin_base
 import aria.state.memory as memory
 from aria.core.tool import ToolDescriptor, ToolRegistry
@@ -80,7 +88,50 @@ def describe_job(job: dict) -> str:
         link = f"No apply URL — the sheet says: {job['apply_link']}."
     else:
         link = "There's no apply link on that row."
-    return f"Next job from your sheet: {job['role']} at {job['company']}{where}, row {job['row']}. {link}"
+    ref = job.get("job_id") or f"row {job['row']}"
+    return f"Next job from your sheet: {job['role']} at {job['company']}{where} ({ref}). {link}"
+
+
+def _ref(job: dict) -> str:
+    """How the agent names a job back to apply_job: its ID, else its sheet row."""
+    return job.get("job_id") or f"row {job['row']}"
+
+
+def _match_line(job: dict) -> str:
+    where = "Applied tab" if job.get("tab") == config.MUSE_APPLIED_TAB else "jobs tab"
+    return (f"{job.get('role') or '?'} at {job.get('company') or '?'}"
+            + (f" in {job['location']}" if job.get("location") else "")
+            + f" — {_ref(job)}, {where}, Status {job.get('status') or 'blank'}")
+
+
+def _add_ids() -> None:
+    """Best effort: new rows get their ID before a lookup (read-only access still finds by name)."""
+    try:
+        sheets.ensure_ids()
+    except Exception as exc:
+        logger.warning("couldn't add job IDs: %s", exc)
+
+
+def resolve_named_job(said: str):
+    """(job, None) when the user's words name exactly one open job; (None, reply-for-the-agent)
+    otherwise — ask which, say it's already applied, or say nothing fits. Never guesses."""
+    _add_ids()
+    got = sheets.resolve_job(said)
+    jobs, kind = got["jobs"], got["kind"]
+    if kind == "one" and got["sure"]:
+        return jobs[0], None
+    if kind == "none":
+        return None, (f"No job in the sheet matches {said!r}. Tell the user and offer to read what's "
+                      "there (job_find with a company or role word); don't apply to a different job.")
+    lines = "; ".join(_match_line(j) for j in jobs[:5])
+    if not got["sure"]:
+        return None, (f"Not sure which job {said!r} means — closest: {lines}. Ask the user if that's the "
+                      f"one; on yes call apply_job with job={_ref(jobs[0])!r}.")
+    if kind == "applied":
+        return None, (f"Already applied: {lines}. Tell the user it's already in the Applied tab; don't fill "
+                      "it again.")
+    return None, (f"Several jobs fit {said!r}: {lines}. Ask the user which one (by role or place), then call "
+                  "apply_job with that job's ID.")
 
 
 def _terminal_progress(msg: str) -> None:
@@ -105,8 +156,10 @@ class ApplyPlugin(_plugin_base.PluginBase):
 
     def register(self, registry: ToolRegistry) -> None:
         registry.register(self._job_from_sheet_tool())
+        registry.register(self._job_find_tool())
         registry.register(self._apply_job_tool())
         registry.register(self._job_status_tool())
+        registry.register(self._application_action_tool())
         registry.register(self._job_outreach_draft_tool())
         registry.register(self._job_outreach_tool())
 
@@ -164,10 +217,47 @@ class ApplyPlugin(_plugin_base.PluginBase):
             execute=execute,
         )
 
+    def _job_find_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            said = str(params.get("query") or "").strip()
+            if not said:
+                return "Say which company, role, place or job ID to look for."
+            _add_ids()
+            try:
+                found = sheets.find_jobs(said)
+            except sheets.SheetError as exc:
+                return str(exc)
+            except Exception as exc:
+                logger.error("job_find failed: %s", exc)
+                return "I couldn't read your job sheet right now."
+            if not found:
+                return f"No job in either tab matches {said!r}."
+            more = f" (+{len(found) - 8} more)" if len(found) > 8 else ""
+            maybe = "" if found[0]["sure"] else " These are sound-alike matches only: check with the user."
+            return "Matches, best first: " + "; ".join(_match_line(j) for j in found[:8]) + more + "." + maybe
+
+        return ToolDescriptor(
+            name="job_find",
+            description=(
+                "Look up jobs in the user's job sheet (the jobs tab AND the Applied tab) by whatever "
+                "they call them: company, role, place, job ID ('J0018'), even misheard or misspelled "
+                "('magnet' finds Magna). Returns matches with ID, tab and Status. Use for 'do I have "
+                "an RTX job', 'which Deere roles are there', 'did I apply to Magna'."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string",
+                                         "description": "The user's words for the job(s)"}},
+                "required": ["query"],
+            },
+            execute=execute,
+        )
+
     def _apply_job_tool(self) -> ToolDescriptor:
         def execute(params: dict) -> str:
             from aria.features import applicator
             url = str(params.get("url") or "").strip()
+            said = str(params.get("job") or "").strip()
             row: Optional[int] = None
             try:
                 row = int(params["row"]) if params.get("row") not in (None, "") else None
@@ -178,6 +268,15 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 if url:
                     job = {"url": url, "company": "", "role": "", "row": None, "fields": {}}
                     run.skip("read sheet", "you gave a URL")
+                elif said:
+                    with run.step("read sheet") as s:
+                        job, reply = resolve_named_job(said)
+                        s.detail = f"{said!r} → " + (_match_line(job) if job else "not one clear job")
+                    if job is None:
+                        run.finish("no change", f"{said!r} isn't one clear job")
+                        return reply
+                    run.decision(job["company"], job["role"], job["row"], True,
+                                 pick_reasons(job, True)[:3] + [f"picked: you named it ({said!r})"])
                 elif row is not None:
                     with run.step("read sheet") as s:
                         job = sheets.get_job(row)
@@ -206,13 +305,18 @@ class ApplyPlugin(_plugin_base.PluginBase):
             name="apply_job",
             description=(
                 "Fill out a job application and STOP for the user's review — it never submits. "
+                "When the user names a job in ANY words ('the RTX onsite one', 'the Michigan job', "
+                "'J0018', a misheard name), pass their words as `job` — never swap in the next job. "
                 "With no arguments it takes the next new job from the user's job sheet (the Muse "
-                "sheet). Use for 'apply to the next job', 'apply to row 7', or 'apply to <url>'. "
+                "sheet). Also 'apply to row 7' (row) or 'apply to <url>' (url). If the reply says it "
+                "isn't sure or several fit, ask the user, then call again with the job's ID. "
                 "The user submits afterwards by saying 'submit it'."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
+                    "job": {"type": "string",
+                            "description": "The user's words for the job, or its ID like J0018 (optional)"},
                     "row": {"type": "integer", "description": "Sheet row number (optional)"},
                     "url": {"type": "string", "description": "Application URL (optional)"},
                 },
@@ -240,7 +344,8 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 if job is None:
                     return f"Row {row} isn't a job in your sheet."
                 written = sheets.set_status(row, allowed[status.lower()], f"{allowed[status.lower()]} (asked by voice)",
-                                            company=job["company"] or None, role=job["role"] or None)
+                                            company=job["company"] or None, role=job["role"] or None,
+                                            job_id=job.get("job_id") or None)
             except sheets.SheetError as exc:
                 return str(exc)
             except Exception as exc:
@@ -263,6 +368,40 @@ class ApplyPlugin(_plugin_base.PluginBase):
                     "status": {"type": "string", "enum": list(JOB_STATUS_CHOICES)},
                 },
                 "required": ["row", "status"],
+            },
+            execute=execute,
+        )
+
+    def _application_action_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.applying import commands
+            try:
+                return commands.request(str(params.get("action") or ""), str(params.get("job") or ""),
+                                        str(params.get("status") or ""))
+            except Exception as exc:
+                logger.error("application_action failed: %s", exc)
+                return "That didn't work — nothing was submitted or changed."
+
+        return ToolDescriptor(
+            name="application_action",
+            description=(
+                "Act on a job application the user is talking about, in whatever words they use "
+                "('hit submit', 'send the RTX one in', 'I already sent it', 'drop the Deere one', "
+                "'close that tab', 'put Magna down as applied'). action: submit (click submit), "
+                "i_submitted (the user submitted it themselves), skip, close (the tab), mark (set the "
+                "sheet Status; give status). Submit, i_submitted, close and mark-applied are NOT done "
+                "by this tool: it returns a question — ask the user exactly that and stop; their yes "
+                "does it. job = the user's words for the job; leave empty for 'it' / 'this one'."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["submit", "i_submitted", "skip", "close", "mark"]},
+                    "job": {"type": "string", "description": "The user's words for the job (optional)"},
+                    "status": {"type": "string", "enum": ["applied", "not applied", "skipped", "not gonna apply"],
+                               "description": "For action=mark"},
+                },
+                "required": ["action"],
             },
             execute=execute,
         )

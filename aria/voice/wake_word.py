@@ -102,6 +102,11 @@ _PORCUPINE_KEY_ENV = "PORCUPINE_KEY"
 # Custom OWW model (set up by training pipeline)
 _CUSTOM_MODEL_PATH = os.path.expanduser("~/.aria/aria.onnx")
 _CUSTOM_THRESHOLD = 0.7   # starting point — tune after real-world testing
+# Cutting Aria off mid-sentence: on speakers the mic also hears Aria, so a barge-in needs a
+# higher score held over several consecutive windows (32 ms apart) — a real "Aria" stays high
+# for a few hundred ms, a stray sound-alike in Aria's own speech rarely does.
+_BARGE_THRESHOLD = 0.85
+_BARGE_HITS = 3
 _CUSTOM_WINDOW_SECS = 2.0
 
 
@@ -127,9 +132,15 @@ class WakeWordListener:
         processing_event: threading.Event | None = None,
         transcriber=None,
         menubar=None,
+        interruptible: Callable[[], bool] | None = None,
+        on_barge_in: Callable[[], None] | None = None,
     ) -> None:
+        """interruptible() → True while Aria is speaking and may be cut off; on_barge_in()
+        stops the speech. Both only apply to the custom ONNX backend while a command runs."""
         self._handle_command = handle_command_fn
         self._processing = processing_event
+        self._interruptible = interruptible
+        self._on_barge_in = on_barge_in
         self._transcriber = transcriber
         self._menubar = menubar
         self._thread: threading.Thread | None = None
@@ -433,6 +444,7 @@ class WakeWordListener:
             print(f"[Aria] Wake word active (custom ONNX model, threshold={_CUSTOM_THRESHOLD}).")
             self._backend_name = "custom_onnx"
             last_near_miss = 0.0
+            barge_hits = 0
 
             while not self._stop_event.is_set():
                 wake_stats.heartbeat("custom_onnx")
@@ -452,6 +464,21 @@ class WakeWordListener:
                 if (now - last_triggered) < _COOLDOWN_SECS:
                     continue
                 if self._processing is not None and self._processing.is_set():
+                    if not self._can_barge_in():
+                        barge_hits = 0
+                        continue
+                    try:
+                        feat = wake_features(buffer.astype(np.float32) / 32768.0).reshape(1, -1)
+                        score = float(session.run([label_name], {input_name: feat})[0][0][1])
+                    except Exception as exc:
+                        logger.debug("Custom model inference error: %s", exc)
+                        continue
+                    barge_hits = barge_hits + 1 if score >= _BARGE_THRESHOLD else 0
+                    if barge_hits >= _BARGE_HITS:
+                        print(f"[Aria] Barge-in: wake word while speaking (score={score:.2f}) — stopping")
+                        wake_stats.log_event("barge_in", "custom_onnx", score)
+                        self._barge_in()
+                        barge_hits, last_triggered = 0, time.time()
                     continue
 
                 # Extract MFCC features and run inference
@@ -466,6 +493,8 @@ class WakeWordListener:
                 if score >= _CUSTOM_THRESHOLD:
                     print(f"[Aria] Wake word detected (custom model, score={score:.2f})")
                     wake_stats.log_event("detection", "custom_onnx", score)
+                    if self._can_barge_in():          # e.g. the welcome-back line: stop it, listen
+                        self._barge_in()
                     self._on_wake(stream, _SAMPLE_RATE, _CHUNK_SIZE)
                     last_triggered = time.time()
                 elif score >= _NEAR_MISS_FLOOR and now - last_near_miss > 3.0:
@@ -490,6 +519,20 @@ class WakeWordListener:
     # ------------------------------------------------------------------
     # Shared: post-wake recording + dispatch
     # ------------------------------------------------------------------
+
+    def _can_barge_in(self) -> bool:
+        if self._interruptible is None or self._on_barge_in is None:
+            return False
+        try:
+            return bool(self._interruptible())
+        except Exception:
+            return False
+
+    def _barge_in(self) -> None:
+        try:
+            self._on_barge_in()
+        except Exception as exc:
+            logger.warning("barge-in stop failed: %s", exc)
 
     def _set_menubar(self, state: str) -> None:
         if self._menubar is None:

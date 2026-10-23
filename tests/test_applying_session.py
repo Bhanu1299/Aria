@@ -41,7 +41,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(session.prevent_sleep, "start", lambda: None)
     monkeypatch.setattr(session.prevent_sleep, "stop", lambda: None)
     sheet = []
-    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None:
+    monkeypatch.setattr(sheets, "set_status", lambda row, status, note="", company=None, role=None, job_id=None:
                         sheet.append((row, status, note)) or row)
     monkeypatch.setattr(ats_submit, "page_confirms", lambda tab: False)
     monkeypatch.setattr(control, "current", None)

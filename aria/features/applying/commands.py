@@ -17,11 +17,18 @@ Pure code, zero tokens, never an agent tool: no LLM can submit or close anything
 
 A company form ("submit <company>") is claimed only when it names an open application
 tab, so "submit the report" or "skip this song" fall through to normal routing.
+
+Any other phrasing reaches the agent, whose application_action tool calls request(): skip and
+"mark not applied / skipped" act at once; submit, "I submitted", close and "mark applied" are
+only staged and read back ("Submit Software Engineer I at RTX?"). They run when the user's NEXT
+words are a yes (confirm handler at the top of handle()); anything else cancels them. So the LLM
+can understand any wording, but only the user's own yes sends, closes or marks Applied.
 """
 from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Callable, Optional
 
 import aria.web.agent_browser as agent_browser
@@ -35,6 +42,8 @@ logger = logging.getLogger(__name__)
 _say: Callable[[str], None] = lambda _msg: None
 _voice_ask: Optional[Callable[[str], str]] = None
 _asking: list = []          # entry ids still to ask about after "applications are done"
+_pending: dict = {}         # an action the agent staged; runs only on the user's next "yes"
+PENDING_SECS = 120
 
 
 def configure(say: Callable[[str], None], voice_ask: Optional[Callable[[str], str]] = None) -> None:
@@ -95,6 +104,12 @@ _MARK_IT = re.compile(r"(?:it|this|that|this one|that one|the (?:field|row|statu
                       r"this (?:job|application|row)|(?:the )?status(?: of (?:it|this|that))?)(?: in the sheet)?")
 _MARK_ROW = re.compile(r"(?:(?:row|number|job|line) (?:number )?)?(?P<n>\d{1,4})")
 _YES = re.compile(r"(?:yes|yeah|yep)(?: i (?:did|applied))?|applied|i applied(?: to it)?|i did")
+# Confirming a staged action: a yes-word first and no negation anywhere ("yeah go ahead",
+# "sure, submit it"); a no-word first cancels ("no wait", "don't", "cancel").
+_CONFIRM_YES = re.compile(r"(?:yes|yeah|yep|yup|ya|sure|ok|okay|alright|all right|do it|go ahead|go for it|"
+                          r"confirm|confirmed|correct|right|please|definitely|absolutely|that'?s right)\b")
+_CONFIRM_NO = re.compile(r"(?:no|nope|nah|don'?t|do not|wait|hold on|cancel|stop|never ?mind|not yet|"
+                         r"not now)\b")
 _NO = re.compile(r"(?:no|nope|not yet)(?: i didn'?t)?|not applied|i didn'?t(?: apply)?|didn'?t apply")
 
 
@@ -129,6 +144,8 @@ def _target(co: Optional[str], verb: str):
         if len(hits) > 1:
             return None, f"Which one? {_list(hits)} each have a tab. Say {verb} and the role."
         return None, None
+    if len(live) == 1:
+        return live[0], None                    # one open application: "it" can only mean that one
     try:
         front = agent_browser.front_tabs([e["id"] for e in live])
     except Exception as exc:
@@ -306,6 +323,18 @@ def _mark(q: str) -> Optional[str]:
         job, entry, ask = _mark_target(m.group("what").strip())
         if job is None:
             return ask
+    except sheets.SheetError as exc:
+        return str(exc)
+    except Exception as exc:
+        logger.error("mark status failed: %s", exc)
+        return "I couldn't update the sheet right now."
+    return _write_mark(job, entry, status)
+
+
+def _write_mark(job: dict, entry: Optional[dict], status: str) -> str:
+    """Sheet Status for this job, now (the tab's Applied bookkeeping too). Never raises."""
+    from aria.integrations import sheets
+    try:
         company, role = job.get("company") or "that job", job.get("role") or ""
         if entry is not None and status == sheets.STATUS_APPLIED:
             if entry.get("state") != tabs.SUBMITTED:
@@ -316,19 +345,148 @@ def _mark(q: str) -> Optional[str]:
             row = job.get("row")
         else:
             row = sheets.set_status(int(job["row"]), status, f"you said {status.lower()} (voice)",
-                                    company=job.get("company") or None, role=job.get("role") or None)
+                                    company=job.get("company") or None, role=job.get("role") or None,
+                                    job_id=job.get("job_id") or None)
     except sheets.SheetError as exc:
         return str(exc)
     except Exception as exc:
         logger.error("mark status failed: %s", exc)
         return "I couldn't update the sheet right now."
     what = f"{role} at {company}" if role else company
-    return f"Marked {what} {status} in the sheet" + (f", row {row}." if row else ".")
+    ref = job.get("job_id") or (f"row {row}" if row else "")
+    return f"Marked {what} {status} in the sheet" + (f" ({ref})." if ref else ".")
+
+
+# -- any wording, via the agent: request() stages, the user's yes runs -------------
+
+ACTIONS = ("submit", "i_submitted", "skip", "close", "mark")
+_CONFIRMED = {"submit", "i_submitted", "close"}          # + mark Applied
+
+
+def _entry_named(said: str) -> Optional[dict]:
+    """The one open application tab the words name (company / role, sound-alikes allowed)."""
+    from aria.integrations import sheets
+    words = [t for t in sheets._tokens(said) if t not in sheets._FILLER]
+    scored = sorted(((sheets._score(words, e), e) for e in _open_tabs()), key=lambda x: -x[0][0])
+    scored = [(s, e) for s, e in scored if s[0] >= 1.6]
+    if len(scored) == 1 or (len(scored) > 1 and scored[0][0][0] > scored[1][0][0] * 1.2):
+        return scored[0][1]
+    return None
+
+
+def _request_target(said: str):
+    """(job, entry, None) or (None, None, reply). Named words first, else the tab in front,
+    else the job Aria last filled."""
+    from aria.integrations import sheets
+    if said:
+        entry = _entry_named(said)
+        if entry is not None:
+            return applicator._job_of(entry), entry, None
+        got = sheets.resolve_job(said)
+        if got["kind"] == "one" and got["sure"]:
+            job = got["jobs"][0]
+            entry = next((e for e in _open_tabs() if job.get("job_id") and e.get("job_id") == job["job_id"]), None)
+            return job, entry, None
+        if got["kind"] == "applied" and got["sure"]:
+            return None, None, f"{sheets.describe_match(got['jobs'][0])} is already in the Applied tab."
+        if got["jobs"]:
+            names = "; ".join(sheets.describe_match(j) for j in got["jobs"][:4])
+            return None, None, f"Not sure which job {said!r} means. Closest: {names}. Ask the user which one."
+        return None, None, f"No job matches {said!r} in the sheet or the open application tabs."
+    live = _open_tabs()
+    if live:
+        entry, ask = (live[0], None) if len(live) == 1 else _target(None, "that")
+        if entry is not None:
+            return applicator._job_of(entry), entry, None
+        if ask:
+            return None, None, ask
+    job = _last_job()
+    if job:
+        return job, None, None
+    return None, None, "No application is open. Ask the user which job they mean."
+
+
+def request(action: str, said: str = "", status: str = "") -> str:
+    """The agent's way in (application_action tool), for any wording the exact phrases miss.
+    Returns text for the agent: a result, a question to ask, or the read-back to confirm."""
+    from aria.integrations import sheets
+    action = (action or "").strip().lower()
+    if action not in ACTIONS:
+        return f"action must be one of: {', '.join(ACTIONS)}."
+    st = _MARK_STATUS.get((status or "").strip().lower()) if action == "mark" else None
+    if action == "mark" and st is None:
+        return "status must be applied, not applied, skipped or not gonna apply."
+    try:
+        job, entry, reply = _request_target(said.strip())
+    except sheets.SheetError as exc:
+        return str(exc)
+    except Exception as exc:
+        logger.error("application_action %s failed: %s", action, exc)
+        return "I couldn't read the sheet or the tabs right now."
+    if job is None:
+        return reply
+    what = sheets.describe_match(job)
+    if action in ("submit", "i_submitted", "close") and entry is None:
+        return (f"{what} has no open application tab, so there's nothing to {action.replace('_', ' ')}. "
+                "Tell the user.")
+    if entry is not None and entry.get("state") == tabs.FILLING and action in ("submit", "close"):
+        return f"{_label(entry)} is still filling. Tell the user to wait or say pause."
+    if action == "skip":
+        return applicator.skip_entry(entry) if entry is not None else _write_mark(job, None, sheets.STATUS_SKIPPED)
+    if action == "mark" and st != sheets.STATUS_APPLIED:
+        return _write_mark(job, entry, st)
+    question = {"submit": f"Submit the {what} application?",
+                "i_submitted": f"You submitted {what} yourself — should I record it as submitted?",
+                "close": f"Close the {what} tab?",
+                "mark": f"Mark {what} as Applied in the sheet?"}[action]
+    _pending.clear()
+    _pending.update(action=action, status=st, job=job, entry_id=(entry or {}).get("id", ""),
+                    question=question, at=time.time())
+    return (f"Waiting for the user's yes. Ask exactly: {question!r} Their next words decide; "
+            "do not call application_action again for this.")
+
+
+def _run_pending(p: dict) -> str:
+    from aria.integrations import sheets
+    entry = tabs.get(p["entry_id"]) if p.get("entry_id") else None
+    if p["entry_id"] and (entry is None or entry.get("state") == tabs.CLOSED):
+        return "That application tab isn't open anymore, so I didn't do anything."
+    if p["action"] == "submit":
+        return _submit(entry)
+    if p["action"] == "i_submitted":
+        return applicator.mark_submitted_by_hand(entry)
+    if p["action"] == "close":
+        return _close(entry)
+    return _write_mark(p["job"], entry, p["status"] or sheets.STATUS_APPLIED)
+
+
+def _confirm(text: str) -> Optional[str]:
+    """A staged action runs only on the user's very next words, and only if they are a yes."""
+    if not _pending:
+        return None
+    p = dict(_pending)
+    _pending.clear()
+    if time.time() - p["at"] > PENDING_SECS:
+        return None
+    s = re.sub(r"[^\w' ]+", " ", (text or "").lower()).strip()
+    s = re.sub(r"^(?:(?:hey )?aria )", "", s)
+    if _CONFIRM_NO.match(s):
+        return "OK, I won't."
+    if _CONFIRM_YES.match(s) and not _NEGATION.search(s):
+        try:
+            return _run_pending(p)
+        except Exception as exc:
+            logger.error("confirmed %s failed: %s", p["action"], exc)
+            return "Something went wrong doing that. Check the browser before trying again."
+    return None                                      # moved on: never run it later
 
 
 # -- entry point ----------------------------------------------------------------
 
 def handle(text: str) -> Optional[str]:
+    confirmed = _confirm(text)
+    if confirmed is not None:
+        return confirmed
     q = normalize(text)
     if not q:
         return None

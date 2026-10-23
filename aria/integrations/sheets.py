@@ -6,16 +6,19 @@ order: "Outreach", "Outreach" → "Outreach", "Outreach_2".
 
     get_next_job(status="new") → dict | None     first matching row, top to bottom
     get_job(row) → dict | None
-    set_status(row, status, note="", company=, role=)
-    set_fields(row, {"Who to contact": ...}, note="", company=, role=)   outreach columns only
+    ensure_ids()       every job row in both tabs gets a stable ID ("J0042"), never rewritten
+    find_jobs(query)   ranked fuzzy matches over both tabs ("the RTX onsite one", "magnet")
+    resolve_job(query) → {"kind": one | many | applied | none, "jobs": [...]}
+    set_status(row, status, note="", company=, role=, job_id=)
+    set_fields(row, {"Who to contact": ...}, note="", company=, role=, job_id=)   outreach columns only
 
 A blank Status cell counts as "new". Notes are appended to "Updates" as
 "YYYY-MM-DD: note", joined with " | " — existing text is never overwritten.
-Columns this module writes: Status, Updates, and the outreach columns in
+Columns this module writes: ID (blank cells only), Status, Updates, and the outreach columns in
 OUTREACH_FIELDS (set_fields refuses any other). Everything else is the user's.
 
-Rows move when the sheet is sorted, so set_status() re-finds the job by
-(Company, Role) when the given row no longer holds it.
+Rows move when the sheet is sorted or a row moves to the Applied tab, so writes re-find
+the job by its ID, then by (Company, Role), when the given row no longer holds it.
 
 Raises SheetError (str is safe to speak) — callers turn it into a reply.
 
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import re
+from difflib import SequenceMatcher
 from urllib.parse import urlparse
 from datetime import date
 from typing import Callable, Optional
@@ -34,6 +38,7 @@ from aria.integrations import google_auth
 
 logger = logging.getLogger(__name__)
 
+COL_ID = "ID"                  # stable job ID ("J0042"); added as the last column if missing
 COL_COMPANY = "Company"
 COL_ROLE = "Role"
 COL_LOCATION = "Location"
@@ -57,6 +62,7 @@ STATUS_NEEDS_HUMAN = "Needs human"
 _NEW_ALIASES = {"", "not applied", "not yet applied", "to apply"}
 
 _URL = re.compile(r"^https?://", re.I)
+_JOB_ID = re.compile(r"j(\d{1,6})", re.I)
 
 
 class SheetError(Exception):
@@ -180,6 +186,7 @@ class JobSheet:
         url = apply_link if _URL.match(apply_link) else (post_link if _URL.match(post_link) else "")
         return {
             "row": row_number,
+            "job_id": get(COL_ID),
             "company": get(COL_COMPANY),
             "role": get(COL_ROLE),
             "location": get(COL_LOCATION),
@@ -226,9 +233,10 @@ class JobSheet:
         note: str = "",
         company: Optional[str] = None,
         role: Optional[str] = None,
+        job_id: Optional[str] = None,
     ) -> int:
         """Write Status (and append note to Updates). Returns the row actually written."""
-        return self._update_row(row, {COL_STATUS: status}, note, company, role)
+        return self._update_row(row, {COL_STATUS: status}, note, company, role, job_id)
 
     def set_fields(
         self,
@@ -237,12 +245,13 @@ class JobSheet:
         note: str = "",
         company: Optional[str] = None,
         role: Optional[str] = None,
+        job_id: Optional[str] = None,
     ) -> int:
         """Write outreach columns (OUTREACH_FIELDS only) and append note to Updates."""
         bad = [k for k in fields if _norm(k) not in {_norm(f) for f in OUTREACH_FIELDS}]
         if bad:
             raise SheetError(f"Aria doesn't write the {bad[0]!r} column.")
-        return self._update_row(row, fields, note, company, role)
+        return self._update_row(row, fields, note, company, role, job_id)
 
     def table(self) -> dict:
         """The whole tab as it is: {"headers": [...], "rows": [{"row": n, "cells": [...]}]}.
@@ -253,12 +262,15 @@ class JobSheet:
         headers = dedupe_headers(values[0])
         width = max([len(headers)] + [len(v) for v in values[1:]])
         headers += [""] * (width - len(headers))
-        rows = [{"row": i, "cells": [str(c) for c in vals] + [""] * (width - len(vals))}
+        idc = self._index(headers).get(_norm(COL_ID))
+        rows = [{"row": i, "id": str(vals[idc]).strip() if idc is not None and idc < len(vals) else "",
+                 "cells": [str(c) for c in vals] + [""] * (width - len(vals))}
                 for i, vals in enumerate(values[1:], start=2) if any(str(c).strip() for c in vals)]
         return {"headers": headers, "rows": rows}
 
     def set_cell(self, row: int, column: str, value: str, expect: Optional[str] = None,
-                 company: Optional[str] = None, role: Optional[str] = None) -> int:
+                 company: Optional[str] = None, role: Optional[str] = None,
+                 job_id: Optional[str] = None) -> int:
         """Write one existing cell, found by column header and by the row's company/role (rows move
         when the sheet is sorted). `expect` = the value the caller saw; if the sheet now holds
         something else, nothing is written. Returns the row written."""
@@ -269,7 +281,7 @@ class JobSheet:
         col = self._index(headers).get(_norm(column)) if column else None
         if col is None:
             raise SheetError(f"The job sheet has no {column!r} column.")
-        row = self._resolve_row(values, headers, row, company, role)
+        row = self._resolve_row(values, headers, row, company, role, job_id)
         current = values[row - 1][col] if col < len(values[row - 1]) else ""
         if expect is not None and current.strip() != expect.strip():
             raise SheetError(f"That cell changed in the sheet since you loaded it (it now says {current[:60]!r}).")
@@ -290,7 +302,7 @@ class JobSheet:
         raise SheetError(f"The job sheet has no {self.tab!r} tab.")
 
     def move_row(self, row: int, dest: "JobSheet", status: str, company: str, role: str,
-                 expect: Optional[str] = None) -> int:
+                 expect: Optional[str] = None, job_id: Optional[str] = None) -> int:
         """Move one job row to `dest` (the Applied tab) with Status = `status`: columns copied by
         header name, then the row deleted here. Already in `dest` (same company + role) → only its
         Status is set. The row is re-found by company + role before each step, so a sort in
@@ -299,9 +311,11 @@ class JobSheet:
         if not values:
             raise SheetError("The job sheet is empty.")
         headers = dedupe_headers(values[0])
-        row = self._resolve_row(values, headers, row, company, role)
+        row = self._resolve_row(values, headers, row, company, role, job_id)
         index = self._index(headers)
         cells = values[row - 1]
+        job_id = job_id or (cells[index[_norm(COL_ID)]].strip()
+                            if _norm(COL_ID) in index and index[_norm(COL_ID)] < len(cells) else "") or None
         if expect is not None:
             si = index.get(_norm(COL_STATUS))
             have = cells[si] if si is not None and si < len(cells) else ""
@@ -315,12 +329,16 @@ class JobSheet:
             raise SheetError(f"The {dest.tab!r} tab has no header row.")
         dheaders = dedupe_headers(dvalues[0])
         try:
-            at = dest._resolve_row(dvalues, dheaders, 0, company, role)
+            at = dest._resolve_row(dvalues, dheaders, 0, company, role, job_id)
         except SheetError:
             at = 0
         if at:
-            dest.set_cell(at, COL_STATUS, status, company=company, role=role)
+            dest.set_cell(at, COL_STATUS, status, company=company, role=role, job_id=job_id)
         else:
+            if job_id and _norm(COL_ID) not in {_norm(h) for h in dheaders}:
+                dest._write({f"{col_letter(dest._width(dvalues))}1": COL_ID})   # the ID moves with the row
+                dvalues = dest._read()
+                dheaders = dedupe_headers(dvalues[0])
             line = [src.get(_norm(h), "") for h in dheaders]
             try:
                 resp = dest._values_api().append(
@@ -333,7 +351,7 @@ class JobSheet:
             at = int(m.group(1)) if m else len(dvalues) + 1
 
         values = self._read()
-        row = self._resolve_row(values, dedupe_headers(values[0]), row, company, role)
+        row = self._resolve_row(values, dedupe_headers(values[0]), row, company, role, job_id)
         try:
             self._service.spreadsheets().batchUpdate(spreadsheetId=self.sheet_id, body={"requests": [
                 {"deleteDimension": {"range": {"sheetId": self._gid(), "dimension": "ROWS",
@@ -348,7 +366,7 @@ class JobSheet:
         return at
 
     def _update_row(self, row: int, fields: dict[str, str], note: str,
-                    company: Optional[str], role: Optional[str]) -> int:
+                    company: Optional[str], role: Optional[str], job_id: Optional[str] = None) -> int:
         values = self._read()
         if not values:
             raise SheetError("The job sheet is empty.")
@@ -365,7 +383,7 @@ class JobSheet:
 
         for name in fields:
             column(name)
-        row = self._resolve_row(values, headers, row, company, role)
+        row = self._resolve_row(values, headers, row, company, role, job_id)
         for name, value in fields.items():
             cells[f"{col_letter(column(name))}{row}"] = value
 
@@ -381,7 +399,22 @@ class JobSheet:
                     f" ({note})" if note else "")
         return row
 
-    def _resolve_row(self, values, headers, row, company, role) -> int:
+    @staticmethod
+    def _width(values) -> int:
+        """Columns in use: the header row or any longer data row (a new column goes after both)."""
+        return max(len(v) for v in values) if values else 0
+
+    def _resolve_row(self, values, headers, row, company, role, job_id=None) -> int:
+        idc = self._index(headers).get(_norm(COL_ID))
+        if job_id and idc is not None:
+            at = lambda vals: vals[idc].strip().lower() if idc < len(vals) else ""
+            if 2 <= row <= len(values) and at(values[row - 1]) == job_id.strip().lower():
+                return row
+            for i, vals in enumerate(values[1:], start=2):
+                if at(vals) == job_id.strip().lower():
+                    if row:
+                        logger.info("sheets: job %s moved from row %d to row %d", job_id, row, i)
+                    return i
         if company is None and role is None:
             if row < 2 or row > len(values):
                 raise SheetError(f"Row {row} isn't a job row in the sheet.")
@@ -423,10 +456,168 @@ def get_job(row: int) -> Optional[dict]:
 
 
 def set_status(row: int, status: str, note: str = "", company: Optional[str] = None,
-               role: Optional[str] = None) -> int:
-    return default_sheet().set_status(row, status, note, company=company, role=role)
+               role: Optional[str] = None, job_id: Optional[str] = None) -> int:
+    return default_sheet().set_status(row, status, note, company=company, role=role, job_id=job_id)
 
 
 def set_fields(row: int, fields: dict[str, str], note: str = "", company: Optional[str] = None,
-               role: Optional[str] = None) -> int:
-    return default_sheet().set_fields(row, fields, note, company=company, role=role)
+               role: Optional[str] = None, job_id: Optional[str] = None) -> int:
+    return default_sheet().set_fields(row, fields, note, company=company, role=role, job_id=job_id)
+
+
+def get_job_by_id(job_id: str) -> Optional[dict]:
+    want = (job_id or "").strip().lower()
+    return next((j for j in default_sheet().jobs() if want and j["job_id"].lower() == want), None)
+
+
+# -- stable IDs -------------------------------------------------------------------
+
+def _id_number(value: str) -> int:
+    m = _JOB_ID.fullmatch((value or "").strip())
+    return int(m.group(1)) if m else 0
+
+
+def ensure_ids(tabs: Optional[list] = None) -> int:
+    """Give every job row in the jobs tab and the Applied tab an ID ("J0042"), numbered after the
+    highest ID in either tab, so a row keeps one ID wherever it moves. Adds the ID header (after
+    the last used column) to a tab that has none. Existing IDs are never rewritten; a repeated ID
+    (a copied row) is renumbered on its later copy. Returns how many IDs were written."""
+    tabs = tabs if tabs is not None else [default_sheet(), tab_sheet(config.MUSE_APPLIED_TAB)]
+    read = [(sh, sh._read()) for sh in tabs]
+    top = 0
+    for _, values in read:
+        col = JobSheet._index(dedupe_headers(values[0])).get(_norm(COL_ID)) if values else None
+        if col is not None:
+            top = max([top] + [_id_number(vals[col]) for vals in values[1:] if col < len(vals)])
+    seen: set = set()
+    written = 0
+    for sh, values in read:
+        if not values:
+            continue
+        headers = dedupe_headers(values[0])
+        col = sh._index(headers).get(_norm(COL_ID))
+        cells: dict[str, str] = {}
+        if col is None:
+            col = sh._width(values)
+            cells[f"{col_letter(col)}1"] = COL_ID
+        for i, vals in enumerate(values[1:], start=2):
+            if not any(str(v).strip() for v in vals):
+                continue
+            have = vals[col].strip() if col < len(vals) else ""
+            if have and have.lower() not in seen:
+                seen.add(have.lower())
+                continue
+            top += 1
+            new = f"J{top:04d}"
+            seen.add(new.lower())
+            cells[f"{col_letter(col)}{i}"] = new
+        if cells:
+            sh._write(cells)
+            ids = len([a1 for a1 in cells if a1 != f"{col_letter(col)}1"])
+            written += ids
+            logger.info("sheets: %s: %d IDs written", sh.tab, ids)
+    return written
+
+
+# -- find a job by what the user calls it ------------------------------------------
+
+# Words that say nothing about WHICH job ("let's apply to the one from RTX").
+_FILLER = frozenset(
+    "a an the job jobs one ones role roles position posting opening application applications apply "
+    "applying applied to for at from in on of with and or i me my let lets us please that this it is "
+    "there sheet muse want wanna like company team new next open called named about can you do "
+    "fill out start go head lets get".split())
+
+
+def _tokens(text: str) -> list[str]:
+    text = re.sub(r"(\w)-(\w)", r"\1\2", (text or "").lower())        # on-site → onsite
+    return re.findall(r"[a-z0-9]+", text)
+
+
+def _sim(a: str, b: str) -> float:
+    if a == b:
+        return 1.0
+    if min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a)):
+        return 0.9
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _score(query: list[str], job: dict) -> tuple:
+    """(score, sure): how well the user's words name this job — company words count most, then
+    role, then place. Misheard / misspelled words still count when close ("magnet" ≈ Magna), but
+    only a word that matches (near-)exactly makes the match `sure`."""
+    if any(_JOB_ID.fullmatch(t) and _id_number(t) == _id_number(job.get("job_id", "")) for t in query):
+        return 100.0, True
+    fields = ((3.0, _tokens(job.get("company", ""))), (2.0, _tokens(job.get("role", ""))),
+              (1.0, _tokens(job.get("location", ""))))
+    total, sure = 0.0, False
+    for t in query:
+        best = 0.0
+        for weight, words in fields:
+            for w in words:
+                s = _sim(t, w)
+                if s < 0.8 and not (s >= 0.7 and min(len(t), len(w)) >= 5):
+                    continue                                          # long names may be misheard more
+                sure = sure or (s >= 0.9 and weight >= 2.0 and min(len(t), len(w)) >= 3)
+                s = s if s >= 0.8 else s * 0.8
+                short = 0.5 if min(len(t), len(w)) <= 2 else 1.0      # "ai", "io" say little alone
+                best = max(best, weight * s * short)
+        total += best
+    company = "".join(fields[0][1])
+    for a, b in zip(query, query[1:]):                                # "single store" → SingleStore
+        if len(company) >= 6 and _sim(a + b, company) >= 0.85:
+            total, sure = total + 3.0, True
+    return total, sure
+
+
+def find_jobs(query: str, tabs: Optional[list] = None) -> list[dict]:
+    """Jobs in both tabs ranked by how well `query` names them. Each match is the job dict plus
+    "tab", "score" and "sure" (a word matched near-exactly, not only by sound-alike)."""
+    words = [t for t in _tokens(query) if t not in _FILLER]
+    if not words:
+        return []
+    tabs = tabs if tabs is not None else [default_sheet(), tab_sheet(config.MUSE_APPLIED_TAB)]
+    out = []
+    for sh in tabs:
+        try:
+            jobs = sh.jobs()
+        except SheetError:
+            if sh.tab == config.MUSE_SHEET_TAB:
+                raise
+            jobs = []                                                 # no Applied tab is fine
+        for job in jobs:
+            score, sure = _score(words, job)
+            if score >= 1.6:
+                out.append(dict(job, tab=sh.tab, score=round(score, 2), sure=sure))
+    out.sort(key=lambda j: (-j["score"], j["tab"] != config.MUSE_SHEET_TAB, j["row"]))
+    return out
+
+
+def resolve_job(query: str, tabs: Optional[list] = None) -> dict:
+    """What the user meant, as a decision code can act on:
+      one      exactly one job in the jobs tab fits best          {"jobs": [job]}
+      many     several fit about equally — ask which             {"jobs": [...]}
+      applied  the best fits are only in the Applied tab         {"jobs": [...]}
+      none     nothing fits                                      {"jobs": []}
+    "sure" is False when the best fit came only from sound-alike words ("scale" ≈ Sallie): read
+    it back as a question, never act on it. A bare "row 18" / "18" means that row of the jobs tab."""
+    m = re.fullmatch(r"\s*(?:row|number|line)?\s*(\d{1,4})\s*", query or "", re.I)
+    if m:
+        job = (tabs[0] if tabs else default_sheet()).get_job(int(m.group(1)))
+        return {"kind": "one", "sure": True, "jobs": [dict(job, tab=config.MUSE_SHEET_TAB, score=100.0, sure=True)]} \
+            if job else {"kind": "none", "sure": False, "jobs": []}
+    matches = find_jobs(query, tabs)
+    if not matches:
+        return {"kind": "none", "sure": False, "jobs": []}
+    sure = matches[0]["sure"]
+    near = [j for j in matches if j["score"] >= matches[0]["score"] * 0.85]
+    open_ = [j for j in near if j["tab"] == config.MUSE_SHEET_TAB]
+    if not open_:
+        return {"kind": "applied", "sure": sure, "jobs": near}
+    return {"kind": "one" if len(open_) == 1 else "many", "sure": sure, "jobs": open_}
+
+
+def describe_match(job: dict) -> str:
+    """'Software Engineer I (Onsite) at RTX (J0018)' — how a match is read back."""
+    what = f"{job.get('role') or 'a role'} at {job.get('company') or 'that company'}"
+    return what + (f" ({job['job_id']})" if job.get("job_id") else "")

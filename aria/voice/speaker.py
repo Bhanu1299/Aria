@@ -2,23 +2,29 @@
 speaker.py — Aria TTS speaker
 
 Wraps macOS `say` via subprocess.Popen so speech can be interrupted
-mid-sentence by calling stop() (e.g. when the user presses the hotkey again).
+mid-sentence by calling stop() (e.g. when the user presses the hotkey again,
+or says the wake word while Aria talks — see interruptible()).
 """
 
 from __future__ import annotations
 
 import random
+import re
 import subprocess
 import threading
 
 _ACK_DELAY_SECS = 3.5
 _ACK_LINES = ("One moment.", "Working on it.", "Just a second.")
+# On speakers the mic hears Aria's own voice: while it says its own name, the wake word must
+# not count as the user cutting in.
+_OWN_NAME = re.compile(r"\baria\b", re.I)
 
 
 class Speaker:
     def __init__(self) -> None:
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
+        self._says_name = False
 
     def say(self, text: str) -> None:
         """Speak text aloud. Stops any currently running speech first."""
@@ -42,6 +48,7 @@ class Speaker:
 
         with self._lock:
             self._proc = proc
+            self._says_name = bool(_OWN_NAME.search(text))
 
         try:
             proc.wait()
@@ -51,6 +58,15 @@ class Speaker:
             with self._lock:
                 if self._proc is proc:
                     self._proc = None
+
+    def is_speaking(self) -> bool:
+        with self._lock:
+            return self._proc is not None and self._proc.poll() is None
+
+    def interruptible(self) -> bool:
+        """Speaking right now, and not saying "Aria" (its own voice could wake it)."""
+        with self._lock:
+            return self._proc is not None and self._proc.poll() is None and not self._says_name
 
     def stop(self) -> None:
         """Interrupt any currently running speech immediately."""
