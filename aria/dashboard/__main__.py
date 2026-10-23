@@ -8,6 +8,7 @@ Endpoints:
   POST /api/settings/tier   {tier, models: [...]}   edit a tier's model chain
   POST /api/answers         {op, ...}               answer-bank edits (My answers tab)
   GET  /api/sheet?tab=jobs|applied                  the Muse sheet tab, read fresh (Sheet tab polls it)
+  POST /api/sheet/move_applied {}                   every Jobs row marked Applied → the Applied tab
   POST /api/sheet/cell      {tab, row, column, value, expect, company, role}   one sheet cell
   GET  /review-img?f=x.png  a review screenshot / field crop from ~/.aria/reviews
   GET  /health
@@ -112,6 +113,8 @@ def runs_json() -> dict:
 def settings_action(path: str, body: dict) -> tuple:
     """(status, json) for a POST: GateLLM settings, answer-bank edits or a sheet cell — the only writes."""
     from aria.dashboard import answers, sheet_tab
+    if path == "/api/sheet/move_applied":
+        return 200, sheet_tab.move_applied()
     if path == "/api/sheet/cell":
         from aria.integrations import sheets
         try:

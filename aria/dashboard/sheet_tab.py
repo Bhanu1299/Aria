@@ -2,6 +2,7 @@
 
 GET  /api/sheet?tab=jobs|applied   the whole tab, read fresh (the page polls it every POLL_SECS
                                    while the Sheet tab is open, so edits made in Google Sheets show up)
+POST /api/sheet/move_applied       every Jobs row already marked Applied → the Applied tab
 POST /api/sheet/cell               {tab, row, column, value, expect, company, role} → one cell;
                                    Status → Applied on the Jobs tab moves the row to the Applied tab
 
@@ -93,6 +94,41 @@ def edit(body: dict, sheet=None, applied_sheet=None) -> dict:
     return {"ok": True, "row": written}
 
 
+def move_applied(sheet=None, applied_sheet=None) -> dict:
+    """Every Jobs row whose Status is already Applied → the Applied tab, one at a time (each
+    re-found by company + role). {"moved": [names], "errors": [messages]}; never raises."""
+    from aria.dashboard import sources
+    from aria.integrations import sheets
+    try:
+        sh = sheet or sheets.tab_sheet(_tab_name("jobs"))
+        dest = applied_sheet or sheets.tab_sheet(_tab_name("applied"))
+        got = sh.table()
+    except Exception as exc:
+        return {"moved": [], "errors": [str(exc) if isinstance(exc, sheets.SheetError) else type(exc).__name__]}
+    hdr = [h.strip().lower() for h in got["headers"]]
+    if not {"status", "company", "role"} <= set(hdr):
+        return {"moved": [], "errors": ["the Jobs tab needs Company, Role and Status columns"]}
+    si, ci, ri = hdr.index("status"), hdr.index("company"), hdr.index("role")
+    todo = [r for r in got["rows"] if r["cells"][si].strip().lower() == "applied"]
+    moved, errors = [], []
+    for r in todo:
+        company, role = r["cells"][ci], r["cells"][ri]
+        if not (company or role):
+            errors.append(f"row {r['row']}: no company or role, left in place")
+            continue
+        try:
+            sh.move_row(r["row"], dest, sheets.STATUS_APPLIED, company, role, expect=r["cells"][si])
+            moved.append(company or role)
+        except sheets.SheetError as exc:
+            errors.append(f"{company or role}: {exc}")
+        except Exception as exc:
+            logger.error("dashboard: moving %s failed: %s", company, type(exc).__name__)
+            errors.append(f"{company or role}: {type(exc).__name__}")
+    if moved:
+        sources.CACHE.drop("sheet")
+    return {"moved": moved, "errors": errors}
+
+
 def render() -> str:
     """The shell; the table is drawn by JS from GET /api/sheet (also how it refreshes)."""
     return ('<section class="card sheetcard" id="sheet-root" data-poll="' + str(POLL_SECS) + '">'
@@ -100,6 +136,7 @@ def render() -> str:
             '<button type="button" class="utab shtab" data-t="applied">Applied</button></div>'
             '<input id="shq" type="search" placeholder="Filter rows…" autocomplete="off">'
             '<button type="button" class="btn" id="shrefresh">Refresh</button>'
+            '<button type="button" class="btn" id="shmove" style="display:none"></button>'
             '<span class="muted small" id="shstate">Loading the sheet…</span></div>'
             '<div class="tablewrap shwrap"><table id="sheet"><thead></thead><tbody></tbody></table></div>'
             '<p class="muted small">Click a cell to edit it; Enter saves, Shift+Enter is a new line, Esc cancels. '
@@ -131,7 +168,7 @@ JS = r"""
 var tokEl=document.querySelector('meta[name=dashboard-token]'),tok=tokEl?tokEl.content:'';
 var table=document.getElementById('sheet'),thead=table.tHead,tbody=table.tBodies[0];
 var state=document.getElementById('shstate'),q=document.getElementById('shq'),pane=document.getElementById('sheet-tab');
-var poll=parseInt(root.dataset.poll,10)*1000,tab='jobs',cur=null,editing=null,busy=false,lastAt=0;
+var poll=parseInt(root.dataset.poll,10)*1000,tab='jobs',cur=null,editing=null,busy=false,lastAt=0,note=null;
 function say(t,bad){state.textContent=t;state.classList.toggle('bad',!!bad)}
 function col(name){return cur?cur.headers.findIndex(function(h){return h.trim().toLowerCase()===name}):-1}
 function ident(r){var c=col('company'),ro=col('role');return{company:c>=0?r.cells[c]:'',role:ro>=0?r.cells[ro]:''}}
@@ -151,14 +188,17 @@ if(i===s){var sel=document.createElement('select');var opts=cur.statuses.slice()
 opts.forEach(function(o){var op=document.createElement('option');op.value=o;op.textContent=o||'(blank)';sel.appendChild(op)});
 sel.value=v;sel.dataset.was=v;td.appendChild(sel)}else cellBody(td,v);
 if(prev&&keep[r.row]&&keep[r.row][i]!==v){td.classList.add('flash');setTimeout(function(){td.classList.remove('flash')},2500)}
-tr.appendChild(td)});tbody.appendChild(tr)});filter()}
+tr.appendChild(td)});tbody.appendChild(tr)});filter();moveBtn()}
+function moveBtn(){var b=document.getElementById('shmove'),s=col('status'),n=0;
+if(cur&&tab==='jobs'&&s>=0)cur.rows.forEach(function(r){if(r.cells[s].trim().toLowerCase()==='applied')n++});
+b.style.display=n?'':'none';b.textContent='Move '+n+' applied job'+(n===1?'':'s')+' to the Applied tab'}
 function filter(){var s=q.value.trim().toLowerCase();Array.prototype.forEach.call(tbody.rows,function(r){
 r.style.display=!s||r.textContent.toLowerCase().indexOf(s)>=0?'':'none'})}
 function load(force){if(busy||editing||(!force&&(document.hidden||!pane.classList.contains('on'))))return;busy=true;
 fetch('/api/sheet?tab='+tab,{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){busy=false;
 if(d.error){say(d.error,true);return}if(editing)return;var prev=cur&&cur.tab===d.tab?cur:null;cur=d;draw(prev);lastAt=Date.now();
-say(d.rows.length+' rows · updated just now')}).catch(function(){busy=false;say('Dashboard server unreachable',true)})}
-function ago(){if(!lastAt||state.classList.contains('bad'))return;var s=Math.round((Date.now()-lastAt)/1000);
+if(note){say(note[0],note[1]);note=null}else say(d.rows.length+' rows · updated just now')}).catch(function(){busy=false;say('Dashboard server unreachable',true)})}
+function ago(){if(!lastAt||state.classList.contains('bad')||/^(Moved|Saved)/.test(state.textContent)&&Date.now()-lastAt<15000)return;var s=Math.round((Date.now()-lastAt)/1000);
 if(cur)say(cur.rows.length+' rows · updated '+(s<5?'just now':s+'s ago'))}
 function rowOf(td){var n=parseInt(td.parentNode.dataset.row,10);return cur.rows.find(function(r){return r.row===n})}
 function save(td,value,done){var r=rowOf(td),i=parseInt(td.dataset.c,10),was=r.cells[i];
@@ -185,6 +225,12 @@ ta.addEventListener('blur',function(){close(true)})});
 root.querySelectorAll('.shtab').forEach(function(b){b.onclick=function(){if(editing)return;
 root.querySelectorAll('.shtab').forEach(function(x){x.classList.toggle('on',x===b)});tab=b.dataset.t;cur=null;say('Loading…');load(true)}});
 q.addEventListener('input',filter);
+document.getElementById('shmove').onclick=function(){var b=this;if(editing||b.disabled)return;b.disabled=true;
+say('Moving… (a couple of seconds per job)');busy=true;
+fetch('/api/sheet/move_applied',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':tok},body:'{}'})
+.then(function(x){return x.json()}).then(function(d){busy=false;b.disabled=false;var m=(d.moved||[]).length,e=(d.errors||[]);
+note=['Moved '+m+' to the Applied tab'+(e.length?' · '+e.length+' not moved: '+e.join('; '):''),e.length>0];load(true)})
+.catch(function(){busy=false;b.disabled=false;say('Move failed: server unreachable',true)})};
 document.getElementById('shrefresh').onclick=function(){if(editing)return;say('Refreshing…');load(true)};
 window.addEventListener('hashchange',function(){setTimeout(function(){load(false)},0)});
 document.addEventListener('visibilitychange',function(){load(false)});

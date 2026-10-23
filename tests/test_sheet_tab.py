@@ -341,3 +341,19 @@ def test_other_statuses_and_the_applied_tab_stay_plain_cell_edits():
 
 def test_page_has_a_refresh_button():
     assert 'id="shrefresh"' in sheet_tab.render()
+
+
+def test_move_applied_moves_every_applied_job_row_and_leaves_the_rest():
+    book, jobs, applied = _book()
+    book.tabs["Sheet1"][1][4] = "Applied"
+    book.tabs["Sheet1"].append(["Twitch", "SWE", "SF", "3", "applied"])
+    book.tabs["Sheet1"].append(["", "", "", "", "Applied"])
+    out = sheet_tab.move_applied(sheet=jobs, applied_sheet=applied)
+    assert out["moved"] == ["Acme", "Twitch"] and len(out["errors"]) == 1 and "no company or role" in out["errors"][0]
+    assert [r[0] for r in book.tabs["Sheet1"][1:]] == ["John Deere", ""]
+    assert [r[0] for r in book.tabs["Applied"][1:]] == ["Old Co", "Acme", "Twitch"]
+
+
+def test_move_applied_endpoint_is_a_post_action(monkeypatch):
+    monkeypatch.setattr(sheet_tab, "move_applied", lambda: {"moved": ["Acme"], "errors": []})
+    assert settings_action("/api/sheet/move_applied", {}) == (200, {"moved": ["Acme"], "errors": []})
