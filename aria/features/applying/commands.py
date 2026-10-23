@@ -32,6 +32,7 @@ import time
 from typing import Callable, Optional
 
 import aria.web.agent_browser as agent_browser
+from aria.dispatch.dispatcher import Partial
 from aria.dispatch.parse import normalize
 from aria.features import applicator
 from aria.features.applying import control, session, startup, tabs
@@ -98,16 +99,21 @@ _DONE = re.compile(r"(?:the |my )?applications? (?:are|is) (?:done|finished)|i'?
 _MARK = re.compile(r"\b(?:mark|set|change|move) (?P<what>.+?)(?: as| to)? "
                    r"(?P<st>not applied|not gonna apply|not going to apply|applied|skipped)\b")
 _QUESTION = re.compile(r"(?:what|which|why|how|when|did|do|does|have|has|is|was|were|can you tell)\b")
+_CONDITION = re.compile(r"\b(?:when|once|after|if|later|tomorrow|tonight|until|unless)\b")
 _MARK_STATUS = {"applied": "Applied", "not applied": "Not applied", "skipped": "Skipped",
                 "not gonna apply": "Not gonna apply", "not going to apply": "Not gonna apply"}
 _MARK_IT = re.compile(r"(?:it|this|that|this one|that one|the (?:field|row|status|job|application|one|cell|sheet)|"
                       r"this (?:job|application|row)|(?:the )?status(?: of (?:it|this|that))?)(?: in the sheet)?")
 _MARK_ROW = re.compile(r"(?:(?:row|number|job|line) (?:number )?)?(?P<n>\d{1,4})")
 _YES = re.compile(r"(?:yes|yeah|yep)(?: i (?:did|applied))?|applied|i applied(?: to it)?|i did")
+# A confirmed action's own words after the yes ("yes go ahead and submit it") aren't a second request.
+_RESTATED = {"submit": _SUBMIT_IT, "i_submitted": _BY_HAND_IT, "close": _CLOSE_IT}
 # Confirming a staged action: a yes-word first and no negation anywhere ("yeah go ahead",
 # "sure, submit it"); a no-word first cancels ("no wait", "don't", "cancel").
 _CONFIRM_YES = re.compile(r"(?:yes|yeah|yep|yup|ya|sure|ok|okay|alright|all right|do it|go ahead|go for it|"
                           r"confirm|confirmed|correct|right|please|definitely|absolutely|that'?s right)\b")
+# "yes please and start applying to the next jobs": the yes is the first clause, the rest routes on.
+_CONFIRM_SPLIT = re.compile(r"\s+(?:and|also|then|plus|after that)\s+")
 _CONFIRM_NO = re.compile(r"(?:no|nope|nah|don'?t|do not|wait|hold on|cancel|stop|never ?mind|not yet|"
                          r"not now)\b")
 _NO = re.compile(r"(?:no|nope|not yet)(?: i didn'?t)?|not applied|i didn'?t(?: apply)?|didn'?t apply")
@@ -301,16 +307,15 @@ def _mark_target(what: str):
         return None, None, "Which job? Say mark row 19 as applied, or the company's name."
     co = re.sub(r"^(?:the )?(.+?)(?: (?:job|application|one|row|role))?$", r"\1", what).strip()
     if len(co) < 3:
-        return None, None, "Which job? Say mark row 19 as applied, or the company's name."
+        return None, None, None
     word = re.compile(r"\b" + re.escape(co), re.I)
     hits = [j for j in sheets.default_sheet().jobs() if word.search(j["company"] or "")]
     if len(hits) == 1:
         entry = next((e for e in tabs.by_company(co)), None)
         return hits[0], entry, None
-    if hits:
-        rows = ", ".join(str(j["row"]) for j in hits[:6])
-        return None, None, f"{hits[0]['company']} has rows {rows}. Say mark row and the number."
-    return None, None, f"I couldn't find {co} in your sheet. Say mark row and the number."
+    # Several jobs, two companies ("John Deere and eBay"), or words that aren't a job ("the
+    # meeting"): not one clear job — not ours to answer; the agent reads the whole sentence.
+    return None, None, None
 
 
 def _mark(q: str) -> Optional[str]:
@@ -318,6 +323,8 @@ def _mark(q: str) -> Optional[str]:
     m = _MARK.search(q)
     if not m or _NEGATION.search(q[:m.start("st")] + q[m.end("st"):]) or _QUESTION.match(q):
         return None
+    if _CONDITION.search(q[m.end("st"):]):
+        return None                        # "mark it as applied when I say so": not now
     status = _MARK_STATUS[m.group("st")]
     try:
         job, entry, ask = _mark_target(m.group("what").strip())
@@ -454,7 +461,7 @@ def _run_pending(p: dict) -> str:
     if p["action"] == "submit":
         return _submit(entry)
     if p["action"] == "i_submitted":
-        return applicator.mark_submitted_by_hand(entry)
+        return _by_hand(entry)
     if p["action"] == "close":
         return _close(entry)
     return _write_mark(p["job"], entry, p["status"] or sheets.STATUS_APPLIED)
@@ -469,16 +476,78 @@ def _confirm(text: str) -> Optional[str]:
     if time.time() - p["at"] > PENDING_SECS:
         return None
     s = re.sub(r"[^\w' ]+", " ", (text or "").lower()).strip()
-    s = re.sub(r"^(?:(?:hey )?aria )", "", s)
-    if _CONFIRM_NO.match(s):
-        return "OK, I won't."
-    if _CONFIRM_YES.match(s) and not _NEGATION.search(s):
+    s = re.sub(r"\s+", " ", re.sub(r"^(?:(?:hey )?aria )", "", s))
+    parts = _CONFIRM_SPLIT.split(s, maxsplit=1)
+    head, rest = parts[0], (parts[1] if len(parts) > 1 else "")
+    if not (_CONFIRM_NO.match(head) or _CONFIRM_YES.match(head)):
+        head, rest = s, ""                            # no yes/no up front: judge the whole thing
+    restated = _RESTATED.get(p["action"])
+    if rest and restated is not None and restated.fullmatch(normalize(rest)):
+        rest = ""                                     # "yes go ahead and submit it": already done
+    if _CONFIRM_NO.match(head):
+        return Partial("OK, I won't.", rest)
+    if _CONFIRM_YES.match(head) and not _NEGATION.search(head):
         try:
-            return _run_pending(p)
+            return Partial(_run_pending(p), rest)
         except Exception as exc:
             logger.error("confirmed %s failed: %s", p["action"], exc)
             return "Something went wrong doing that. Check the browser before trying again."
     return None                                      # moved on: never run it later
+
+
+# -- start a run / continue one application (also the agent's tools) -------------
+
+def start_run(limit: Optional[int] = None) -> str:
+    """The batch run: bring everything up, re-attach tabs, fill up to `limit` jobs (best fit
+    first, at most 10 tabs), never stopping at a wall; one report at the end."""
+    ok, message = startup.bring_up()
+    if not ok:
+        return message
+    session.reattach()
+    return session.start(_say, _voice_ask, limit=limit)
+
+
+def continue_application(said: str = "") -> str:
+    """Pick an application back up in ITS tab — after the user cleared a sign-in, or when the
+    site has a next step (Handshake's "Step 2: apply on the employer's site"). Re-runs the
+    site's adapter from the job page; signed-in sessions carry over. Never submits."""
+    from aria.integrations import sheets
+    try:
+        job, entry, reply = _request_target(said.strip())
+    except sheets.SheetError as exc:
+        return str(exc)
+    if job is None:
+        return reply
+    if entry is not None and entry.get("state") == tabs.FILLING:
+        return f"{_label(entry)} is still filling."
+    job = dict(job, url=job.get("url") or (entry or {}).get("url", ""))
+    return applicator.run_application(job, entry=entry)
+
+
+def _handshake_step_two(entry: dict) -> None:
+    """After "I submitted it" on Handshake: a two-step posting now shows "Step 2 — apply on the
+    employer's site". Fill that part too, in the same tab, in the background; speak once."""
+    import threading
+    def run() -> None:
+        try:
+            out = applicator.run_application(applicator._job_of(entry), entry=entry)
+            _say(f"Step 2 for {_label(entry)}: {out}")
+        except Exception as exc:
+            logger.error("handshake step 2 failed: %s", exc)
+    threading.Thread(target=run, daemon=True, name="aria-handshake-step2").start()
+
+
+def _by_hand(entry: dict) -> str:
+    out = applicator.mark_submitted_by_hand(entry)
+    try:
+        from aria.features.ats.adapters import handshake
+        if entry.get("ats") == "handshake" and handshake.has_step_two(entry["id"]):
+            _handshake_step_two(entry)
+            out += (" Handshake has a step 2 on the employer's site, so I'm filling that now in the same tab. "
+                    "Nothing gets submitted.")
+    except Exception as exc:
+        logger.warning("step 2 check failed: %s", exc)
+    return out
 
 
 # -- entry point ----------------------------------------------------------------
@@ -498,11 +567,7 @@ def handle(text: str) -> Optional[str]:
         return startup.open_dashboard()
 
     if _START_LEAD.fullmatch(q) and not _NEGATION.search(q):
-        ok, message = startup.bring_up()
-        if not ok:
-            return message
-        session.reattach()
-        return session.start(_say, _voice_ask)
+        return start_run()
 
     ctl = _run_active()
     if ctl is not None:
@@ -528,7 +593,7 @@ def handle(text: str) -> Optional[str]:
 
     for it_re, co_re, verb, act in (
         (_SUBMIT_IT, _SUBMIT_CO, "submit", _submit),
-        (_BY_HAND_IT, _BY_HAND_CO, "I submitted", applicator.mark_submitted_by_hand),
+        (_BY_HAND_IT, _BY_HAND_CO, "I submitted", _by_hand),
         (_SKIP_IT, _SKIP_CO, "skip", applicator.skip_entry),
         (_CLOSE_IT, _CLOSE_CO, "close", _close),
     ):

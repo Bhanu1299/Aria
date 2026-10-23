@@ -96,7 +96,7 @@ def test_start_fills_one_at_a_time_in_order(monkeypatch, env):
     assert out.startswith("Starting 4 applications, best fit first: Scale AI, SingleStore, Ookla and ZipRecruiter.")
     session._thread.join(2)
     assert order == ["Scale AI", "SingleStore", "Ookla", "ZipRecruiter"]
-    assert env["said"] == ["Done. 4 applications filled, nothing submitted."]
+    assert env["said"] == ["Done with 4 jobs, nothing submitted."]
     assert control.current is None
 
 
@@ -105,14 +105,19 @@ def test_run_speaks_only_when_finished_with_whats_missing(monkeypatch, env):
 
     def fill(job, say, voice_ask=None, ctl=None, ids=None):
         e = tabs.add(job)
-        tabs.update(e["id"], needs_me=["Do you require sponsorship?"] if job["company"] == "Ookla" else [])
+        if job["company"] == "ZipRecruiter":
+            tabs.update(e["id"], state=tabs.OPEN, note="I couldn't get past its sign-in page, so the form is still empty.")
+        else:
+            tabs.update(e["id"], state=tabs.FILLED,
+                        needs_me=["Do you require sponsorship?"] if job["company"] == "Ookla" else [])
         ids.append(e["id"])
         return f"{job['company']} filled."
     monkeypatch.setattr(session, "fill_one", fill)
     session.start(env["said"].append)
     session._thread.join(2)
-    assert env["said"] == ["Done. 4 applications filled, nothing submitted. 1 answer is missing from your "
-                           "answer bank, so those tabs need you. They're listed on the dashboard."]
+    assert env["said"] == ["Done with 4 jobs, nothing submitted. 2 ready for your review: Scale AI and SingleStore. "
+                           "1 needs answers I don't have: Ookla (1). 1 stopped — ZipRecruiter: stopped at sign-in. "
+                           "It's all on the dashboard."]
 
 
 def test_start_respects_ten_open_tabs(monkeypatch, env):
@@ -198,7 +203,7 @@ def test_reattach_keeps_entries_when_chrome_unreachable(monkeypatch, env):
 def test_start_applications_brings_up_then_starts(monkeypatch, env):
     monkeypatch.setattr(commands.startup, "bring_up", lambda: (True, "All up."))
     monkeypatch.setattr(session, "reattach", lambda: 0)
-    monkeypatch.setattr(session, "start", lambda say, voice_ask=None: "Starting 4 applications.")
+    monkeypatch.setattr(session, "start", lambda say, voice_ask=None, limit=None: "Starting 4 applications.")
     assert commands.handle("Aria, start applications.") == "Starting 4 applications."
 
 
@@ -210,7 +215,7 @@ def test_start_applications_brings_up_then_starts(monkeypatch, env):
 def test_natural_phrasings_start_the_run(monkeypatch, env, text):
     monkeypatch.setattr(commands.startup, "bring_up", lambda: (True, "All up."))
     monkeypatch.setattr(session, "reattach", lambda: 0)
-    monkeypatch.setattr(session, "start", lambda say, voice_ask=None: "Starting 4 applications.")
+    monkeypatch.setattr(session, "start", lambda say, voice_ask=None, limit=None: "Starting 4 applications.")
     assert commands.handle(text) == "Starting 4 applications."
 
 
@@ -444,3 +449,52 @@ def test_run_speaks_its_end_on_stop_and_on_failure(monkeypatch, env, how, said):
     session.start(env["said"].append)
     session._thread.join(2)
     assert any(said in s for s in env["said"]), env["said"]
+
+
+def test_a_batch_run_never_waits_at_a_wall(monkeypatch, env):
+    """2026-10-23: the run stopped at every job's sign-in; now a run notes it and moves on."""
+    monkeypatch.setattr(session.walls, "check", lambda tab: "login")
+    monkeypatch.setattr(session, "wait_wall", lambda *a, **k: pytest.fail("a batch run waited at a wall"))
+    monkeypatch.setattr(applicator, "run_application", lambda job, **kw: pytest.fail("filled behind a wall"))
+    ctl = control.RunControl()
+    ctl.wait_walls = False
+    out = session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=ctl)
+    assert "still blocked" in out and env["said"] == [] and env["notes"] == []
+    [e] = tabs.live()
+    assert e["state"] == tabs.OPEN and session._why(e["note"]) == "stopped at sign-in", e["note"]
+    assert ("login", "wall") in env["fixes"]
+
+
+def test_mid_form_walls_in_a_batch_run_are_skipped_not_waited(monkeypatch, env):
+    monkeypatch.setattr(session.walls, "check", lambda tab: None)
+    monkeypatch.setattr(session, "wait_wall", lambda *a, **k: pytest.fail("waited"))
+    seen = []
+
+    def run_application(job, wait_fn=None, **kw):
+        seen.append(wait_fn("captcha"))
+        return "filled"
+    monkeypatch.setattr(applicator, "run_application", run_application)
+    ctl = control.RunControl()
+    ctl.wait_walls = False
+    assert session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=ctl) == "filled"
+    assert seen == [False] and env["said"] == []
+
+
+def test_start_takes_a_limit_and_runs_without_waiting(monkeypatch, env):
+    monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: list(ROWS)})())
+    runs = []
+    monkeypatch.setattr(session, "fill_one", lambda job, say, voice_ask=None, ctl=None, ids=None:
+                        runs.append((job["company"], ctl.wait_walls)) or "ok")
+    assert session.start(env["said"].append, limit=2).startswith("Starting 2 applications, best fit first: Scale AI and SingleStore.")
+    session._thread.join(2)
+    assert runs == [("Scale AI", False), ("SingleStore", False)]
+
+
+@pytest.mark.parametrize("note,why", [
+    ("I couldn't get past its sign-in page, so the form is still empty.", "stopped at sign-in"),
+    ("The posting looks closed or gone (“no longer accepting applications”).", "the posting looks closed"),
+    ("It only takes applications by email — that's yours to send.", "email-only"),
+    ("blocked by a CAPTCHA", "a CAPTCHA"),
+])
+def test_report_says_why_in_a_few_words(note, why):
+    assert session._why(note) == why

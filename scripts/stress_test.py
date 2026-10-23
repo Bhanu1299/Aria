@@ -15,6 +15,7 @@ Costs roughly a cent or two per agent turn (Claude via GateLLM).
     venv/bin/python scripts/stress_test.py                 # everything
     venv/bin/python scripts/stress_test.py safety asr      # only these categories
     venv/bin/python scripts/stress_test.py --out report.md # also write a markdown report
+    venv/bin/python scripts/stress_test.py --agent-model gemini-3.8-flash   # the agent on another model
 """
 from __future__ import annotations
 
@@ -151,7 +152,8 @@ class World:
         self.tabs.update(e["id"], state=self.tabs.FILLED)
 
 
-REAL_TOOLS = {"job_find", "job_from_sheet", "apply_job", "application_action", "job_status"}
+REAL_TOOLS = {"job_find", "job_from_sheet", "apply_job", "application_action", "job_status",
+              "start_applications", "application_continue", "open_dashboard"}
 
 
 def _registry(world: World):
@@ -283,6 +285,11 @@ def main(argv: list) -> int:
     if "--out" in argv:
         i = argv.index("--out")
         out_path, argv = Path(argv[i + 1]), argv[:i] + argv[i + 2:]
+    if "--agent-model" in argv:
+        from aria.llm import tasks
+        i = argv.index("--agent-model")
+        tasks.TASK_TIERS["agent"], argv = argv[i + 1], argv[:i] + argv[i + 2:]
+        print(f"agent model: {tasks.TASK_TIERS['agent']}")
     data = json.loads(CASES.read_text())
     cases = [c for c in data["cases"] if not argv or c["cat"] in argv]
     results = []

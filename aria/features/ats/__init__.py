@@ -145,6 +145,12 @@ def _generic(job: dict, progress_fn, tab: Optional[str] = None,
             t = Tab.of(tab)
             t.navigate(job["url"], settle_secs=3.0)
             target = resolve_apply_target(t, job, progress_fn, wait_fn)
+            if target.stopped:                  # closed / already applied / email only / … — no form to fill
+                from aria.features.ats import situations
+                result.identified, result.form_url = target.identified, target.url
+                result.error = situations.describe(target.stopped, target.stopped_why)
+                result.stopped_at = target.stopped
+                return result
             adapter = adapters.pick(target.ats)
             ctx = adapters.ApplyContext(job=job, target=target, progress_fn=progress_fn or (lambda _m: None),
                                         wait_fn=wait_fn)

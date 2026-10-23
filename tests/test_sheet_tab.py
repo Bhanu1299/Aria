@@ -181,7 +181,11 @@ def test_mark_by_row_or_company(marks, text, row, status):
 
 
 def test_mark_asks_when_unclear(marks):
-    assert "rows 22, 23" in commands.handle("mark peregrine as applied")
+    # two Peregrine rows / two companies / not a job: the agent reads it (job_find, then asks)
+    assert commands.handle("mark peregrine as applied") is None
+    assert commands.handle("mark John Deere and eBay as skipped") is None
+    assert commands.handle("move the meeting to applied math") is None
+    assert commands.handle("mark it as applied when I say so") is None
     assert commands.handle("mark it as applied").startswith("Which job?")
     assert "isn't a job" in commands.handle("mark row 99 as applied")
     assert marks["written"] == []

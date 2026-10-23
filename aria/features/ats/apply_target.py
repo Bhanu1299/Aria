@@ -1,8 +1,11 @@
 """features/ats/apply_target.py — from a job posting to the application form, in code.
 
-resolve_apply_target(tab, job, progress_fn, wait_fn) → ApplyTarget(tab, ats, kind, url, posting_text)
+resolve_apply_target(tab, job, progress_fn, wait_fn) → ApplyTarget(tab, ats, kind, url, posting_text, stopped)
   Starts from the page open in `tab` (the job URL). Up to MAX_HOPS times:
     a wall (CAPTCHA / login / code / agreement) → wait_fn(kind), else stop there
+    what the page is (situations.look): a cookie banner / leaving-site notice / careers list
+      → click through it (its own budget); closed / already applied / email only /
+      assessment → stop, named in ApplyTarget.stopped
     ≥ INLINE_FIELDS visible fields → this is the form
     an embedded ATS iframe → open its URL in the same tab                      kind "iframe"
     the best Apply affordance (pick_affordance):
@@ -11,6 +14,8 @@ resolve_apply_target(tab, job, progress_fn, wait_fn) → ApplyTarget(tab, ats, k
                  then: a new tab (popup) → the application's tab name moves to it ("new_tab";
                  the posting tab stays open), the URL changed ("same_tab"), a dialog or new
                  fields appeared ("modal"), nothing → logged
+    no Apply control on a page with no fields → ONE small-model look (situations.ask, at most
+      MAX_LLM_LOOKS per job): a listed control to click, or what kind of stop it is
   Stops early on a Workday / Handshake page (SELF_STARTING): their adapters start the
   application themselves. After each hop the URL settles (unchanged for SETTLE_STABLE_SECS, at most SETTLE_MAX_SECS).
   The ATS is named from the final URL + DOM (detect.identify); unknown → "generic" and a
@@ -39,6 +44,8 @@ from aria.features.ats.detect import domain, identify
 logger = logging.getLogger(__name__)
 
 MAX_HOPS = 4
+MAX_NOTICE_CLICKS = 3        # cookie banners / leaving-site notices / a careers list: not hops
+MAX_LLM_LOOKS = 2
 # ATSes whose adapter starts the application itself (Workday's Apply → start options →
 # sign-in; Handshake's Apply dialog): resolving stops as soon as one is reached
 SELF_STARTING = {"workday", "handshake"}
@@ -108,6 +115,8 @@ class ApplyTarget:
     url: str                   # settled URL of the form
     posting_text: str          # the posting's text, for the LLM's open-text answers
     identified: str = ""       # what identify() named, even without an adapter ("" = unknown)
+    stopped: str = ""          # why resolving stopped short of a form (situations.STOPS, "sign_in"), "" = form
+    stopped_why: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -221,13 +230,18 @@ def _wall(tab: Tab) -> Optional[str]:
 
 def resolve_apply_target(tab: Tab, job: dict, progress_fn: Optional[Callable[[str], None]] = None,
                          wait_fn: Optional[Callable[[str], bool]] = None) -> ApplyTarget:
+    from aria.features.ats import situations
     say = progress_fn or (lambda _m: None)
     kind = "inline"
     posting = ""
+    stopped, stopped_why = "", ""
+    notices = looks = 0
     try:
         settle(tab)
         posting = tab.run(lambda page: page.inner_text("body"))[:8000]
-        for hop in range(MAX_HOPS):
+        hop = steps = 0
+        while hop < MAX_HOPS and steps < 3 * MAX_HOPS:      # steps: walls cleared + notices count too
+            steps += 1
             if identify(_href(tab)) in SELF_STARTING:
                 break
             wall = _wall(tab)
@@ -236,6 +250,23 @@ def resolve_apply_target(tab: Tab, job: dict, progress_fn: Optional[Callable[[st
                     settle(tab)
                     continue
                 break                      # the engine sees the same wall and reports it
+            snap = tab.run(lambda page: page.evaluate(situations.SNAPSHOT_JS))
+            sit = situations.look(snap, job)
+            if sit.kind in situations.ACTIONS and notices < MAX_NOTICE_CLICKS:
+                notices += 1
+                say({"cookie_banner": "Closing the cookie notice.",
+                     "leaving_site": "Continuing past the leaving-this-site notice.",
+                     "pick_job": "Picking this job from the careers list."}[sit.kind])
+                if click_outcome(tab, sit.click) == "nothing" and sit.kind != "cookie_banner":
+                    corrections.record(job, "apply_click_nothing", "resolve", f"{sit.why}: nothing happened",
+                                       ats=identify(snap.get("url", "")) or "", page_url=snap.get("url", ""), run=tab.run)
+                    break
+                settle(tab)
+                continue
+            if sit.kind in situations.STOPS:
+                stopped, stopped_why = sit.kind, sit.why
+                break
+            hop += 1
             fields = tab.run(lambda page: page.evaluate(FIELDS_JS))
             if fields >= INLINE_FIELDS:
                 break
@@ -249,7 +280,22 @@ def resolve_apply_target(tab: Tab, job: dict, progress_fn: Optional[Callable[[st
             here = tab.run(lambda page: page.url)
             pick = pick_affordance(tab.run(lambda page: page.evaluate(AFFORDANCES_JS)), here)
             if pick is None:
-                if fields == 0 and hop == 0:
+                if fields == 0 and looks < MAX_LLM_LOOKS:
+                    looks += 1
+                    seen_llm = situations.ask(snap, job)
+                    if seen_llm is not None and seen_llm.kind == "click":
+                        say("Taking the next step toward the form.")
+                        if click_outcome(tab, seen_llm.click) != "nothing":
+                            kind = "same_tab"
+                            settle(tab)
+                            continue
+                    elif seen_llm is not None and seen_llm.kind == "loading":
+                        settle(tab, max_secs=SETTLE_MAX_SECS)
+                        continue
+                    elif seen_llm is not None and seen_llm.kind in situations.STOPS + ("sign_in",):
+                        stopped, stopped_why = seen_llm.kind, seen_llm.why
+                        break
+                if fields == 0:
                     corrections.record(job, "apply_not_found", "resolve", "no form and no Apply control",
                                        ats=identify(here) or "", page_url=here, run=tab.run)
                 break
@@ -279,4 +325,5 @@ def resolve_apply_target(tab: Tab, job: dict, progress_fn: Optional[Callable[[st
     seen = identify(url, html) or ""
     if not seen and url:
         corrections.record(job, "unknown_ats", "resolve", domain(url), page_url=url, run=tab.run)
-    return ApplyTarget(tab=tab, ats=seen or "generic", kind=kind, url=url, posting_text=posting, identified=seen)
+    return ApplyTarget(tab=tab, ats=seen or "generic", kind=kind, url=url, posting_text=posting, identified=seen,
+                       stopped=stopped, stopped_why=stopped_why)

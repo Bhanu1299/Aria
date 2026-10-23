@@ -19,6 +19,12 @@ Tools:
 
 Every Google call here uses the jobs account (google_auth.JOBS), never personal.
 
+  start_applications — the batch run (aria.features.applying.session): up to N jobs, best fit
+                   first, each in its own tab, never stopping at a sign-in or check; one report
+                   at the end. Only when the user asks to apply to several / the next jobs.
+  application_continue — pick one application back up in its tab (after the user signed in,
+                   or the site's next step, e.g. Handshake's "Step 2: apply on the employer's
+                   site"). Never submits.
   application_action — submit / I submitted / skip / close / mark a job, for wordings the
                    exact phrases miss. Submit, I submitted, close and mark Applied are only
                    STAGED and read back; they run on the user's next "yes"
@@ -104,6 +110,38 @@ def _match_line(job: dict) -> str:
             + f" — {_ref(job)}, {where}, Status {job.get('status') or 'blank'}")
 
 
+_OVERVIEW_WORDS = frozenset("all every everything list jobs left remaining many how count open status overview "
+                           "summary what whats s which have has had still not yet are is was were there do does "
+                           "did show tell give need needs got any".split())
+
+
+def _overview() -> str:
+    """The sheet at a glance: counts by Status in each tab, then the open jobs with their IDs."""
+    _add_ids()
+    try:
+        jobs = sheets.default_sheet().jobs()
+    except sheets.SheetError as exc:
+        return str(exc)
+    except Exception as exc:
+        logger.error("job overview failed: %s", exc)
+        return "I couldn't read your job sheet right now."
+    try:
+        applied = len(sheets.tab_sheet(config.MUSE_APPLIED_TAB).jobs())
+    except Exception:
+        applied = None
+    counts: dict = {}
+    for j in jobs:
+        key = j.get("status") or "blank"
+        counts[key] = counts.get(key, 0) + 1
+    open_jobs = [j for j in jobs if (j.get("status") or "").strip().lower() in sheets._NEW_ALIASES]
+    out = (f"Jobs tab: {len(jobs)} rows — " + ", ".join(f"{n} {s}" for s, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+           + (f". Applied tab: {applied} jobs." if applied is not None else "."))
+    if open_jobs:
+        out += f" {len(open_jobs)} still to apply to: " + "; ".join(
+            f"{j['role']} at {j['company']} ({_ref(j)})" for j in open_jobs[:12]) + ("…" if len(open_jobs) > 12 else ".")
+    return out
+
+
 def _add_ids() -> None:
     """Best effort: new rows get their ID before a lookup (read-only access still finds by name)."""
     try:
@@ -160,6 +198,9 @@ class ApplyPlugin(_plugin_base.PluginBase):
         registry.register(self._apply_job_tool())
         registry.register(self._job_status_tool())
         registry.register(self._application_action_tool())
+        registry.register(self._start_applications_tool())
+        registry.register(self._open_dashboard_tool())
+        registry.register(self._application_continue_tool())
         registry.register(self._job_outreach_draft_tool())
         registry.register(self._job_outreach_tool())
 
@@ -220,8 +261,8 @@ class ApplyPlugin(_plugin_base.PluginBase):
     def _job_find_tool(self) -> ToolDescriptor:
         def execute(params: dict) -> str:
             said = str(params.get("query") or "").strip()
-            if not said:
-                return "Say which company, role, place or job ID to look for."
+            if not [t for t in sheets._tokens(said) if t not in sheets._FILLER | _OVERVIEW_WORDS]:
+                return _overview()                  # "how many are left", "what's on my list"
             _add_ids()
             try:
                 found = sheets.find_jobs(said)
@@ -242,13 +283,15 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 "Look up jobs in the user's job sheet (the jobs tab AND the Applied tab) by whatever "
                 "they call them: company, role, place, job ID ('J0018'), even misheard or misspelled "
                 "('magnet' finds Magna). Returns matches with ID, tab and Status. Use for 'do I have "
-                "an RTX job', 'which Deere roles are there', 'did I apply to Magna'."
+                "an RTX job', 'which Deere roles are there', 'did I apply to Magna'. With an empty query "
+                "it returns the overview: how many jobs are open / applied / skipped and the open ones "
+                "with their IDs ('how many jobs are left', 'what's on my list')."
             ),
             input_schema={
                 "type": "object",
                 "properties": {"query": {"type": "string",
-                                         "description": "The user's words for the job(s)"}},
-                "required": ["query"],
+                                         "description": "The user's words for the job(s); empty for the overview"}},
+                "required": [],
             },
             execute=execute,
         )
@@ -402,6 +445,82 @@ class ApplyPlugin(_plugin_base.PluginBase):
                                "description": "For action=mark"},
                 },
                 "required": ["action"],
+            },
+            execute=execute,
+        )
+
+    def _start_applications_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.applying import commands
+            try:
+                limit = int(params["limit"]) if params.get("limit") not in (None, "") else None
+            except (TypeError, ValueError):
+                limit = None
+            try:
+                return commands.start_run(limit)
+            except Exception as exc:
+                logger.error("start_applications failed: %s", exc)
+                return "The application run didn't start."
+
+        return ToolDescriptor(
+            name="start_applications",
+            description=(
+                "Start the application run: fill up to `limit` new jobs from the sheet (best fit first, "
+                "default 10), each in its own tab, WITHOUT stopping at sign-ins or checks — Aria tells the "
+                "user at the end what's ready and what's stuck. Never submits. Use when the user asks to apply "
+                "to several jobs or keep going ('start applying to the next jobs', 'do 10 of them', 'keep "
+                "going with the applications'). Never on your own initiative. For ONE named job use apply_job."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "description": "How many jobs (optional, max 10)"}},
+                "required": [],
+            },
+            execute=execute,
+        )
+
+    def _open_dashboard_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.applying import startup
+            try:
+                return startup.open_dashboard()
+            except Exception as exc:
+                logger.error("open_dashboard failed: %s", exc)
+                return "The dashboard didn't open."
+
+        return ToolDescriptor(
+            name="open_dashboard",
+            description=(
+                "Open the user's job dashboard (applications, the live sheet, outreach, costs) in a tab "
+                "of Aria's Chrome; starts it if it's down. Use for 'show my job tracker', 'pull up my "
+                "applications', 'open the dashboard'. Never open Google Sheets for this."
+            ),
+            input_schema={"type": "object", "properties": {}, "required": []},
+            execute=execute,
+        )
+
+    def _application_continue_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.applying import commands
+            try:
+                return commands.continue_application(str(params.get("job") or ""))
+            except Exception as exc:
+                logger.error("application_continue failed: %s", exc)
+                return "I couldn't pick that application back up."
+
+        return ToolDescriptor(
+            name="application_continue",
+            description=(
+                "Pick an application back up in its own tab and keep filling: after the user signed in or "
+                "cleared a check, or when the site has a next step ('click the step 2 external apply', "
+                "'continue the RTX one', 'I logged in, carry on'). Reads the page itself — never use "
+                "screen_look or browser_task for application tabs. Never submits. job = the user's words "
+                "for it; empty for the one in front."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"job": {"type": "string", "description": "The user's words for the job (optional)"}},
+                "required": [],
             },
             execute=execute,
         )

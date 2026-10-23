@@ -21,6 +21,9 @@ class RunControl:
         self._go.set()
         self._stopped = threading.Event()
         self.active = True
+        # False for a batch run: a wall (CAPTCHA / sign-in / code) is noted and the run moves on
+        # to the next job instead of waiting; the end-of-run report lists it.
+        self.wait_walls = True
 
     @property
     def paused(self) -> bool:

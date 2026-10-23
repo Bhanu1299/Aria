@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from aria.llm import meter
 from aria.llm import context
-from aria.llm.tasks import FRONTIER, tier_for
+from aria.llm.tasks import ESCALATE_TO, FRONTIER, tier_for
 
 from aria.llm.base import (
     AuthError, GatewayError, GatewayUnavailable, LLMResponse, Provider, RateLimitError, ToolCall,
@@ -80,9 +81,17 @@ class ProviderChain:
         return _ERROR_RESPONSE
 
 
+# A GateLLM model id ("deepseek-v4-pro", "groq/gpt-oss-120b"), not a tier name.
+_MODEL_ID = re.compile(r"^[a-z0-9][\w.-]*(?:[-/][\w.-]+)+$")
+
+
 class LLMClient:
-    def __init__(self, tier_chains: dict[str, ProviderChain]) -> None:
+    def __init__(self, tier_chains: dict[str, ProviderChain],
+                 model_chain: Optional[Callable[[str], ProviderChain]] = None) -> None:
+        """model_chain(model_id) builds a chain for an explicit GateLLM model id (a task in
+        TASK_TIERS may name one instead of a tier); without it an unknown name falls back to smart."""
         self._chains = tier_chains
+        self._model_chain = model_chain
 
     def complete(
         self,
@@ -98,6 +107,8 @@ class LLMClient:
             tier = tier_for(task)
         tier = tier or "smart"
         chain = self._chains.get(tier)
+        if chain is None and self._model_chain is not None and _MODEL_ID.match(tier):
+            chain = self._chains[tier] = self._model_chain(tier)      # an explicit model: its own chain
         if chain is None:
             logger.warning("[LLM] no chain for tier %r — using smart", tier)
             chain = self._chains["smart"]
@@ -116,20 +127,21 @@ class LLMClient:
     ) -> tuple[LLMResponse, Any]:
         """Run `task` on its tier; validate(text) returns the parsed value or None.
 
-        Invalid output on a non-frontier tier is retried ONCE on frontier, and the
-        escalation is counted in aria.llm.meter. Returns (last response, value | None).
+        Invalid output is retried ONCE on the next tier up (ESCALATE_TO: small → strong;
+        strong / vision → frontier), counted in aria.llm.meter. Returns (last response, value | None).
         """
         tier = tier_for(task)
         with context.scope(task=task):
             resp = self.complete(messages, tier=tier, max_tokens=max_tokens, system=system)
         value = _validated(validate, resp)
+        up = ESCALATE_TO.get(tier, FRONTIER)
         if value is not None or tier == FRONTIER:
             return resp, value
         why = "gateway error" if resp.stop_reason == "error" else "output failed validation"
-        logger.warning("[LLM] task=%s: %s %s — escalating to frontier", task, tier, why)
+        logger.warning("[LLM] task=%s: %s %s — escalating to %s", task, tier, why, up)
         meter.add_escalation()
         with context.scope(task=task, escalated_from=f"{tier}: {why}"):
-            resp = self.complete(messages, tier=FRONTIER, max_tokens=max_tokens, system=system)
+            resp = self.complete(messages, tier=up, max_tokens=max_tokens, system=system)
         return resp, _validated(validate, resp)
 
 

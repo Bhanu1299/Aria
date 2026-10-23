@@ -6,6 +6,9 @@ handle(text):
   3. agent          everything else, and any direct route that can't run
                     (unparseable slot, missing tool, tool raised)
 
+A pre-handler may answer only the first part of a sentence ("yes, and start applying to the
+next jobs"): it returns Partial(answer, rest) and the rest is routed on its own, answers joined.
+
 Direct turns are written into the agent's history so a follow-up like
 "turn it back on" still has context. LLM usage is measured with aria.llm.meter
 around the whole command, so calls made inside tools are counted too.
@@ -24,6 +27,15 @@ from aria.llm import meter
 logger = logging.getLogger(__name__)
 
 PreHandler = Tuple[str, Callable[[str], Optional[str]]]
+
+
+class Partial(str):
+    """A pre-handler answer for the first part of the words; `rest` still needs routing."""
+
+    def __new__(cls, answer: str, rest: str = "") -> "Partial":
+        obj = super().__new__(cls, answer)
+        obj.rest = rest
+        return obj
 
 
 def _no_usage() -> dict:
@@ -68,7 +80,12 @@ class Dispatcher:
                 logger.error("pre-handler %s failed: %s", name, exc)
                 answer = None
             if answer is not None:
-                return DispatchResult(answer, f"pre:{name}")
+                rest = getattr(answer, "rest", "").strip()
+                if rest:
+                    more = self._route(rest)
+                    return DispatchResult(f"{answer} {more.answer}".strip(), f"pre:{name}+{more.route}",
+                                          tools=more.tools, escalated_from=more.escalated_from)
+                return DispatchResult(str(answer), f"pre:{name}")
 
         escalated_from = ""
         match = self._match(text)

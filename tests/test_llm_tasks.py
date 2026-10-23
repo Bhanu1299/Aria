@@ -10,7 +10,7 @@ import pytest
 from aria.llm import meter
 from aria.llm.base import LLMResponse
 from aria.llm.client import LLMClient
-from aria.llm.tasks import FRONTIER, SMALL, TASK_TIERS, VISION, tier_for
+from aria.llm.tasks import AGENT, FRONTIER, SMALL, STRONG, TASK_TIERS, VISION, tier_for
 
 ARIA = Path(__file__).parent.parent / "aria"
 
@@ -24,7 +24,7 @@ def _sources():
 
 def test_every_task_maps_to_a_tier_or_explicit_model():
     for task, tier in TASK_TIERS.items():
-        assert tier in (SMALL, FRONTIER, VISION) or re.match(r"^[a-z0-9][\w./-]+$", tier), task
+        assert tier in (SMALL, STRONG, AGENT, FRONTIER, VISION) or re.match(r"^[a-z0-9][\w./-]+$", tier), task
 
 
 def test_every_task_named_in_code_exists():
@@ -55,11 +55,16 @@ def _resp(text, stop="end_turn"):
     return LLMResponse(text=text, tool_calls=[], stop_reason=stop, provider_used="t", model_used="t")
 
 
-def _client(small_text, frontier_text):
-    small, frontier = MagicMock(), MagicMock()
+def _client(small_text, up_text, strong_text=None):
+    """small / strong / frontier mocks. up_text answers the escalation target (strong for a small
+    task); frontier answers strong_text if given, else up_text."""
+    small, strong, frontier = MagicMock(), MagicMock(), MagicMock()
     small.complete.return_value = _resp(small_text)
-    frontier.complete.return_value = _resp(frontier_text)
-    return LLMClient({"small": small, "frontier": frontier, "smart": frontier}), small, frontier
+    strong.complete.return_value = _resp(up_text)
+    frontier.complete.return_value = _resp(up_text if strong_text is None else strong_text)
+    client = LLMClient({"small": small, "strong": strong, "frontier": frontier, "smart": frontier})
+    client.strong = strong
+    return client, small, frontier
 
 
 def _is_yes_no(text):
@@ -81,19 +86,43 @@ def test_valid_small_output_is_not_escalated():
     assert meter.since(before)["escalations"] == 0
 
 
-def test_invalid_small_output_retries_once_on_frontier():
+def test_invalid_small_output_retries_once_on_strong_not_claude():
     client, small, frontier = _client("Maybe?", "No")
     before = meter.snapshot()
     _resp_, value = client.complete_checked("form_short_answer", [{"role": "user", "content": "q"}], _is_yes_no)
     assert value == "No"
-    assert small.complete.call_count == 1 and frontier.complete.call_count == 1
+    assert small.complete.call_count == 1 and client.strong.complete.call_count == 1
+    assert not frontier.complete.called
     assert meter.since(before)["escalations"] == 1
 
 
-def test_frontier_task_is_never_escalated_further():
-    client, small, frontier = _client("x", "still invalid")
+def test_strong_task_escalates_once_to_frontier():
+    client, small, frontier = _client("x", "still invalid", "Yes")
     _resp_, value = client.complete_checked("form_free_text", [{"role": "user", "content": "q"}], _is_yes_no)
+    assert value == "Yes" and client.strong.complete.call_count == 1 and frontier.complete.call_count == 1
+
+
+def test_frontier_task_is_never_escalated_further(monkeypatch):
+    monkeypatch.setitem(TASK_TIERS, "test_frontier", FRONTIER)
+    client, small, frontier = _client("x", "still invalid")
+    _resp_, value = client.complete_checked("test_frontier", [{"role": "user", "content": "q"}], _is_yes_no)
     assert value is None and frontier.complete.call_count == 1 and not small.complete.called
+
+
+def test_an_explicit_model_gets_its_own_chain(monkeypatch):
+    built = []
+
+    def model_chain(model):
+        chain = MagicMock()
+        chain.complete.return_value = _resp("hi")
+        built.append(model)
+        return chain
+    monkeypatch.setitem(TASK_TIERS, "test_model", "deepseek-v4-pro")
+    frontier = MagicMock()
+    client = LLMClient({"smart": frontier, "frontier": frontier}, model_chain)
+    assert client.complete([{"role": "user", "content": "x"}], task="test_model").text == "hi"
+    client.complete([{"role": "user", "content": "x"}], task="test_model")
+    assert built == ["deepseek-v4-pro"] and not frontier.complete.called      # built once, never Claude
 
 
 def test_gateway_error_counts_as_invalid():
@@ -109,7 +138,7 @@ def test_validator_exception_is_invalid():
     def boom(_text):
         raise ValueError("bad")
     _resp_, value = client.complete_checked("form_short_answer", [{"role": "user", "content": "q"}], boom)
-    assert value is None and frontier.complete.call_count == 1
+    assert value is None and client.strong.complete.call_count == 1 and not frontier.complete.called
 
 
 def test_escalations_reach_the_flight_log(tmp_path, monkeypatch):

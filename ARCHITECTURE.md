@@ -190,15 +190,26 @@ the agent speaks "I can't reach the LLM gateway". An HTTP error raises
 
 | GateLLM tier | chain (in GateLLM config.yaml) | tasks (examples from `TASK_TIERS`) |
 |---|---|---|
-| `frontier` | Claude Sonnet → GPT → Kimi → GPT-OSS 120B | `agent`, `coder`, `form_free_text` |
-| `small` | GPT-OSS 120B (Groq) → DeepSeek → GPT mini → Claude Haiku | `form_short_answer`, `job_query_parse`, extractors, summaries |
-| `vision` | Qwen3.8-27B (Groq) → Claude Haiku → Claude Sonnet | `screen_qa`, `page_vision`, `browser_vision_decide` |
+| `small` | GPT-OSS 120B (Groq) → Gemini 3.5 Flash-Lite → DeepSeek Flash → Claude Haiku | `form_short_answer`, `form_field_match`, `apply_page_situation`, extractors, summaries |
+| `strong` | Gemini 3.8 Flash → DeepSeek v4 Pro → Claude Sonnet | `form_free_text`, outreach writing, every escalation from `small` |
+| `vision` | Qwen3.8-27B (Groq) → Gemini 3.8 Flash → Claude Haiku | `screen_qa`, `page_vision`, `browser_vision_decide` |
+| `agent` | DeepSeek v4 Pro → Claude Sonnet → Gemini 3.8 Flash | `agent` (the tool loop) |
+| `frontier` | Claude Sonnet → Gemini 3.8 Flash → DeepSeek v4 Pro → GPT-OSS | `coder`, `browser_vision_escalate` (Claude only where the task needs it) |
+
+Chosen on measurements (2026-10-23): Groq answers in ~0.3 s; Gemini Flash / Flash-Lite answer
+well at small `max_tokens`; DeepSeek models think first (empty replies under ~200 tokens), so
+they sit second; Gemini 4 Argon took ~37 s a call (left out); Groq Qwen read a screenshot better
+than Gemini Flash. The agent's model came from the 87-case stress test
+(`scripts/stress_test.py --agent-model <id>`): DeepSeek v4 Pro 80/87 for $0.21, Claude Sonnet
+78/87 for $3.01, Gemini 3.8 Flash 72/87; DeepSeek's median voice turn is ~0.8 s slower.
+A task may also name one GateLLM model id instead of a tier.
 
 Agent-style calls use `llm_client.complete(…, task="…")`. Modules that build
 OpenAI-format messages (vision, classifiers, computer use) use
 `gateway_client().chat.completions.create(model=tier_for("…"), …)`. Where a small
 answer can be checked in code, `llm_client.complete_checked` validates it and
-escalates once to frontier. Every call
+escalates once to the next tier up (`ESCALATE_TO`: small → strong → frontier), never
+straight to Claude. Every call
 is tallied in `aria.llm.meter`; the dispatcher snapshots it per command, so the
 flight log's cost covers LLM calls made inside tools too.
 
@@ -404,6 +415,22 @@ flowchart LR
   to it; the posting tab stays open), a URL change, or a dialog. Redirects settle before the
   ATS is named from the final URL + DOM. Workday and Handshake pages are left to their
   adapters, which start the application themselves.
+- **The pages in between** (`ats/situations.py`): the page after an Apply link is often not
+  the form. At every hop code rules name it first: a cookie / consent banner (its own
+  Reject, else Accept — only buttons inside the banner), a "you are leaving this site"
+  notice (Continue), a careers list (the link naming this job's role) — clicked through;
+  a closed / expired posting, "already applied", email-only, an assessment — the walk
+  stops and the applicator reports that reason instead of an empty form. Only a page the
+  rules can't read gets ONE small-tier LLM look (`apply_page_situation`, at most 2 per job):
+  it picks a numbered control or names a stop; code refuses anything not on the page,
+  anything submit / send / pay / delete / sign-out, and any click on a page with fields.
+- **Never "filled" with nothing filled**: no fields, nothing to review and no named stop
+  (Workday's Review page, Handshake's dialog, LinkedIn's review step) means the form was
+  never reached — an error, the tab stays open, the sheet never gets "In review".
+- **Next steps**: `application_continue` (agent tool) re-runs a job's adapter in its own
+  tab — after a sign-in, or a site's next step — from the page's DOM, never a screenshot
+  (background tabs don't paint). "I submitted it" on Handshake checks for its "Step 2 on
+  the employer's site" and fills that part in the same tab.
 - **Adapters** (`ats/adapters/`): `detect / login / fill / verify` on a `Tab` handle (every
   page call is one short job on the browser worker). The base class is the generic adapter
   (the form engine); an ATS adapter adds its own pre-step and a `FIELD_KEYS` map from the
@@ -490,9 +517,12 @@ Set by the user 2026-10-21. Code that touches applications is checked against th
    "let's apply to some jobs" / "start applications" brings up GateLLM, Coldstart
    (a library: import check), the dashboard and Aria's Chrome, health-checking each
    in that order. The first failure is named and nothing else starts. Then the
-   dashboard opens in a background tab on Live run. The run speaks only for a wall
-   (CAPTCHA / login / privacy notice), and once when finished, saying how many answers
-   are missing from the answer bank. Progress goes to the terminal/log.
+   dashboard opens in a background tab on Live run. The run (up to 10 jobs, best fit
+   first; any wording reaches it through the agent's `start_applications`) never stops
+   at a wall (user, 2026-10-23): a CAPTCHA / sign-in / email code is noted on that tab and
+   the run moves on. It speaks once, at the end: how many are ready for review, which need
+   answers, which stopped and why. Progress goes to the terminal/log. A single fill outside
+   a run ("apply to the RTX one") still waits for a wall.
 2. **Applications run in front, never in the background.** Every form fill happens
    in a visible, headed Chrome window. No headless mode for applications, ever.
    Each application opens in its own new tab — in the background: Aria's Chrome never

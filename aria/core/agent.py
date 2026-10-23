@@ -92,6 +92,9 @@ def _build_system_prompt(memory_context: str = "") -> str:
         "The job sheet is changed only with job_status or application_action, never by opening Google "
         "Sheets in the browser. When the user says they submitted, wants to submit, skip, close or mark an "
         "application in any words, use application_action; when it returns a question, ask exactly that. "
+        "To apply to several or the next jobs use start_applications (it runs in the background and "
+        "reports at the end); to pick up an application that's waiting (signed in, a step 2) use "
+        "application_continue — never screen tools on application tabs. "
         "Casual conversation needs no tools: just talk. "
         "Remember details the user shares; they expect you to know them next time."
     )

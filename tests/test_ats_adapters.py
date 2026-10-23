@@ -149,6 +149,16 @@ PAGES = {
     "https://app.joinhandshake.com/jobs/wrong": HS_DIALOG % '<div class="select__single-value">Old_CV_2023.pdf</div>',
     "https://app.joinhandshake.com/jobs/upload": HS_DIALOG % '<input type="file" name="doc">'
                                                  '<p>Transcript is required for this job.</p>',
+    # OpEff, 2026-10-23: the resume is already chosen (a file card, no select); the transcript slot is empty
+    "https://app.joinhandshake.com/jobs/slots": """<h1>Engineer</h1>
+        <button onclick="document.getElementById('d').style.display='block'">Apply</button>
+        <div id="d" role="dialog" style="display:none"><h2>Apply to OpEff Technologies</h2>
+          <p>Applying requires a few documents. Attach them below.</p>
+          <div><h3>Attach your resume</h3>
+            <div class="card ok">Alex_Rivera_Resume_.pdf <a href="#">Preview document</a></div></div>
+          <div><h3>Attach your transcript</h3>
+            <div class="drop"><input type="file" name="transcript"> Drag a file or browse</div></div>
+          <button onclick="window.submitted = true">Submit Application</button></div>""",
     "https://app.joinhandshake.com/jobs/external": """<h1>Engineer</h1>
         <button onclick="window.open('https://jobs.lever.co/acme/1/apply', '_blank')">Apply Externally</button>""",
 }
@@ -262,3 +272,11 @@ def test_scan_reports_automation_ids(context):
                      '<input id="a" data-automation-id="legalNameSection_firstName"></div>')
     (raw,) = form_engine.scan(page)
     assert raw["aid"] == "legalNameSection_firstName"
+
+
+def test_handshake_never_puts_the_resume_in_another_documents_slot(context, bank):
+    tab, holder = open_tab(context, "https://app.joinhandshake.com/jobs/slots")
+    report = HandshakeAdapter().fill(tab, ctx_for("https://app.joinhandshake.com/jobs/slots", "handshake"))
+    assert [(r["label"], r["value"], r["source"]) for r in report.rows] == [
+        ("Resume", "Alex_Rivera_Resume_.pdf", "bank"), ("Transcript", "", "needs_me")]
+    assert holder["page"].evaluate("document.querySelector('input[type=file]').files.length") == 0

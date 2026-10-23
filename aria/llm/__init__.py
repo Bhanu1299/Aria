@@ -24,7 +24,7 @@ from aria.llm.tasks import TASK_TIERS, tier_for
 # names stay as aliases.
 GATEWAY_TIERS = {
     "smart": "frontier", "cheap": "small", "fast": "small",
-    "frontier": "frontier", "small": "small", "vision": "vision",
+    "frontier": "frontier", "small": "small", "strong": "strong", "vision": "vision", "agent": "agent",
 }
 
 
@@ -35,7 +35,12 @@ def build_tier_chains(gateway_url: str) -> dict[str, ProviderChain]:
     }
 
 
-llm_client = LLMClient(build_tier_chains(config.GATEWAY_URL))
+def build_model_chain(gateway_url: str):
+    """A chain for an explicit GateLLM model id named in TASK_TIERS."""
+    return lambda model: ProviderChain([GatewayProvider(model, gateway_url)], tier=model)
+
+
+llm_client = LLMClient(build_tier_chains(config.GATEWAY_URL), build_model_chain(config.GATEWAY_URL))
 
 __all__ = [
     "llm_client", "gateway_client", "build_tier_chains", "check_health", "GATEWAY_TIERS",

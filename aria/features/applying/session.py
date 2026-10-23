@@ -1,16 +1,17 @@
 """applying/session.py — the application run: every new sheet job in its own visible tab.
 
-start(say, voice_ask) → spoken line; the run goes on in a background thread
+start(say, voice_ask, limit=None) → spoken line; the run goes on in a background thread
   1. jobs   sheet rows whose Status is new (blank / "Not applied" …) and that aren't
-            already open in a tab, best fit first (fit desc, then row), at most
-            MAX_OPEN_TABS minus the application tabs already open
-  2. each   fill_one: new tab → open the posting → bring it to front → wait out any
-            wall (CAPTCHA / login / email code) → applicator.run_application in that
-            tab → never submits
+            already open in a tab, best fit first (fit desc, then row), at most `limit`
+            and MAX_OPEN_TABS minus the application tabs already open
+  2. each   fill_one: new tab → open the posting → applicator.run_application in that
+            tab → never submits. A wall (CAPTCHA / sign-in / email code) does NOT stop the
+            run: it's noted on the tab and the run moves on (RunControl.wait_walls = False).
+            A single fill outside a run still waits for the user (wait_walls = True).
   3. guard  caffeinate for the whole run; pause / stop via control.current
-  4. voice  nothing is spoken while filling (progress goes to the terminal / log). Aria
-            speaks only for: a CAPTCHA / login / email code wall, and once when the run
-            finishes — with how many answers are missing from the answer bank
+  4. voice  nothing is spoken while filling (progress goes to the terminal / log). Once,
+            at the end, run_report: how many are ready for review, which need answers,
+            which stopped and why (sign-in, closed posting, …)
 
 reattach() — after a restart, bind live registry entries to the tabs still open in
 Chrome; entries whose tab is gone become closed.
@@ -63,11 +64,14 @@ def _names(jobs: list) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def start(say: Callable[[str], None], voice_ask: Optional[Callable[[str], str]] = None) -> str:
+def start(say: Callable[[str], None], voice_ask: Optional[Callable[[str], str]] = None,
+          limit: Optional[int] = None) -> str:
     global _thread
     if control.current is not None and control.current.active:
         return "Applications are already running. Say pause or stop."
     room = MAX_OPEN_TABS - len(tabs.live())
+    if limit is not None and limit > 0:
+        room = min(room, limit)
     if room <= 0:
         return f"You have {MAX_OPEN_TABS} application tabs open. Close some first: say close it or close all."
     try:
@@ -81,11 +85,13 @@ def start(say: Callable[[str], None], voice_ask: Optional[Callable[[str], str]] 
         return "There are no new jobs in your sheet that aren't already open in a tab."
 
     ctl = control.RunControl()
+    ctl.wait_walls = False
     control.current = ctl
     _thread = threading.Thread(target=_run, args=(jobs, say, voice_ask, ctl), daemon=True, name="aria-apply-run")
     _thread.start()
     n = len(jobs)
     return (f"Starting {n} application{'s' if n != 1 else ''}, best fit first: {_names(jobs)}. "
+            "I won't stop for sign-ins or checks; I'll tell you what's ready and what's stuck at the end. "
             "Nothing gets submitted.")
 
 
@@ -113,6 +119,57 @@ def finished_line(done: int, missing: list) -> str:
     return out
 
 
+_STOP_WORDS = (
+    (re.compile(r"sign-?in|log ?in|account", re.I), "stopped at sign-in"),
+    (re.compile(r"captcha", re.I), "a CAPTCHA"),
+    (re.compile(r"verification|email code", re.I), "an email code"),
+    (re.compile(r"closed|no longer|expired|gone", re.I), "the posting looks closed"),
+    (re.compile(r"already applied", re.I), "says you already applied"),
+    (re.compile(r"by email", re.I), "email-only"),
+    (re.compile(r"assessment", re.I), "starts with an assessment"),
+    (re.compile(r"no application link|no application url", re.I), "no application link"),
+    (re.compile(r"find the form|form fields|no form", re.I), "couldn't find the form"),
+)
+
+
+def _why(note: str) -> str:
+    for pattern, short in _STOP_WORDS:
+        if pattern.search(note or ""):
+            return short
+    first = re.split(r"(?<=[.;])\s", (note or "").strip())[0]
+    return (first[:60].rstrip(".") or "stopped")
+
+
+def _list_names(names: list, cap: int = 5) -> str:
+    if len(names) > cap:
+        names = names[:cap] + [f"{len(names) - cap} more"]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def run_report(ids: list, done: int) -> str:
+    """The one spoken line at the end of a run: what's ready, what needs answers, what stopped."""
+    out = f"Done with {done} job{'s' if done != 1 else ''}, nothing submitted."
+    ready, needs, stopped = [], [], []
+    for tab in ids:
+        e = tabs.get(tab) or {}
+        name = e.get("company") or e.get("role") or "one job"
+        if e.get("state") in (tabs.FILLED, tabs.SUBMITTED) and e.get("needs_me"):
+            needs.append(f"{name} ({len(e['needs_me'])})")
+        elif e.get("state") in (tabs.FILLED, tabs.SUBMITTED):
+            ready.append(name)
+        elif e:
+            stopped.append(f"{name}: {_why(e.get('note', ''))}")
+    if ready:
+        out += f" {len(ready)} ready for your review: {_list_names(ready)}."
+    if needs:
+        out += f" {len(needs)} need{'s' if len(needs) == 1 else ''} answers I don't have: {_list_names(needs)}."
+    if stopped:
+        out += f" {len(stopped)} stopped — {'; '.join(stopped[:5])}" + (" and more." if len(stopped) > 5 else ".")
+    if ready or needs or stopped:
+        out += " It's all on the dashboard."
+    return out
+
+
 def _missing(ids: list) -> list:
     seen: list = []
     for tab in ids:
@@ -131,7 +188,7 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
             ctl.checkpoint()
             _note(fill_one(job, say, None, ctl, ids=ids))
             done += 1
-        _speak(say, finished_line(done, _missing(ids)))
+        _speak(say, run_report(ids, done))
     except control.Stopped:
         _speak(say, f"Stopped after {done} application{'s' if done != 1 else ''}, nothing submitted. "
                     "Every tab stays open.")
@@ -144,6 +201,14 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
         ctl.active = False
         if control.current is ctl:
             control.current = None
+
+
+def _skip_wall(entry: dict, kind: str) -> None:
+    """Batch run: note the wall (correction row + log), don't speak, don't wait."""
+    label = walls.NAMES.get(kind, "something only you can clear")
+    job = {"url": entry.get("url", ""), "company": entry.get("company", ""), "row": entry.get("row")}
+    corrections.record(job, kind, "wall", f"{label} — skipped for now (batch run)", ats=entry.get("ats", ""))
+    _note(f"{entry.get('company') or 'A job'} is showing {label}; moving on, it's in the end-of-run report.")
 
 
 def wait_wall(entry: dict, kind: str, say, ctl: Optional[control.RunControl],
@@ -184,6 +249,7 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
     """One job in its own new tab. Never submits; never closes the tab. control.Stopped
     propagates (the tab stays open). `ids` collects the tab ids this run opened."""
     gate = ctl.checkpoint if ctl is not None else None
+    waits = ctl.wait_walls if ctl is not None else True
     entry = tabs.add(job)
     tab = entry["id"]
     if ids is not None:
@@ -194,13 +260,18 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
             with agent_browser.use_tab(tab, gate=gate):
                 agent_browser.navigate(job["url"], settle_secs=2.0)
             kind = walls.check(tab)
-            if kind and not wait_wall(entry, kind, say, ctl):
+            if kind and not (waits and wait_wall(entry, kind, say, ctl)):
+                if not waits:
+                    _skip_wall(entry, kind)
                 tabs.update(tab, state=tabs.OPEN, note=f"blocked by {walls.NAMES[kind]}")
                 run.finish("error", f"blocked by {walls.NAMES[kind]}")
                 return f"{job.get('company')} is still blocked, so I left its tab open unfilled."
         timed_out: set = set()          # one wall timeout, one announcement: never wait twice
 
         def wait_once(kind: str, cleared: Optional[Callable[[], bool]] = None) -> bool:
+            if not waits:
+                _skip_wall(entry, kind)
+                return False
             if kind in timed_out:
                 return False
             if wait_wall(entry, kind, say, ctl, cleared):
@@ -209,7 +280,7 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
             return False
         out = applicator.run_application(job, progress_fn=None, voice_ask_fn=voice_ask, run=run,
                                          entry=entry, gate=gate, wait_fn=wait_once)
-        kind = walls.check(tab) if job.get("url") else None
+        kind = walls.check(tab) if job.get("url") and waits else None
         if kind and wait_once(kind):
             out += " It asked for a check partway, so look over the fields."
         return out

@@ -152,3 +152,60 @@ def test_tab_closed_before_the_yes(isolated):
 
 def test_unknown_action():
     assert commands.request("delete").startswith("action must be one of")
+
+
+# ── "yes, and …": the yes confirms, the rest is routed on its own ───────────
+
+def test_yes_and_more_confirms_then_hands_the_rest_on(isolated):
+    _open()
+    commands.request("i_submitted")
+    out = commands.handle("Yes, please, and start applying to next jobs as well")
+    assert out == "Got it: RTX is submitted." and out.rest == "start applying to next jobs as well"
+    assert isolated == [("by_hand", "RTX")]
+
+
+def test_yes_go_ahead_and_submit_it_is_one_submit(isolated):
+    _open()
+    commands.request("submit")
+    out = commands.handle("yes go ahead and submit it")
+    assert out == "Submitted RTX." and out.rest == "" and isolated == [("submit", "RTX")]
+
+
+def test_dispatcher_routes_the_rest_and_joins_the_answers():
+    from aria.dispatch.dispatcher import Dispatcher, Partial
+
+    class Agent:
+        last_run_tools: list = []
+
+        def run(self, text):
+            return f"agent did: {text}"
+    d = Dispatcher(registry=None, agent=Agent(), rules=None,
+                   pre_handlers=[("p", lambda t: Partial("Done.", "start applying") if t.startswith("yes") else None)])
+    r = d.handle("yes and start applying")
+    assert r.answer == "Done. agent did: start applying" and r.route == "pre:p+agent"
+
+
+# ── continue / start / Handshake step 2 ─────────────────────────────────────
+
+def test_continue_refills_the_named_tab(isolated, monkeypatch):
+    e = _open()
+    seen = []
+    monkeypatch.setattr(applicator, "run_application", lambda job, entry=None, **kw: seen.append(entry["id"]) or "filled")
+    assert commands.continue_application("the RTX one") == "filled" and seen == [e["id"]]
+
+
+def test_i_submitted_on_handshake_with_a_step_two_fills_step_two(isolated, monkeypatch):
+    from aria.features.ats.adapters import handshake
+    e = tabs.update(_open()["id"], ats="handshake")
+    monkeypatch.setattr(handshake, "has_step_two", lambda tab_id: True)
+    started = []
+    monkeypatch.setattr(commands, "_handshake_step_two", lambda entry: started.append(entry["id"]))
+    out = commands.handle("I submitted it")
+    assert "step 2 on the employer's site" in out and started == [e["id"]]
+
+
+def test_i_submitted_elsewhere_has_no_step_two(isolated, monkeypatch):
+    from aria.features.ats.adapters import handshake
+    _open()
+    monkeypatch.setattr(handshake, "has_step_two", lambda tab_id: pytest.fail("checked a non-Handshake tab"))
+    assert "step 2" not in commands.handle("I submitted it")

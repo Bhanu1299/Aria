@@ -211,3 +211,14 @@ def test_dashboard_page_shows_the_id_not_the_row():
     from aria.dashboard import sheet_tab
     assert "th.textContent='ID'" in sheet_tab.JS and "n.textContent=r.id||''" in sheet_tab.JS
     assert "id:r.id||''" in sheet_tab.JS
+
+
+@pytest.mark.parametrize("query", ["", "how many jobs are left", "what's on my list", "all"])
+def test_job_find_without_a_job_named_gives_the_overview(two_tabs, monkeypatch, query):
+    tabs, _, _ = two_tabs
+    job_find, _, _ = _tools(monkeypatch, tabs)
+    monkeypatch.setattr(sheets, "default_sheet", lambda: tabs[0])
+    monkeypatch.setattr(sheets, "tab_sheet", lambda t: tabs[1])
+    out = job_find.execute({"query": query})
+    assert out.startswith("Jobs tab: 5 rows") and "Applied tab: 3 jobs" in out
+    assert "3 still to apply to" in out and "John Deere" in out and "Plaid" not in out.split("still to apply to")[1]
