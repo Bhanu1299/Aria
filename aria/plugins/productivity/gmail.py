@@ -160,6 +160,23 @@ class GmailClient:
         except Exception as exc:
             return _handle_api_error(exc, self._auth_expired_msg)
 
+    def message_bodies(self, email_id: str) -> dict | str:
+        """{from, subject, date, ts, text, html} — html too, for mail that has no plain part."""
+        if not self.is_configured():
+            return self._not_setup_msg
+        svc = self._get_service()
+        if svc is None:
+            return self._auth_expired_msg
+        try:
+            msg = svc.users().messages().get(userId="me", id=email_id, format="full").execute()
+            payload = msg.get("payload", {})
+            headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
+            return {"from": headers.get("From", ""), "subject": headers.get("Subject", ""),
+                    "date": headers.get("Date", ""), "ts": int(msg.get("internalDate") or 0) / 1000.0,
+                    "text": _extract_part(payload, "text/plain"), "html": _extract_part(payload, "text/html")}
+        except Exception as exc:
+            return _handle_api_error(exc, self._auth_expired_msg)
+
     def send_message(self, to: str, subject: str, body: str, cc: str = "") -> str:
         if not self.is_configured():
             return self._not_setup_msg
@@ -240,6 +257,19 @@ class GmailClient:
             return "Sent."
         except Exception as exc:
             return _handle_api_error(exc, self._auth_expired_msg)
+
+
+def _extract_part(payload: dict, mime: str) -> str:
+    """The first body of this MIME type anywhere in the payload, decoded ('' if none)."""
+    if payload.get("mimeType", "") == mime:
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+    for part in payload.get("parts", []):
+        found = _extract_part(part, mime)
+        if found:
+            return found
+    return ""
 
 
 def _extract_body(payload: dict) -> str:

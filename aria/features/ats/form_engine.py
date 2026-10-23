@@ -17,7 +17,7 @@ Per page:
                Next / Continue (never Submit / Apply / Send) and repeat on the new page
   7. stop      no Next button (the final page) → stop; the user approves the submit
   Walls (CAPTCHA / login / email code / a privacy notice to accept) are checked before
-  every scan: wait_fn(kind) — the session's "bring the tab to front and wait" — then go on.
+  every scan: wait_fn(kind) — the session says which tab needs you and waits — then go on.
 
 Every step is a `page` function (tested with a real headless page); fill() runs them on
 the agent_browser worker thread, one call per step, so a pause holds between steps.
@@ -94,6 +94,8 @@ SCAN_JS = r"""
     return !!(el.required || el.getAttribute('aria-required') === 'true' || /[*✱]/.test(raw || '') || /\(required\)/i.test(raw || ''));
   }
   const strip = t => clean((t || '').replace(/[*✱]+/g, ' ').replace(/\((required|optional)\)/ig, ' '));
+  // Workday-style stable ids on the control or its wrapper — adapters map them to bank keys
+  const aidOf = el => { const n = el.closest('[data-automation-id]'); return n ? n.getAttribute('data-automation-id') : ''; };
   const out = [];
   const groups = {};
 
@@ -138,7 +140,7 @@ SCAN_JS = r"""
       .map(o => clean(o.text)).filter(Boolean);
     out.push({fid: fid(el), kind: kind, label: strip(raw), required: req(el, raw), options: options,
               max_chars: el.maxLength > 0 && el.maxLength < 100000 ? el.maxLength : 0,
-              accept: el.getAttribute('accept') || '', name: el.name || el.id || ''});
+              accept: el.getAttribute('accept') || '', name: el.name || el.id || '', aid: aidOf(el)});
   }
   for (const key of Object.keys(groups)) {
     const els = groups[key];
@@ -156,13 +158,13 @@ SCAN_JS = r"""
       const own = optionText(first);
       raw = own && own.length > 12 ? own : clean((raw ? raw + ' ' : '') + own);
       out.push({fid: fid(first), kind: 'checkbox', label: strip(raw), required: req(first, raw) || req(first, own),
-                options: [], max_chars: 0, accept: '', name: first.name || ''});
+                options: [], max_chars: 0, accept: '', name: first.name || '', aid: aidOf(first)});
       continue;
     }
     shown.forEach(e => fid(e));
     out.push({fid: fid(first), kind: type === 'radio' ? 'radio' : 'checkgroup', label: strip(raw),
               required: shown.some(e => req(e, raw)), options: shown.map(optionText), max_chars: 0, accept: '',
-              name: first.name || '', members: shown.map(e => e.dataset.ariaFid)});
+              name: first.name || '', aid: aidOf(first), members: shown.map(e => e.dataset.ariaFid)});
   }
   return out;
 }
@@ -239,14 +241,16 @@ def scan(page) -> list:
     return page.evaluate(SCAN_JS)
 
 
-def to_fields(raw: list) -> list:
+def to_fields(raw: list, field_key: Optional[Callable[[dict], str]] = None) -> list:
+    """Raw scan rows → FormFields. field_key(raw) names the bank key for a field the ATS
+    identifies by its own name / data-automation-id (the adapter's map), else ""."""
     out = []
     for r in raw:
         label = r.get("label") or ""
         if not label:
             continue
         f = FormField(r["fid"], label, r["kind"], bool(r.get("required")), list(r.get("options") or []), "dom",
-                      int(r.get("max_chars") or 0))
+                      int(r.get("max_chars") or 0), key=(field_key(r) if field_key else "") or "")
         out.append(f)
     return out
 
@@ -433,7 +437,8 @@ def wall(page) -> Optional[str]:
 def fill(job: dict, description: str = "", progress_fn: Optional[Callable[[str], None]] = None,
          llm_available: bool = True, run: Optional[Callable] = None,
          guess_fn: Optional[Callable] = None, draft_fn: Optional[Callable] = None,
-         wait_fn: Optional[Callable[[str], bool]] = None) -> EngineResult:
+         wait_fn: Optional[Callable[[str], bool]] = None,
+         field_key: Optional[Callable[[dict], str]] = None) -> EngineResult:
     """Fill the form open in the current agent_browser tab, page by page. Never clicks a
     submit. `run(fn)` executes fn(page) on the browser thread (agent_browser.run by default).
     Never raises — a pause/stop gate's Stopped is a BaseException and passes through."""
@@ -465,7 +470,7 @@ def fill(job: dict, description: str = "", progress_fn: Optional[Callable[[str],
                 new = [r for r in raw if r["fid"] not in raw_by_fid]
                 for r in raw:
                     raw_by_fid[r["fid"]] = r
-                fields = to_fields(new)
+                fields = to_fields(new, field_key)
                 if not fields:
                     break
                 say(f"Page {page_no}: {len(fields)} new field{'s' if len(fields) != 1 else ''}.")

@@ -28,7 +28,9 @@ import aria.web.agent_browser as agent_browser
 import aria.web.browser_profile as browser_profile
 from aria.features import applicator
 from aria.features.applying import control, tabs, walls
+from aria.features.ats import corrections
 from aria.integrations import sheets
+from aria.ui import notifier
 from aria.observability import run_log
 
 logger = logging.getLogger(__name__)
@@ -144,11 +146,19 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
             control.current = None
 
 
-def wait_wall(entry: dict, kind: str, say, ctl: Optional[control.RunControl]) -> bool:
-    """Say what's blocking and wait until it's gone. False on timeout. The tab is NOT raised:
-    Aria's Chrome never takes focus; the user switches to it when they're ready."""
+def wait_wall(entry: dict, kind: str, say, ctl: Optional[control.RunControl],
+              cleared: Optional[Callable[[], bool]] = None) -> bool:
+    """Say what's blocking (voice + a notification naming the company's tab) and wait until
+    it's gone: cleared() if given (a step walls.check can't see, e.g. Workday's terms box),
+    else no wall on the page. False on timeout. The tab is NOT raised: Aria's Chrome never
+    takes focus; the user switches to it when they're ready."""
     tab, company = entry["id"], entry.get("company") or "This job"
     label = walls.NAMES.get(kind, "something only you can clear")
+    job = {"url": entry.get("url", ""), "company": entry.get("company", ""), "row": entry.get("row")}
+    run_tab = lambda fn: agent_browser.run(fn, tab=tab)          # noqa: E731
+    corrections.record(job, kind, "wall", f"{label} — waiting for you", ats=entry.get("ats", ""), run=run_tab)
+    notifier.send_notification(f"Aria — {company}", f"{label[0].upper()}{label[1:]} in its tab in Aria's Chrome. "
+                                                     "Clear it and I'll carry on.")
     _speak(say, f"{company} is showing {label}. Please clear it in its tab in Aria's Chrome; I'll wait.")
     deadline = time.time() + WALL_TIMEOUT_SECS
     while time.time() < deadline:
@@ -156,8 +166,15 @@ def wait_wall(entry: dict, kind: str, say, ctl: Optional[control.RunControl]) ->
             ctl.wait(WALL_POLL_SECS)
         else:
             time.sleep(WALL_POLL_SECS)
-        if walls.check(tab) is None:
+        try:
+            done = cleared() if cleared is not None else walls.check(tab) is None
+        except Exception as exc:
+            logger.debug("wall cleared-check failed: %s", exc)
+            done = False
+        if done:
             return True
+    corrections.record(job, "timeout", "wall", f"{label} not cleared in {WALL_TIMEOUT_SECS // 60} min",
+                       ats=entry.get("ats", ""))
     _note(f"I waited 15 minutes on {company}. Leaving that tab open and moving on.")
     return False
 
@@ -183,10 +200,10 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
                 return f"{job.get('company')} is still blocked, so I left its tab open unfilled."
         timed_out: set = set()          # one wall timeout, one announcement: never wait twice
 
-        def wait_once(kind: str) -> bool:
+        def wait_once(kind: str, cleared: Optional[Callable[[], bool]] = None) -> bool:
             if kind in timed_out:
                 return False
-            if wait_wall(entry, kind, say, ctl):
+            if wait_wall(entry, kind, say, ctl, cleared):
                 return True
             timed_out.add(kind)
             return False

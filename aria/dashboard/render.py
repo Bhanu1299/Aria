@@ -413,15 +413,17 @@ FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="
          '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600'
          '&family=Instrument+Serif&family=JetBrains+Mono:wght@500;600&display=swap">')
 
-TAB_NAMES = [("today", "Today"), ("applications", "Applications"), ("outreach", "Outreach"), ("answers", "My answers"),
+TAB_NAMES = [("today", "Today"), ("applications", "Applications"), ("sheet", "Sheet"), ("outreach", "Outreach"), ("answers", "My answers"),
              ("costs", "Costs"), ("system", "System")]
 TAB_SUBS = {"today": "what needs you now",
             "applications": "one row per company, roles nested; click a role for its timeline",
+            "sheet": "the Muse sheet itself, live: edit any cell here or in Google Sheets",
             "outreach": "LinkedIn notes to send and email threads waiting on you",
             "answers": "what Aria fills into application forms",
             "costs": "LLM spend, from GateLLM's per-call log + Aria's flight log",
             "system": "the run log, settings and data sources"}
 WIDE = {"applications", "costs", "system"}          # tables need more than the 860px column
+FULL = {"sheet"}                                    # the sheet's columns get the whole width
 # The System tab holds what used to be separate tabs; old links (#live …) still land on them.
 SYSTEM_PARTS = [("live", "Live run", "current or last pipeline run, from Aria's run log"),
                 ("settings", "Settings", "LLM providers and tier models"),
@@ -430,6 +432,7 @@ ICONS = {
     "today": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2'
              'M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     "applications": '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/>',
+    "sheet": '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/>',
     "outreach": '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/>',
     "answers": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/>',
     "costs": '<path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
@@ -460,7 +463,7 @@ def page(mdl: dict, tabs: Optional[dict] = None, token: str = "", badges: Option
         content = tabs.get(key, _no_data("not loaded"))
         head = ("" if key == "today" else
                 f'<header class="phead"><h1 class="ptitle">{e(name)}</h1><p class="psub">{e(TAB_SUBS[key])}</p></header>')
-        panes.append(f'<div class="tab{" wide" if key in WIDE else ""}" id="{key}-tab">{head}{content}</div>')
+        panes.append(f'<div class="tab{" wide" if key in WIDE else " full" if key in FULL else ""}" id="{key}-tab">{head}{content}</div>')
     if down:
         state = (f'<a class="srcstate" href="#health" title="{e(", ".join(down))}"><i class="dot"></i><span class="txt">'
                  f'{len(down)} source{"s" if len(down) != 1 else ""} down: {e(", ".join(down))}</span></a>')
@@ -470,13 +473,13 @@ def page(mdl: dict, tabs: Optional[dict] = None, token: str = "", badges: Option
             f'Loaded {mdl["now"]:%b %d, %H:%M}</span>{state}'
             f'<button id="themebtn" class="themebtn" type="button">{icon("theme")}<span class="txt">Light theme</span></button></div>')
     meta = f'<meta name="dashboard-token" content="{e(token)}">' if token else ""
-    from aria.dashboard import answers as ans, applications as apps
+    from aria.dashboard import answers as ans, applications as apps, sheet_tab
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="dark light">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}<title>Job Pipeline</title>'
-            f'<script>{THEME_BOOT}</script>{FONTS}<style>{CSS}{tabmod.TABS_CSS}{ans.CSS}</style></head><body>'
+            f'<script>{THEME_BOOT}</script>{FONTS}<style>{CSS}{tabmod.TABS_CSS}{ans.CSS}{sheet_tab.CSS}</style></head><body>'
             f'<div class="shell"><aside class="side"><div class="logo"><span class="mark"></span><span class="t">Job pipeline</span></div>'
             f'<nav class="tabs">{nav}</nav>{foot}</aside><main>{"".join(panes)}</main></div>'
-            f'<script>{tabmod.TABS_JS}{JS}{SUBTABS_JS}{THEME_JS}{tabmod.LIVE_JS}{tabmod.SETTINGS_JS}{ans.JS}{apps.JS}'
+            f'<script>{tabmod.TABS_JS}{JS}{SUBTABS_JS}{THEME_JS}{tabmod.LIVE_JS}{tabmod.SETTINGS_JS}{ans.JS}{apps.JS}{sheet_tab.JS}'
             '</script></body></html>')
 
 

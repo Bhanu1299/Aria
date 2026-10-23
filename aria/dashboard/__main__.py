@@ -7,11 +7,14 @@ Endpoints:
   POST /api/settings/test   {provider}              one tiny call through GateLLM
   POST /api/settings/tier   {tier, models: [...]}   edit a tier's model chain
   POST /api/answers         {op, ...}               answer-bank edits (My answers tab)
+  GET  /api/sheet?tab=jobs|applied                  the Muse sheet tab, read fresh (Sheet tab polls it)
+  POST /api/sheet/cell      {tab, row, column, value, expect, company, role}   one sheet cell
   GET  /review-img?f=x.png  a review screenshot / field crop from ~/.aria/reviews
   GET  /health
 
-The only writes: GateLLM keys/tiers (settings.py) and the answer bank (answers.py →
-aria.features.answer_bank). Everything else is read-only.
+The only writes: GateLLM keys/tiers (settings.py), the answer bank (answers.py →
+aria.features.answer_bank) and single Muse sheet cells (sheet_tab.py → Sheets API). Everything
+else is read-only.
 
 Every request must carry a Host of 127.0.0.1/localhost on our port (DNS rebinding);
 POSTs also need this process's random token (in the page) and, if the browser sends an
@@ -49,7 +52,7 @@ def render_page(token: str = "") -> str:
 def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = None, flight: Optional[list] = None,
               runs: Optional[list] = None) -> str:
     """Every tab from already-loaded sources (tests pass fixtures here). Each tab is guarded."""
-    from aria.dashboard import answers, applications, costs, health, model, outreach, render, tabs, today
+    from aria.dashboard import answers, applications, costs, health, model, outreach, render, sheet_tab, tabs, today
     from aria.dashboard import settings as st
     from aria.observability import run_log
     mdl = model.build(srcs, now)
@@ -66,6 +69,7 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
     guard("today", lambda: today.render(mdl, questions) + render.today_extras(mdl))
     guard("outreach", lambda: outreach.render(mdl))
     guard("answers", lambda: answers.render(srcs.get("reviews")))
+    guard("sheet", sheet_tab.render)
     guard("applications", lambda: applications.render(mdl) + render.funnel_details(mdl) + render.all_jobs_table(mdl))
     guard("health", lambda: health.render(mdl))
     guard("live", lambda: tabs.live_tab(run_log.read_runs(10) if runs is None else runs, apps=open_apps()))
@@ -106,8 +110,17 @@ def runs_json() -> dict:
 
 
 def settings_action(path: str, body: dict) -> tuple:
-    """(status, json) for a POST: GateLLM settings or answer-bank edits — the only writes."""
-    from aria.dashboard import answers
+    """(status, json) for a POST: GateLLM settings, answer-bank edits or a sheet cell — the only writes."""
+    from aria.dashboard import answers, sheet_tab
+    if path == "/api/sheet/cell":
+        from aria.integrations import sheets
+        try:
+            return 200, sheet_tab.edit(body)
+        except (sheet_tab.SheetEditError, sheets.SheetError) as exc:
+            return 400, {"error": str(exc)}
+        except Exception as exc:
+            logger.error("dashboard: sheet edit failed: %s", type(exc).__name__)   # never the value
+            return 500, {"error": f"failed: {type(exc).__name__}"}
     from aria.dashboard import settings as st
     if path == "/api/answers":
         try:
@@ -140,8 +153,14 @@ def settings_action(path: str, body: dict) -> tuple:
     return 404, {"error": "not found"}
 
 
+def sheet_json(tab: str) -> dict:
+    from aria.dashboard import sheet_tab
+    return sheet_tab.data(tab)
+
+
 def make_handler(build: Callable[[], str], token: str, port_ref: list,
-                 runs: Callable[[], dict] = runs_json, act: Callable = settings_action):
+                 runs: Callable[[], dict] = runs_json, act: Callable = settings_action,
+                 sheet: Callable[[str], dict] = sheet_json):
     class Handler(BaseHTTPRequestHandler):
         def _host_ok(self) -> bool:
             host = (self.headers.get("Host") or "").lower()
@@ -159,6 +178,10 @@ def make_handler(build: Callable[[], str], token: str, port_ref: list,
                 return self._send(200, "ok", "text/plain")
             if path == "/api/runs":
                 return self._send(200, json.dumps(runs()), "application/json")
+            if path == "/api/sheet":
+                from urllib.parse import parse_qs, urlparse
+                tab = (parse_qs(urlparse(self.path).query).get("tab") or ["jobs"])[0]
+                return self._send(200, json.dumps(sheet(tab)), "application/json")
             if path == "/review-img":
                 return self._review_img()
             if path not in ("/", "/index.html"):

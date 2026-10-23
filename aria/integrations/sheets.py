@@ -244,6 +244,39 @@ class JobSheet:
             raise SheetError(f"Aria doesn't write the {bad[0]!r} column.")
         return self._update_row(row, fields, note, company, role)
 
+    def table(self) -> dict:
+        """The whole tab as it is: {"headers": [...], "rows": [{"row": n, "cells": [...]}]}.
+        Headers are deduped ("Outreach", "Outreach_2") so each names one column; cells are padded."""
+        values = self._read()
+        if not values:
+            return {"headers": [], "rows": []}
+        headers = dedupe_headers(values[0])
+        width = max([len(headers)] + [len(v) for v in values[1:]])
+        headers += [""] * (width - len(headers))
+        rows = [{"row": i, "cells": [str(c) for c in vals] + [""] * (width - len(vals))}
+                for i, vals in enumerate(values[1:], start=2) if any(str(c).strip() for c in vals)]
+        return {"headers": headers, "rows": rows}
+
+    def set_cell(self, row: int, column: str, value: str, expect: Optional[str] = None,
+                 company: Optional[str] = None, role: Optional[str] = None) -> int:
+        """Write one existing cell, found by column header and by the row's company/role (rows move
+        when the sheet is sorted). `expect` = the value the caller saw; if the sheet now holds
+        something else, nothing is written. Returns the row written."""
+        values = self._read()
+        if not values:
+            raise SheetError("The job sheet is empty.")
+        headers = dedupe_headers(values[0])
+        col = self._index(headers).get(_norm(column)) if column else None
+        if col is None:
+            raise SheetError(f"The job sheet has no {column!r} column.")
+        row = self._resolve_row(values, headers, row, company, role)
+        current = values[row - 1][col] if col < len(values[row - 1]) else ""
+        if expect is not None and current.strip() != expect.strip():
+            raise SheetError(f"That cell changed in the sheet since you loaded it (it now says {current[:60]!r}).")
+        self._write({f"{col_letter(col)}{row}": value})
+        logger.info("sheets: %s row %d %s set (%d chars)", self.tab, row, column, len(value))
+        return row
+
     def _update_row(self, row: int, fields: dict[str, str], note: str,
                     company: Optional[str], role: Optional[str]) -> int:
         values = self._read()
@@ -302,6 +335,13 @@ class JobSheet:
 
 def default_sheet() -> JobSheet:
     return JobSheet(config.MUSE_SHEET_ID, config.MUSE_SHEET_TAB)
+
+
+def tab_sheet(tab: str) -> JobSheet:
+    """The jobs tab or the Applied tab of the Muse sheet — no other tab."""
+    if tab not in (config.MUSE_SHEET_TAB, config.MUSE_APPLIED_TAB):
+        raise SheetError(f"{tab!r} isn't one of the job sheet's tabs.")
+    return JobSheet(config.MUSE_SHEET_ID, tab)
 
 
 def get_next_job(status: str = STATUS_NEW) -> Optional[dict]:

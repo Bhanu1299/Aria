@@ -59,9 +59,38 @@ def bank(tmp_path, monkeypatch):
     ("https://jobs.ashbyhq.com/luminai/ba606839", "ashby"),
     ("https://nike.wd1.myworkdayjobs.com/en-US/nke/job/x", "workday"),
     ("https://amazon.jobs/en/jobs/10581943", None),
+    ("https://careers-acme.icims.com/jobs/1234/engineer/job", "icims"),
+    ("https://app.joinhandshake.com/stu/jobs/9876", "handshake"),
+    ("https://jobs.jobvite.com/ookla/job/oAaCAfwG", "jobvite"),
+    ("https://acme.applytojob.com/apply/xyz", "jazzhr"),
+    ("https://wd3.myworkdaysite.com/recruiting/acme/External/job/1", "workday"),
+    ("https://fa-x.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/4237", "oracle"),
+    ("https://notgreenhouse.io.evil.example/jobs/1", None),
 ])
 def test_identify(url, name):
     assert identify(url) == name
+
+
+@pytest.mark.parametrize("html,name", [
+    ('<div data-automation-id="jobPostingHeader">Engineer</div>', "workday"),
+    ('<button data-automation-id="adventureButton">Apply</button>', "workday"),
+    ('<iframe id="icims_content_iframe" src="https://careers-x.icims.com/jobs/1?in_iframe=1"></iframe>', "icims"),
+    ('<div id="ashby_embed"></div>', "ashby"),
+    ('<a href="https://jobs.lever.co/acme/1">Lever</a>', None),        # a link to an ATS isn't its page
+    ("<h1>Careers at Acme</h1>", None),
+])
+def test_identify_from_page_marks_on_a_company_domain(html, name):
+    assert identify("https://careers.acme.com/job/1", html) == name
+
+
+@pytest.mark.parametrize("url,dom", [
+    ("https://careers.acme.com/job/1", "acme.com"),
+    ("https://jobs.acme.co.uk/x", "acme.co.uk"),
+    ("https://acme.com", "acme.com"),
+])
+def test_domain_for_the_unknown_ats_log(url, dom):
+    from aria.features.ats.detect import domain
+    assert domain(url) == dom
 
 
 def test_detect_only_names_atses_with_a_filler():
@@ -417,37 +446,6 @@ def test_fixtures_carry_no_keys_or_tokens():
     for path in FIX.glob("*.html"):
         hit = pattern.search(path.read_text())
         assert hit is None, f"{path.name}: {hit.group(0)[:40]}"
-
-
-# ── generic filler: posting page → the form behind its Apply link ───────────
-
-JOBVITE_POSTING = """<div class="jv-job-detail-top-actions">
-<a class="jv-button jv-button-primary jv-button-apply" href="/ookla/job/oAaCAfwG/apply">
-  Apply
-</a>
-<a class="jv-button jv-button-apply-later" ng-href="mailto:?subject=Apply for Data Engineer at Ookla">Apply Later</a>
-</div>"""
-
-
-def test_apply_form_link_follows_the_postings_apply_link():
-    url = "https://jobs.jobvite.com/ookla/job/oAaCAfwG"
-    assert ats.apply_form_link(JOBVITE_POSTING, url) == "https://jobs.jobvite.com/ookla/job/oAaCAfwG/apply"
-
-
-@pytest.mark.parametrize("html", [
-    '<a href="mailto:jobs@x.com">Apply</a>',
-    '<a href="javascript:void(0)">Apply now</a>',
-    '<a href="/careers">Apply later</a>',
-    '<a href="/jobs">See all jobs</a>',
-    '<button type="submit">Apply</button>',
-])
-def test_apply_form_link_ignores_non_links_and_other_buttons(html):
-    assert ats.apply_form_link(html, "https://x.example/job/1") is None
-
-
-def test_apply_form_link_accepts_common_wordings():
-    html = '<a href="https://x.example/job/1/form">Apply for this job</a><a href="/other">Apply now</a>'
-    assert ats.apply_form_link(html, "https://x.example/job/1") == "https://x.example/job/1/form"
 
 
 JOBVITE_COUNTRY = ["Select your location of residence and language", "US", "Canadian-French",

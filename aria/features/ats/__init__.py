@@ -1,22 +1,23 @@
 """features/ats — fill a job application form and stop for review. NEVER submits.
 
 fill_application(job, progress_fn, tab) → FillResult   (tab: the job's own agent_browser tab)
-  detect() names an ATS with a deterministic adapter (Greenhouse) → that adapter.
-  Otherwise → form_engine: scan / classify / fill / re-scan / verify / next page, in code
-  (the LLM only writes open-text answers). Only when the engine finds no fields at all does
-  the see-think-act vision loop (computer_use.run_loop) try, under the same never-submit rule.
+  A Greenhouse job URL → the Greenhouse filler straight away.
+  Otherwise → apply_target.resolve_apply_target (posting → Apply link / popup / modal /
+  embedded iframe → the settled form, its ATS named) → adapters.pick(ats): login → fill →
+  verify. The generic adapter is form_engine: scan / classify / fill / re-scan / verify /
+  next page, in code (the LLM only writes open-text answers). Only when the engine finds no
+  fields at all does the see-think-act vision loop (computer_use.run_loop) try, under the
+  same never-submit rule. Unknown ATS, unmapped and failed fields → corrections rows.
 
 job: a job-sheet row dict — needs "url"; "company"/"role"/"fields" improve answers.
 """
 from __future__ import annotations
 
-import html as _html
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-from urllib.parse import urljoin
 
 import aria.features.answer_bank as answer_bank
 from aria.features.ats.detect import detect, identify
@@ -27,33 +28,6 @@ NEVER_SUBMIT = (
     "Do NOT click Submit, Apply, Send or any button that sends the application — "
     "return 'confirm' as soon as every field you can fill is filled."
 )
-
-
-_ANCHOR = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.I | re.S)
-_HREF = re.compile(r"""\bhref\s*=\s*["']([^"']+)["']""", re.I)
-_APPLY_TEXT = re.compile(r"apply(?: now| online| here| for this (?:job|position|role))?|i'?m interested", re.I)
-_HAS_FIELDS_JS = """() => Array.from(document.querySelectorAll('input, textarea, select')).filter(e =>
-  !['hidden', 'search', 'submit', 'button'].includes((e.type || '').toLowerCase()) && e.offsetParent !== null).length"""
-# An ATS form embedded in a company careers page.
-_ATS_FRAME_JS = """() => (Array.from(document.querySelectorAll('iframe')).map(f => f.src || '')
-  .find(s => /lever\\.co|ashbyhq\\.com|jobvite\\.com|smartrecruiters\\.com|workable\\.com|bamboohr\\.com|icims\\.com|recruitee\\.com|breezy\\.hr|myworkdayjobs\\.com/i.test(s)) || '')"""
-# A button that only OPENS the form (the page has no fields yet, so nothing can be sent).
-_OPEN_FORM_BUTTON = re.compile(r"^\s*(?:apply(?: now| for this (?:job|position|role))?|i'?m interested)\s*$", re.I)
-
-
-def apply_form_link(html: str, base_url: str) -> Optional[str]:
-    """The URL behind a posting's "Apply" LINK (an <a href>, never a button), or None.
-    Following a link only opens the form — it can't send anything."""
-    for attrs, inner in _ANCHOR.findall(html or ""):
-        text = re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", inner))).strip()
-        href = _HREF.search(attrs)
-        if not href or not _APPLY_TEXT.fullmatch(text):
-            continue
-        target = _html.unescape(href.group(1)).strip()
-        if target.lower().startswith(("mailto:", "javascript:", "#", "tel:")):
-            continue
-        return urljoin(base_url, target)
-    return None
 
 
 _COUNTRY_ALIASES = answer_bank.COUNTRY_ALIASES
@@ -117,35 +91,6 @@ class FillResult:
         return sum(1 for r in self.review if r["source"] == source)
 
 
-def _open_form(agent_browser, progress_fn) -> str:
-    """From a posting, get to its form: the Apply link, an embedded ATS iframe, or an
-    Apply button on a page with no fields yet. Returns the posting's text (for the LLM)."""
-    say = progress_fn or (lambda _m: None)
-    posting = agent_browser.run(lambda page: page.inner_text("body"))[:8000]
-    if agent_browser.run(lambda page: page.evaluate(_HAS_FIELDS_JS)):
-        return posting
-    html, here = agent_browser.run(lambda page: (page.content(), page.url))
-    form = apply_form_link(html, here)
-    if not form:
-        form = agent_browser.run(lambda page: page.evaluate(_ATS_FRAME_JS)) or None
-    if form:
-        say("That's the job posting. Opening its application form.")
-        agent_browser.navigate(form, settle_secs=3.0)
-        return posting
-    def click_open(page) -> bool:
-        for loc in page.locator("button, [role=button]").all():
-            try:
-                if loc.is_visible() and _OPEN_FORM_BUTTON.match(loc.inner_text() or ""):
-                    loc.click(timeout=4000)
-                    return True
-            except Exception:
-                continue
-        return False
-    if agent_browser.run(click_open):
-        time.sleep(2.5)
-    return posting
-
-
 def _vision_fallback(job: dict, progress_fn, agent_browser) -> tuple:
     import aria.web.computer_use as computer_use
     import aria.web.dom_browser as dom_browser
@@ -166,32 +111,55 @@ def _vision_fallback(job: dict, progress_fn, agent_browser) -> tuple:
     return status, review
 
 
+def _from_report(adapter: str, seen: str, report, tab: Optional[str]) -> FillResult:
+    return FillResult(ats=adapter, identified=seen, form_url=report.form_url, title=report.title,
+                      company=report.company, description=report.description, review=report.rows,
+                      filled=report.filled, tab=tab, error=report.error, pages=report.pages,
+                      stopped_at=report.stopped_at)
+
+
+def log_corrections(job: dict, ats_name: str, rows: list, error: str, run: Optional[Callable]) -> None:
+    """Unmapped (needs_me) and failed fields, and a fill error, each as a correction row.
+    One page snapshot per kind, on its first row. Never raises."""
+    from aria.features.ats import corrections
+    for kind, source in (("unmapped_field", "needs_me"), ("failed_field", "failed")):
+        for n, r in enumerate(x for x in rows if x.get("source") == source):
+            detail = (r.get("label") or r.get("name") or "")[:200] + (f" — {r['note']}" if r.get("note") else "")
+            corrections.record(job, kind, "fill", detail, ats=ats_name, run=run if n == 0 else None)
+    if error:
+        corrections.record(job, "fill_error", "fill", error, ats=ats_name, run=run)
+
+
 def _generic(job: dict, progress_fn, tab: Optional[str] = None,
              wait_fn: Optional[Callable[[str], bool]] = None) -> FillResult:
-    """The form engine in the job's tab. computer_use / dom_browser call agent_browser with
-    no tab, so everything runs inside use_tab(tab), keeping the caller's pause/stop gate."""
+    """posting → resolve_apply_target (link / popup / modal / iframe, redirects settled, ATS
+    named) → that ATS's adapter: login → fill → verify. Everything runs inside use_tab(tab),
+    keeping the caller's pause/stop gate."""
     import aria.web.agent_browser as agent_browser
-    from aria.features.ats import form_engine
-    from aria.features.ats.greenhouse import _gateway_up
+    from aria.features.ats import adapters
+    from aria.features.ats.apply_target import Tab, resolve_apply_target
 
     result = FillResult(ats="generic", company=job.get("company", ""), title=job.get("role", ""), tab=tab)
     try:
         with agent_browser.use_tab(tab, gate=agent_browser.current_gate()):
-            agent_browser.navigate(job["url"], settle_secs=3.0)
-            posting = _open_form(agent_browser, progress_fn)
-            llm_up = _gateway_up()
-            eng = form_engine.fill(job, posting, progress_fn=progress_fn, llm_available=llm_up, wait_fn=wait_fn)
-            result.form_url = eng.form_url or agent_browser.run(lambda page: page.url)
-            result.pages, result.stopped_at = eng.pages, eng.stopped_at
-            if eng.stopped_at == "no fields" and not eng.error:
-                status, result.review = _vision_fallback(job, progress_fn, agent_browser)
-                result.stopped_at = "vision fallback"
-                if status not in ("confirm", "needs_input"):
-                    result.error = f"No form fields found, and the browser agent stopped early ({status}). Check the form."
+            t = Tab.of(tab)
+            t.navigate(job["url"], settle_secs=3.0)
+            target = resolve_apply_target(t, job, progress_fn, wait_fn)
+            adapter = adapters.pick(target.ats)
+            ctx = adapters.ApplyContext(job=job, target=target, progress_fn=progress_fn or (lambda _m: None),
+                                        wait_fn=wait_fn)
+            if not adapter.login(t, ctx):
+                result.identified, result.form_url = target.identified, target.url
+                result.error = "I couldn't get past its sign-in page, so the form is still empty."
                 return result
-        result.review, result.filled, result.error = eng.review, eng.filled, eng.error
-        if not llm_up:
-            result.error = result.error or "The LLM gateway was down, so open-text answers weren't written."
+            report = adapter.fill(t, ctx)
+            readback = adapter.verify(t, ctx)
+            if readback.mismatches:
+                logger.info("read-back: %d field(s) didn't stick: %s", len(readback.mismatches), readback.mismatches)
+            log_corrections(job, target.identified or adapter.name, report.rows, report.error, t.run)
+        result = _from_report(adapter.name, target.identified, report, tab)
+        result.company = result.company or job.get("company", "")
+        result.title = result.title or job.get("role", "")
     except Exception as exc:
         logger.error("generic fill failed: %s", exc)
         result.error = f"The form fill failed: {exc}"
@@ -219,11 +187,16 @@ def fill_application(job: dict, progress_fn: Optional[Callable[[str], None]] = N
         from aria.features.ats import greenhouse
         gh_tab = tab or greenhouse.TAB
         gh = greenhouse.fill(job, progress_fn, tab=gh_tab)
+        try:
+            import aria.web.agent_browser as agent_browser
+            log_corrections(job, "greenhouse", gh.review, gh.error, lambda fn: agent_browser.run(fn, tab=gh_tab))
+        except Exception as exc:
+            logger.debug("greenhouse corrections not logged: %s", exc)
         return FillResult(ats="greenhouse", identified=seen, form_url=gh.form_url, title=gh.title,
                           company=gh.company, description=gh.description, review=gh.review,
                           filled=gh.filled, tab=gh_tab, error=gh.error)
     if progress_fn and seen:
         progress_fn(f"That's a {seen.title()} form — filling it field by field.")
     result = _generic(job, progress_fn, tab, wait_fn) if wait_fn is not None else _generic(job, progress_fn, tab)
-    result.identified = seen
+    result.identified = result.identified or seen
     return result

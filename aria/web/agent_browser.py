@@ -14,6 +14,7 @@ Public API:
   use_tab(name, gate=None)              context manager: this thread's tab=None calls go to
                                         `name`; gate() runs before each of them (pause/stop)
   attach({name: url})                   bind names to already-open tabs by host + path
+  rebind(name, page)                    inside run(): the name now means another page (a popup)
   open_in_tab(url)                      "open X": a new background tab, returns its name
   has_tab / close_tab / front_tabs(names)
   close()                               disconnect (Chrome keeps running) and stop the worker
@@ -295,6 +296,17 @@ def attach(wanted: dict) -> set:
                     continue
         return bound
     return _submit(_do)
+
+
+def rebind(name: Optional[str], page) -> None:
+    """Worker thread only (call it inside run()): `name` now means `page` — e.g. the form a
+    posting's Apply button opened in a new tab. The old page stays open; nothing is raised."""
+    global _page
+    page = _prepare(page)
+    if name is None:
+        _page = page
+    else:
+        _tabs[name] = page
 
 
 def has_tab(name: str) -> bool:

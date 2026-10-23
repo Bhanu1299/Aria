@@ -66,6 +66,11 @@ class TTLCache:
                 self._items[key] = (self._clock(), src)
         return src
 
+    def drop(self, key: str) -> None:
+        """Forget `key` (after a write) so the next load reads it fresh."""
+        with self._lock:
+            self._items.pop(key, None)
+
 
 CACHE = TTLCache()
 

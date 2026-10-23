@@ -11,6 +11,7 @@ Tables owned here:
   application_runs — every apply-pipeline step: fill / submit / skip / error, with cost
   answer_changes   — every edit to the answer bank (dashboard / review), for history + undo
   generated_answers — LLM-written open-text form answers, reused on the same question
+  apply_corrections — every apply failure (unknown ATS, unmapped field, wall, timeout), to fix after a batch
 """
 
 from __future__ import annotations
@@ -104,6 +105,23 @@ CREATE TABLE IF NOT EXISTS generated_answers (
 """
 
 
+_CREATE_APPLY_CORRECTIONS = """
+CREATE TABLE IF NOT EXISTS apply_corrections (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_url    TEXT    NOT NULL DEFAULT '',
+    company    TEXT    NOT NULL DEFAULT '',
+    row        INTEGER,
+    ats        TEXT    NOT NULL DEFAULT '',
+    step       TEXT    NOT NULL DEFAULT '',   -- resolve | login | fill | wall
+    kind       TEXT    NOT NULL DEFAULT '',   -- unknown_ats | unmapped_field | failed_field | login_failed | captcha | timeout | …
+    detail     TEXT    NOT NULL DEFAULT '',
+    page_url   TEXT    NOT NULL DEFAULT '',
+    snapshot   TEXT    NOT NULL DEFAULT '',   -- ~/.aria/corrections/<stem> (.png + .html)
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+
 def get_connection() -> sqlite3.Connection:
     """
     Open (creating if needed) ~/.aria/aria.db, ensure all tables exist,
@@ -121,5 +139,6 @@ def get_connection() -> sqlite3.Connection:
     conn.execute(_CREATE_APPLICATION_RUNS)
     conn.execute(_CREATE_ANSWER_CHANGES)
     conn.execute(_CREATE_GENERATED_ANSWERS)
+    conn.execute(_CREATE_APPLY_CORRECTIONS)
     conn.commit()
     return conn

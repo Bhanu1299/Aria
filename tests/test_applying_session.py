@@ -45,8 +45,11 @@ def env(monkeypatch, tmp_path):
                         sheet.append((row, status, note)) or row)
     monkeypatch.setattr(ats_submit, "page_confirms", lambda tab: False)
     monkeypatch.setattr(control, "current", None)
+    notes, fixes = [], []
+    monkeypatch.setattr(session.notifier, "send_notification", lambda title, body: notes.append((title, body)))
+    monkeypatch.setattr(session.corrections, "record", lambda job, kind, step, detail="", **kw: fixes.append((kind, step)))
     commands._asking.clear()
-    yield {"said": said, "front": front, "browser": browser, "sheet": sheet}
+    yield {"said": said, "front": front, "browser": browser, "sheet": sheet, "notes": notes, "fixes": fixes}
     if control.current is not None:
         control.current.stop()
     if session._thread is not None:
@@ -147,6 +150,18 @@ def test_fill_one_waits_at_a_wall_then_continues(monkeypatch, env):
     monkeypatch.setattr(applicator, "run_application", lambda job, **kw: "filled")
     assert session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=control.RunControl()) == "filled"
     assert env["said"] == ["Ookla is showing a CAPTCHA. Please clear it in its tab in Aria's Chrome; I'll wait."]
+    assert env["notes"] == [("Aria — Ookla", "A CAPTCHA in its tab in Aria's Chrome. Clear it and I'll carry on.")]
+    assert env["fixes"] == [("captcha", "wall")]
+    assert env["browser"]["fronted"] == []           # the tab is never raised
+
+
+def test_wall_timeout_is_logged_and_the_tab_left_open(monkeypatch, env):
+    monkeypatch.setattr(session.walls, "check", lambda tab: "captcha")
+    monkeypatch.setattr(session, "WALL_POLL_SECS", 0.01)
+    monkeypatch.setattr(session, "WALL_TIMEOUT_SECS", 0.05)
+    entry = {"id": "apply-1", "company": "Ookla", "url": "https://jobs.jobvite.com/ookla/job/1"}
+    assert session.wait_wall(entry, "captcha", env["said"].append, None) is False
+    assert env["fixes"] == [("captcha", "wall"), ("timeout", "wall")]
 
 
 def test_fill_one_stop_leaves_tab_open(monkeypatch, env):

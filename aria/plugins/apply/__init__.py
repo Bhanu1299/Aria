@@ -6,6 +6,9 @@ Tools:
   apply_job      — fill the application for the next sheet job, a given sheet row,
                    or a URL, and stop for review (aria/features/applicator.py).
                    NEVER submits.
+  job_status     — set a sheet row's Status (Not applied / In review / Skipped / Not gonna
+                   apply) through the Sheets API. Never "Applied": that comes only from the
+                   user's own words ("mark row 19 as applied") via the applying pre-handler.
   job_outreach_draft — save a job outreach email as a draft in the JOBS Gmail
                    account (GOOGLE_JOBS_ACCOUNT). Never sends; never the personal account.
   job_outreach   — the outreach loop over the sheet (aria/features/outreach): people →
@@ -33,6 +36,7 @@ from aria.observability import run_log
 logger = logging.getLogger(__name__)
 
 CURRENT_JOB_KEY = "sheet_job"
+JOB_STATUS_CHOICES = ("Not applied", "In review", "Skipped", "Not gonna apply")
 
 
 PICK_RULE = "first row from the top whose Status means not handled yet (blank / new / Not applied)"
@@ -102,6 +106,7 @@ class ApplyPlugin(_plugin_base.PluginBase):
     def register(self, registry: ToolRegistry) -> None:
         registry.register(self._job_from_sheet_tool())
         registry.register(self._apply_job_tool())
+        registry.register(self._job_status_tool())
         registry.register(self._job_outreach_draft_tool())
         registry.register(self._job_outreach_tool())
 
@@ -212,6 +217,52 @@ class ApplyPlugin(_plugin_base.PluginBase):
                     "url": {"type": "string", "description": "Application URL (optional)"},
                 },
                 "required": [],
+            },
+            execute=execute,
+        )
+
+    def _job_status_tool(self) -> ToolDescriptor:
+        allowed = {s.lower(): s for s in JOB_STATUS_CHOICES}
+
+        def execute(params: dict) -> str:
+            try:
+                row = int(params.get("row"))
+            except (TypeError, ValueError):
+                return "Which row? Give the sheet row number."
+            status = str(params.get("status") or "").strip()
+            if status.lower() == sheets.STATUS_APPLIED.lower():
+                return (f"Applied is set only from the user's own words. Tell them to say "
+                        f"'mark row {row} as applied'.")
+            if status.lower() not in allowed:
+                return f"Status must be one of: {', '.join(JOB_STATUS_CHOICES)}."
+            try:
+                job = sheets.get_job(row)
+                if job is None:
+                    return f"Row {row} isn't a job in your sheet."
+                written = sheets.set_status(row, allowed[status.lower()], f"{allowed[status.lower()]} (asked by voice)",
+                                            company=job["company"] or None, role=job["role"] or None)
+            except sheets.SheetError as exc:
+                return str(exc)
+            except Exception as exc:
+                logger.error("job_status failed: %s", exc)
+                return "I couldn't update your job sheet right now."
+            return f"Row {written} ({job['role']} at {job['company']}) is now {allowed[status.lower()]}."
+
+        return ToolDescriptor(
+            name="job_status",
+            description=(
+                "Set the Status of one row in the user's job sheet (the Muse sheet) through the "
+                "Sheets API. Use this — never the browser — for 'mark row 12 as skipped', 'set "
+                "John Deere back to not applied'. It can't set Applied; for that the user says "
+                "'mark row N as applied'."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "row": {"type": "integer", "description": "Sheet row number"},
+                    "status": {"type": "string", "enum": list(JOB_STATUS_CHOICES)},
+                },
+                "required": ["row", "status"],
             },
             execute=execute,
         )

@@ -126,8 +126,8 @@ def find_empty_required_fields() -> list[dict]:
             let selector = '';
             if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) {
                 selector = '#' + CSS.escape(el.id);
-            } else if (el.name && document.querySelectorAll(el.tagName.toLowerCase() + '[name="' + el.name + '"]').length === 1) {
-                selector = el.tagName.toLowerCase() + '[name="' + el.name + '"]';
+            } else if (el.name && document.querySelectorAll(el.tagName.toLowerCase() + '[name="' + CSS.escape(el.name) + '"]').length === 1) {
+                selector = el.tagName.toLowerCase() + '[name="' + CSS.escape(el.name) + '"]';
             } else {
                 // A marker unique on the page: tag:nth-of-type(i) matched every i-th child of that type
                 // anywhere, so .first clicked the wrong element (e.g. a hidden 'Skip to main content').
@@ -222,10 +222,10 @@ _DOM_EXTRACT_JS = """
         let selector = '';
         if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) {
             selector = '#' + CSS.escape(el.id);
-        } else if (el.name && document.querySelectorAll(el.tagName.toLowerCase() + '[name="' + el.name + '"]').length === 1) {
-            selector = el.tagName.toLowerCase() + '[name="' + el.name + '"]';
-        } else if (el.getAttribute('aria-label') && document.querySelectorAll('[aria-label="' + el.getAttribute('aria-label').replace(/"/g, '\\"') + '"]').length === 1) {
-            selector = '[aria-label="' + el.getAttribute('aria-label').replace(/"/g, '\\"') + '"]';
+        } else if (el.name && document.querySelectorAll(el.tagName.toLowerCase() + '[name="' + CSS.escape(el.name) + '"]').length === 1) {
+            selector = el.tagName.toLowerCase() + '[name="' + CSS.escape(el.name) + '"]';
+        } else if (el.getAttribute('aria-label') && document.querySelectorAll('[aria-label="' + CSS.escape(el.getAttribute('aria-label')) + '"]').length === 1) {
+            selector = '[aria-label="' + CSS.escape(el.getAttribute('aria-label')) + '"]';
         } else {
             // A marker unique on the page: tag:nth-of-type(i) matched every i-th child of that type
             // anywhere, so .first clicked the wrong element (e.g. a hidden 'Skip to main content').

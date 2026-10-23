@@ -5,7 +5,8 @@ check(tab)                → the same for an open tab; None on any error
 
 A CAPTCHA counts only when its challenge is VISIBLE: Greenhouse and others load an
 invisible reCAPTCHA on every form, which is not a wall. Login = sign-in wording plus a
-visible password box (WALL_JS appends "[password-field]" to the text when there is one).
+visible password box (WALL_JS appends "[password-field]" to the text when there is one) or a
+sign-in URL (/login, /signin, login.<host> — email-first and SSO pages have no password box).
 Agreement = an Accept / Decline privacy notice in front of the form — the user's consent
 to give, never clicked by Aria. WALL_JS decides it from the page itself: two visible real
 buttons (button / [role=button] / input[type=button|submit] / a), one reading "(I) Accept"
@@ -20,14 +21,23 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 NAMES = {"captcha": "a CAPTCHA", "login": "a login page", "email_code": "an email code check",
-         "agreement": "a privacy notice only you can accept"}
+         "agreement": "a privacy notice only you can accept",
+         "terms": "a terms box only you can tick, once for this company's Workday"}
 
-_CHALLENGE_FRAME = re.compile(r"recaptcha/api2/bframe|hcaptcha\.com/.*challenge|challenges\.cloudflare\.com", re.I)
-_HUMAN_TEXT = re.compile(r"verify (?:that )?you(?:'re| are) (?:a )?human|are you a robot|press (?:and|&) hold", re.I)
+# Challenge frames (never the invisible badge / checkbox anchor): reCAPTCHA, hCaptcha, Cloudflare
+# Turnstile, Arkose/FunCaptcha, DataDome, GeeTest, AWS WAF.
+_CHALLENGE_FRAME = re.compile(
+    r"recaptcha/(?:api2|enterprise)/bframe|hcaptcha\.com/.*challenge|challenges\.cloudflare\.com|"
+    r"arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com|geetest\.com|captcha\.awswaf\.com", re.I)
+_HUMAN_TEXT = re.compile(r"verify (?:that )?you(?:'re| are) (?:a )?human|are you a robot|press (?:and|&) hold|"
+                         r"complete the security check", re.I)
 _LOGIN_TEXT = re.compile(r"\b(?:sign in|log in|login)\b", re.I)
 _CODE_TEXT = re.compile(r"enter the (?:\d-digit )?code|verification code (?:we )?sent|code (?:we )?sent to your email|"
                         r"check your email for a code", re.I)
 PASSWORD_MARK = "[password-field]"
+# A sign-in page by its URL (email-first and SSO logins have no password box yet):
+# login.usajobs.gov/Account/Login, ubjobs.buffalo.edu/login, app.joinhandshake.com/login …
+_LOGIN_URL = re.compile(r"^https?://(?:login\.[^/]+/|[^/]+/(?:[^?#]*/)?(?:log-?in|sign-?in|sign_in|signon|sso)(?:[/?#]|$))", re.I)
 
 WALL_JS = """() => {
   const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
@@ -55,7 +65,7 @@ def detect(text: str, url: str, frames: list, agreement: bool = False) -> Option
         return "captcha"
     if _CODE_TEXT.search(text):
         return "email_code"
-    if PASSWORD_MARK in text and _LOGIN_TEXT.search(text):
+    if (PASSWORD_MARK in text or _LOGIN_URL.search(url or "")) and _LOGIN_TEXT.search(text):
         return "login"
     if agreement:                  # measured on the page by WALL_JS: two real buttons side by side
         return "agreement"

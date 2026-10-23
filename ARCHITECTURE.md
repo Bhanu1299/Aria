@@ -376,8 +376,10 @@ flowchart LR
     V["apply to the next job from Muse"] --> R["dispatcher rule → apply_job"]
     R --> S["sheet: next blank-Status row"]
     S --> D{"detect ATS<br/>(code)"}
-    D -->|Greenhouse| G["schema from page JSON<br/>planner → fill → verify"]
-    D -->|other| C["form engine: scan → planner → fill<br/>→ re-scan → verify → Next (never Submit)"]
+    D -->|Greenhouse URL| G["schema from page JSON<br/>planner → fill → verify"]
+    D -->|other| A["resolve_apply_target: Apply link / popup /<br/>modal / iframe → settled URL → ATS named"]
+    A --> P["adapter: login → fill → verify<br/>(Lever · Ashby · iCIMS · Handshake · Workday · generic)"]
+    P --> C["form engine: scan → planner → fill<br/>→ re-scan → verify → Next (never Submit)"]
     G & C --> RV["review: screenshot + markdown<br/>sheet → In review · cost → flight log"]
     RV --> U{"your words<br/>(pre-handler, not a tool)"}
     U -->|submit it| SB["learn corrections → click form's submit<br/>→ verify → Applied"]
@@ -386,8 +388,35 @@ flowchart LR
 ```
 
 - `aria/features/applicator.py` is the single entry point. `aria/features/ats/` holds
-  detection, the Greenhouse adapter, the form engine, the shared planner, the two LLM
-  tasks and the submit helper.
+  detection, `apply_target.py`, the adapters, the form engine, the shared planner, the two
+  LLM tasks, the submit helper and the correction log.
+- **Posting → form** (`apply_target.resolve_apply_target`, code only): an Apply *link* is
+  followed in the same tab; an Apply *button* is clicked only on a page with no fields (it
+  can't send anything), and its outcome is read: a new tab (the application's tab name moves
+  to it; the posting tab stays open), a URL change, or a dialog. Redirects settle before the
+  ATS is named from the final URL + DOM. Workday and Handshake pages are left to their
+  adapters, which start the application themselves.
+- **Adapters** (`ats/adapters/`): `detect / login / fill / verify` on a `Tab` handle (every
+  page call is one short job on the browser worker). The base class is the generic adapter
+  (the form engine); an ATS adapter adds its own pre-step and a `FIELD_KEYS` map from the
+  ATS's stable field names / `data-automation-id`s to answer-bank keys, so those fields are
+  filled by key whatever their label says. Lever → `/apply`, Ashby → `/application`, iCIMS →
+  the frame's URL, Handshake → Apply, keep the resume already on the account (upload only
+  when none is selected), stop at its dialog. Unknown ATS → the generic adapter.
+- **Workday** (`adapters/workday.py`): a per-tenant state machine — Apply → "Use My Last
+  Application" else "Apply Manually" → sign in with the tenant's Keychain login
+  (`aria/system/keychain.py`, keyed by tenant host) or create an account with the application
+  email + a generated password saved to the Keychain *before* the form is sent; the terms box
+  is the user's to tick (once per tenant) → the verification code / link from the jobs Gmail,
+  only when that account *is* the application email (`ats/email_code.py`) → the wizard. A
+  rejected login, a missing email and a page Workday won't leave are handed to the user, with
+  Workday's own error messages as the fields to answer. Passwords are typed straight into the
+  page: never in a prompt, a log, a review row or a snapshot (password boxes aren't form
+  fields, snapshots empty them).
+- **Correction log** (`ats/corrections.py`, aria.db `apply_corrections`): every unknown ATS
+  (its domain), missing Apply control, unmapped / failed field, failed login, wall and wall
+  timeout, with the page saved to `~/.aria/corrections/` (owner-only).
+  `python -m aria.features.ats.corrections --days 7` prints a batch grouped by kind.
 
 ### Form filling: code controls the flow, the LLM only writes
 
@@ -411,8 +440,8 @@ reused on the same question; company-specific ones are rewritten. After every an
 the page is re-scanned for revealed fields; every value is read back and refilled up
 to 2 times, then FAILED. Next / Continue is clicked only when the page verified and
 nothing required is left; Submit never. A wall that appears mid-form (CAPTCHA, login,
-an "I Accept / I Decline" privacy notice) brings the tab to front and waits for the
-user. Each application writes `~/.aria/reviews/<stem>.md` (summary: filled · unknown
+an "I Accept / I Decline" privacy notice) is named by voice and a notification, and Aria
+waits for the user without raising the tab, then carries on from the same step. Each application writes `~/.aria/reviews/<stem>.md` (summary: filled · unknown
 · failed) and `<stem>.log.json` (every field: type, value, source, status).
 `scripts/manual_fill_test.py` is the acceptance test on real postings.
 - Every application gets its own visible tab (`aria/features/applying/tabs.py`
@@ -464,8 +493,15 @@ Set by the user 2026-10-21. Code that touches applications is checked against th
    Updates note, for every tab where a confirmation page was seen or the user said
    "I submitted it". Every tab that's filled but not confirmed is asked about one at
    a time ("applied" / "not applied"); never marked Applied on a guess. Tabs stay open.
+   The user can also say it directly at any time: "mark it / row 19 / John Deere as
+   applied" (or not applied / skipped) writes that Status now — "it" is the tab in
+   front, else the job Aria last filled. The agent's `job_status` tool can set every
+   status except Applied, and the sheet is never edited by driving Google Sheets in the browser.
 5. **Dashboard.** The Live run tab shows each open application tab: company, role,
-   state, fields needing the user (`/api/runs` → `apps`).
+   state, fields needing the user (`/api/runs` → `apps`). The Sheet tab is the Muse
+   sheet itself (jobs + Applied tabs): re-read every 15 s while open, any cell
+   editable (Status as a dropdown). One cell per write through the Sheets API, found
+   again by company + role and refused if the sheet changed since the page showed it.
 6. **Tabs and control.** One persistent Chrome profile (`~/.aria/browser_profile`,
    the user's logins). Aria launches that Chrome detached with a 127.0.0.1 debug
    port and drives it over CDP, so tabs survive an Aria restart and are re-attached
@@ -629,10 +665,11 @@ aria/
   screen/               screen_qa · selection — screen intelligence
   state/                memory · db · session_notes · memory_extractor ·
                         auto_dream · away_summary — the memory layers
-  features/             applicator (apply → review → submit) · ats/ (detect ·
-                        greenhouse · answers · submit) · answer_bank · jobs · briefing · media ·
+  features/             applicator (apply → review → submit) · ats/ (detect · apply_target ·
+                        adapters/ · form_engine · planner · greenhouse · answers · submit ·
+                        email_code · corrections) · answer_bank · jobs · briefing · media ·
                         mac_controller · coder · scenes · summarizer · tips
-  system/               sleep_guard · prevent_sleep
+  system/               sleep_guard · prevent_sleep · keychain (portal logins, per tenant host)
   observability/        flight_recorder · wake_stats · run_log (pipeline steps + pick reasons → Live run tab)
   skills/               legacy local skills (see project state)
 training/               custom wake-word model pipeline (record → train → onnx)

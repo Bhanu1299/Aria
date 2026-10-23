@@ -8,6 +8,8 @@ Pure code, zero tokens, never an agent tool: no LLM can submit or close anything
   submit it | submit <company>    the tab in front | that company's tab; unclear → ask
   I submitted it | … <company>    the user submitted by hand
   skip this job | skip <company>  sheet Skipped; the tab stays open
+  mark it|row N|<company> as applied / not applied / skipped    that sheet Status, now (the
+                                  tab in front, else the job Aria last filled; anywhere in the sentence)
   close it | close <company> | close all     the only way an application tab closes
   applications are done           Applied for every submitted tab (confirmation seen or the
                                   user said so); then asks per filled-but-unconfirmed tab:
@@ -82,6 +84,16 @@ _CLOSE_ALL = re.compile(r"close (?:all|everything|all (?:the |my )?(?:tabs|appli
 _CLOSE_CO = re.compile(r"close (?:the )?(?P<co>.+?)(?:'s)? (?:tab|application|job)")
 _DONE = re.compile(r"(?:the |my )?applications? (?:are|is) (?:done|finished)|i'?m done with (?:the |my )?applications|"
                    r"done with (?:the |my )?applications|finish (?:up )?(?:the |my )?applications")
+# "mark it as applied", "mark row 19 as applied", "set John Deere to not applied" — anywhere in
+# the sentence ("yeah I've submitted, you can mark the field as applied"). Writes the sheet now.
+_MARK = re.compile(r"\b(?:mark|set|change|move) (?P<what>.+?)(?: as| to)? "
+                   r"(?P<st>not applied|not gonna apply|not going to apply|applied|skipped)\b")
+_QUESTION = re.compile(r"(?:what|which|why|how|when|did|do|does|have|has|is|was|were|can you tell)\b")
+_MARK_STATUS = {"applied": "Applied", "not applied": "Not applied", "skipped": "Skipped",
+                "not gonna apply": "Not gonna apply", "not going to apply": "Not gonna apply"}
+_MARK_IT = re.compile(r"(?:it|this|that|this one|that one|the (?:field|row|status|job|application|one|cell|sheet)|"
+                      r"this (?:job|application|row)|(?:the )?status(?: of (?:it|this|that))?)(?: in the sheet)?")
+_MARK_ROW = re.compile(r"(?:(?:row|number|job|line) (?:number )?)?(?P<n>\d{1,4})")
 _YES = re.compile(r"(?:yes|yeah|yep)(?: i (?:did|applied))?|applied|i applied(?: to it)?|i did")
 _NO = re.compile(r"(?:no|nope|not yet)(?: i didn'?t)?|not applied|i didn'?t(?: apply)?|didn'?t apply")
 
@@ -241,6 +253,79 @@ def _answer(q: str) -> Optional[str]:
     return None
 
 
+# -- mark <job> as <status> -------------------------------------------------------
+
+def _last_job() -> Optional[dict]:
+    """The job Aria last filled outside a run (apply_job remembers it)."""
+    import aria.state.memory as memory
+    from aria.plugins.apply import CURRENT_JOB_KEY
+    job = memory.get_persistent(CURRENT_JOB_KEY)
+    return job if isinstance(job, dict) and job.get("row") else None
+
+
+def _mark_target(what: str):
+    """(job dict, entry | None, None) or (None, None, question)."""
+    from aria.integrations import sheets
+    m = _MARK_ROW.fullmatch(what)
+    if m:
+        job = sheets.get_job(int(m.group("n")))
+        return (job, None, None) if job else (None, None, f"Row {m.group('n')} isn't a job in your sheet.")
+    if _MARK_IT.fullmatch(what):
+        live = _open_tabs()
+        if live:
+            entry, ask = (live[0], None) if len(live) == 1 else _target(None, "mark it")
+            if entry is not None:
+                return applicator._job_of(entry), entry, None
+            if ask and _last_job() is None:
+                return None, None, ask
+        job = _last_job()
+        if job:
+            return job, None, None
+        return None, None, "Which job? Say mark row 19 as applied, or the company's name."
+    co = re.sub(r"^(?:the )?(.+?)(?: (?:job|application|one|row|role))?$", r"\1", what).strip()
+    if len(co) < 3:
+        return None, None, "Which job? Say mark row 19 as applied, or the company's name."
+    word = re.compile(r"\b" + re.escape(co), re.I)
+    hits = [j for j in sheets.default_sheet().jobs() if word.search(j["company"] or "")]
+    if len(hits) == 1:
+        entry = next((e for e in tabs.by_company(co)), None)
+        return hits[0], entry, None
+    if hits:
+        rows = ", ".join(str(j["row"]) for j in hits[:6])
+        return None, None, f"{hits[0]['company']} has rows {rows}. Say mark row and the number."
+    return None, None, f"I couldn't find {co} in your sheet. Say mark row and the number."
+
+
+def _mark(q: str) -> Optional[str]:
+    from aria.integrations import sheets
+    m = _MARK.search(q)
+    if not m or _NEGATION.search(q[:m.start("st")] + q[m.end("st"):]) or _QUESTION.match(q):
+        return None
+    status = _MARK_STATUS[m.group("st")]
+    try:
+        job, entry, ask = _mark_target(m.group("what").strip())
+        if job is None:
+            return ask
+        company, role = job.get("company") or "that job", job.get("role") or ""
+        if entry is not None and status == sheets.STATUS_APPLIED:
+            if entry.get("state") != tabs.SUBMITTED:
+                tabs.update(entry["id"], state=tabs.SUBMITTED, submitted_by="user", note="you said you applied")
+            err = applicator.mark_applied(entry, "you said you applied")
+            if err:
+                return f"I couldn't update the sheet: {err}"
+            row = job.get("row")
+        else:
+            row = sheets.set_status(int(job["row"]), status, f"you said {status.lower()} (voice)",
+                                    company=job.get("company") or None, role=job.get("role") or None)
+    except sheets.SheetError as exc:
+        return str(exc)
+    except Exception as exc:
+        logger.error("mark status failed: %s", exc)
+        return "I couldn't update the sheet right now."
+    what = f"{role} at {company}" if role else company
+    return f"Marked {what} {status} in the sheet" + (f", row {row}." if row else ".")
+
+
 # -- entry point ----------------------------------------------------------------
 
 def handle(text: str) -> Optional[str]:
@@ -277,6 +362,9 @@ def handle(text: str) -> Optional[str]:
 
     if _DONE.fullmatch(q):
         return _done()
+    marked = _mark(q)
+    if marked is not None:
+        return marked
     if _CLOSE_ALL.fullmatch(q):
         return _close_all() if _open_tabs() else None
 

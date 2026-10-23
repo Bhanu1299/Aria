@@ -96,6 +96,7 @@ class FormField:
     options: list = field(default_factory=list)
     section: str = "questions"  # questions | eeoc | demographic | dom
     max_chars: int = 0        # the field's maxlength, 0 = none
+    key: str = ""             # bank key the ATS adapter knows this field by (its name / automation id)
 
 
 @dataclass
@@ -305,9 +306,9 @@ def _unknown(p: Planned, note: str) -> None:
 def _bank(f: FormField, job_ctx: dict, llm_available: bool):
     """(answer, matched key) from the bank for this field."""
     edu = _EDU_FIELD.match(f.name)
-    key = _EDU_KEY[edu.group(1)] if edu else None
-    if key:      # the education block: known by field name, whatever its label says
-        searchable = edu.group(1) in _SEARCHABLE
+    key = f.key or (_EDU_KEY[edu.group(1)] if edu else None)
+    if key:      # known by field name (an adapter's map, Greenhouse's education block), whatever the label says
+        searchable = bool(edu) and edu.group(1) in _SEARCHABLE
         found = answer_bank.lookup_key(key, options=None if searchable else (f.options or None),
                                        job=job_ctx, label=f.label)
     else:

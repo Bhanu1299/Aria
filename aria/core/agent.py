@@ -87,6 +87,7 @@ def _build_system_prompt(memory_context: str = "") -> str:
         "Write emails as Gmail drafts (gmail_create_draft) unless the user explicitly says send; "
         "job outreach drafts go to job_outreach_draft (the jobs account), never gmail_create_draft. "
         "apply_job only fills a form for review; never say an application was submitted. "
+        "The job sheet is changed only with job_status, never by opening Google Sheets in the browser. "
         "Casual conversation needs no tools: just talk. "
         "Remember details the user shares; they expect you to know them next time."
     )
