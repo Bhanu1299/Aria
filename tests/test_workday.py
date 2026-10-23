@@ -81,14 +81,34 @@ WIZARD2 = """<div data-automation-id="progressBar">My Experience</div>
 <button data-automation-id="bottom-navigation-next-button" onclick="document.getElementById('err').innerHTML =
   '<div data-automation-id=&quot;errorMessage&quot;>Error: How Did You Hear About Us? is required</div>'">Save and Continue</button>"""
 
-REVIEW = """<div data-automation-id="progressBar">Review</div><h2>Review</h2><p>Alex Rivera</p>
+REVIEW = """<div data-automation-id="progressBar"><div data-automation-id="progressBarActiveStep">current step 7 of 7
+Review</div></div><h2>Review</h2><p>Alex Rivera</p>
 <button data-automation-id="bottom-navigation-next-button" onclick="window.submitted = true">Submit</button>"""
+
+# Newer tenants (RTX, 2026-10-23): the wizard's progress bar shows on the sign-in step, a
+# spinner first, then Google / LinkedIn / "Sign in with email"; the boxes come after that click.
+NEW_SIGN_IN = MIRROR + """<div data-automation-id="progressBar">
+  <div data-automation-id="progressBarActiveStep">current step 1 of 7
+Create Account/Sign In</div><div data-automation-id="progressBarInactiveStep">My Information</div></div>
+<div id="slot">loading…</div>
+<script>setTimeout(() => { document.getElementById('slot').innerHTML = `<div data-automation-id="signInContent">
+  <button data-automation-id="GoogleSignInButton">Sign in with Google</button>
+  <button data-automation-id="SignInWithEmailButton" onclick="email()">Sign in with email</button></div>`; }, 700);
+function email() { document.querySelector('[data-automation-id=signInContent]').innerHTML = `
+  <label>Email Address <input data-automation-id="email"></label>
+  <label>Password <input type="password" data-automation-id="password"></label>
+  <button data-automation-id="signInSubmitButton" onclick="go()">Sign In</button>`; }
+function go() {
+  if (document.querySelector('[data-automation-id=password]').value === window.atob('%s')) location.href = '/en-US/External/wizard1';
+}</script>"""
 
 PAGES = {
     f"{BASE}/job/R1": POSTING % "",
     f"{BASE}/job/R2": POSTING % LAST_APP,
     f"{BASE}/job/R1/apply/applyManually": None,          # SIGN_IN, filled in per test (needs the saved password)
     f"{BASE}/job/R1/apply/useMyLastApplication": None,
+    f"{BASE}/job/R3": POSTING % LAST_APP.replace("/R1/", "/R3/"),
+    f"{BASE}/job/R3/apply/useMyLastApplication": "NEW_SIGN_IN",
     f"{BASE}/signin": None,
     f"{BASE}/create": CREATE,
     f"{BASE}/verify": VERIFY,
@@ -148,12 +168,14 @@ def context(browser):
     import base64
     ctx = browser.new_context()
     sign_in = SIGN_IN % base64.b64encode(SAVED.encode()).decode()
+    new_sign_in = NEW_SIGN_IN % base64.b64encode(SAVED.encode()).decode()
 
     def handle(route):
         url = route.request.url.split("?")[0]
         if url not in PAGES:
             return route.fulfill(status=404, body="not found")
-        route.fulfill(status=200, content_type="text/html; charset=utf-8", body=PAGES[url] or sign_in)
+        body = new_sign_in if PAGES[url] == "NEW_SIGN_IN" else (PAGES[url] or sign_in)
+        route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
     ctx.route("**/*", handle)
     yield ctx
     ctx.close()
@@ -193,7 +215,14 @@ def no_secret_anywhere(secret, caplog, said, tmp_dir):
     ({"create": True, "sign_in": True}, "create_account"),
     ({"code_box": True}, "verify_email"),
     ({"sign_in": True, "text": "Please verify your account. We've sent an email."}, "verify_email"),
-    ({"wizard": True, "sign_in": True}, "signed_in"),
+    ({"wizard": True}, "signed_in"),
+    ({"wizard": True, "step": "current step 2 of 7\nMy Information"}, "signed_in"),
+    # the progress bar shows on the sign-in step too: never "signed in" there (RTX, 2026-10-23)
+    ({"wizard": True, "sign_in": True}, "sign_in"),
+    ({"wizard": True, "sign_in": True, "email_button": True}, "sign_in"),
+    ({"wizard": True, "step": "current step 1 of 7\nCreate Account/Sign In"}, "loading"),
+    ({"wizard": True, "code_box": True}, "verify_email"),
+    ({"wizard": True, "text": "We've sent an email about your application"}, "signed_in"),
     ({}, "unknown"),
 ])
 def test_classify(state, want):
@@ -311,7 +340,7 @@ def test_review_page_is_the_end_and_submit_is_never_clicked(context):
     tab, holder = open_tab(context, f"{BASE}/review")
     report = WorkdayAdapter().fill(tab, ctx_for(f"{BASE}/review"))
     assert holder["page"].evaluate("window.submitted === true") is False
-    assert report.stopped_at == "no fields" and not report.rows       # no vision loop on Workday
+    assert report.stopped_at.startswith("Workday review page") and not report.rows   # no vision loop
 
 
 def test_password_boxes_are_never_form_fields(context):
@@ -326,3 +355,33 @@ def test_only_the_workday_adapter_reads_the_keychain():
     readers = sorted(str(p.relative_to(root)) for p in root.rglob("*.py")
                      if "keychain.get(" in p.read_text() and p.name != "keychain.py")
     assert readers == ["features/ats/adapters/workday.py"], readers
+
+
+# ── newer sign-in step (RTX, 2026-10-23) ────────────────────────────────────
+
+def test_new_sign_in_step_waits_chooses_email_and_signs_in(context, env, caplog, tmp_path):
+    caplog.set_level(logging.DEBUG)
+    keychain.save(HOST, "me@example.com", SAVED)
+    said = []
+    tab, holder = open_tab(context, f"{BASE}/job/R3")
+    ctx = ctx_for(f"{BASE}/job/R3", lambda kind, cleared=None: pytest.fail(f"asked the user: {kind}"), said)
+    assert WorkdayAdapter().login(tab, ctx) is True
+    assert ctx.target.url == f"{BASE}/wizard1"
+    assert any("last application" in m for m in said) and "Choosing Sign in with email." in said
+    no_secret_anywhere(SAVED, caplog, said, tmp_path)
+
+
+def test_new_sign_in_step_without_a_login_is_handed_to_you_not_filled(context, env, monkeypatch):
+    asked = []
+    tab, holder = open_tab(context, f"{BASE}/job/R3")
+    ctx = ctx_for(f"{BASE}/job/R3", lambda kind, cleared=None: asked.append(kind) or False)
+    assert WorkdayAdapter().login(tab, ctx) is False
+    assert asked == ["login"]
+
+
+def test_fill_on_the_sign_in_step_reports_an_error_never_an_empty_success(context, monkeypatch):
+    monkeypatch.setattr(wd, "LOAD_POLL_SECS", 0.1)
+    tab, holder = open_tab(context, f"{BASE}/job/R3/apply/useMyLastApplication")
+    holder["page"].wait_for_selector('[data-automation-id="SignInWithEmailButton"]')
+    report = WorkdayAdapter().fill(tab, ctx_for(f"{BASE}/job/R3/apply/useMyLastApplication"))
+    assert report.error and "sign-in" in report.error and not report.rows and not report.filled

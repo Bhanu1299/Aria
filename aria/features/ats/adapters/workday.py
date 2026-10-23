@@ -37,12 +37,17 @@ logger = logging.getLogger(__name__)
 
 MAX_STEPS = 12
 AFTER_CLICK_SECS = 2.5
+# Workday draws a step's content after its progress bar (a spinner in between): a page that
+# isn't recognizable yet is polled this many times before it counts as unrecognized.
+LOAD_WAITS = 8
+LOAD_POLL_SECS = 1.5
 
 STATE_JS = r"""() => {
   const vis = e => { if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const aid = a => vis(document.querySelector('[data-automation-id="' + a + '"]'));
   const box = document.querySelector('[data-automation-id="createAccountCheckbox"]');
   const code = document.querySelector('[data-automation-id="verificationCode"], input[name*="verification" i], input[autocomplete="one-time-code"]');
+  const step = document.querySelector('[data-automation-id="progressBarActiveStep"]');   // the bar itself lists every step
   return {
     posting: aid('adventureButton'),
     start: aid('applyManually') || aid('useMyLastApplication') || aid('autofillWithResume'),
@@ -50,6 +55,9 @@ STATE_JS = r"""() => {
     sign_in: aid('signInSubmitButton') || aid('signInContent') || (aid('password') && !aid('verifyPassword')),
     create: aid('createAccountSubmitButton') || aid('verifyPassword'),
     create_link: aid('createAccountLink'),
+    email_button: aid('SignInWithEmailButton'),
+    password_box: aid('password'),
+    step: step ? (step.innerText || '').trim().slice(0, 80) : '',
     terms: vis(box), terms_checked: !!(box && (box.checked || box.getAttribute('aria-checked') === 'true')),
     code_box: vis(code),
     wizard: aid('progressBar') || aid('applyFlowPage') || aid('bottom-navigation-next-button'),
@@ -59,13 +67,19 @@ STATE_JS = r"""() => {
   };
 }"""
 
+# The wizard's progress bar shows on the sign-in step too ("current step 1 of 7 Create
+# Account/Sign In"): on that step the progress bar is not "signed in".
+_LOGIN_STEP = re.compile(r"sign ?in|create account|log ?in", re.I)
+_REVIEW_STEP = re.compile(r"\breview\b", re.I)
 _VERIFY_TEXT = re.compile(r"verify your (?:email|account)|verification (?:email|link|code)|"
                           r"check your (?:email|inbox)|we(?:'ve| have)? sent (?:you )?an? (?:email|code)", re.I)
 
 
 def classify(s: dict) -> str:
-    """posting | start | sign_in | create_account | verify_email | signed_in | unknown."""
-    if s.get("wizard"):
+    """posting | start | sign_in | create_account | verify_email | signed_in | loading | unknown.
+    loading = the wizard is on its sign-in step but hasn't drawn the sign-in box yet."""
+    login_step = bool(_LOGIN_STEP.search(s.get("step") or ""))
+    if s.get("wizard") and not (s.get("sign_in") or s.get("create") or s.get("code_box") or login_step):
         return "signed_in"
     if s.get("create"):
         return "create_account"
@@ -77,7 +91,7 @@ def classify(s: dict) -> str:
         return "start"
     if s.get("posting"):
         return "posting"
-    return "unknown"
+    return "loading" if s.get("wizard") else "unknown"
 
 
 def tenant(url: str) -> str:
@@ -153,11 +167,16 @@ class WorkdayAdapter(Adapter):
         host = tenant(ctx.target.url or ctx.job.get("url", ""))
         email = self._email()
         say = ctx.progress_fn
-        tried_sign_in = created = verified = False
+        tried_sign_in = created = verified = email_form = False
         started = time.time()
-        for _ in range(MAX_STEPS):
+        waits = 0
+        for _ in range(MAX_STEPS + LOAD_WAITS):
             s = self._state(tab)
             state = classify(s)
+            if state in ("loading", "unknown") and waits < LOAD_WAITS:
+                waits += 1
+                time.sleep(LOAD_POLL_SECS)
+                continue
             if state == "signed_in":
                 ctx.target.url = tab.run(lambda page: page.url)
                 return True
@@ -170,6 +189,16 @@ class WorkdayAdapter(Adapter):
                 tab.run(lambda page, c=choice: _click_aid(page, c))
                 self._after_click(tab)
             elif state == "sign_in":
+                if s.get("email_button") and not s.get("password_box"):
+                    # Newer tenants: Google / LinkedIn / "Sign in with email" first; the email
+                    # and password boxes (and Create Account) appear after the email choice.
+                    if email_form:
+                        return self._hand_off(tab, ctx, "login", "the email sign-in form never appeared")
+                    say("Choosing Sign in with email.")
+                    tab.run(lambda page: _click_aid(page, "SignInWithEmailButton"))
+                    email_form = True
+                    self._after_click(tab)
+                    continue
                 cred = keychain.get(host, email)
                 if cred is None:
                     if s.get("create_link") and not created:
@@ -239,7 +268,16 @@ class WorkdayAdapter(Adapter):
         return self._hand_off(tab, ctx, "login", f"stuck on an unrecognized page ({tab.run(lambda page: page.url)[:120]})")
 
     def fill(self, tab: Tab, ctx: ApplyContext) -> FillReport:
+        s = self._state(tab)
+        if classify(s) != "signed_in":
+            report = FillReport(pages=0, stopped_at=f"Workday {s.get('step') or 'sign-in'} step",
+                                form_url=tab.run(lambda page: page.url),
+                                error="Workday is still on its sign-in step, so nothing was filled.")
+            ctx.report = report
+            return report
         report = super().fill(tab, ctx)
+        if report.stopped_at == "no fields" and not report.rows and _REVIEW_STEP.search(s.get("step") or ""):
+            report.stopped_at = "Workday review page (filled from your last application)"
         if report.stopped_at.startswith("next did nothing"):
             errors = self._state(tab).get("errors") or []
             for n, err in enumerate(errors):

@@ -338,6 +338,7 @@ def _fill_linkedin(job: dict, voice_ask_fn) -> "ats.FillResult":
         reason = (data or {}).get("reason", status) if isinstance(data, dict) else status
         result.error = f"LinkedIn Easy Apply stopped ({reason})."
         return result
+    result.stopped_at = "LinkedIn Easy Apply review"     # reached the review step (no field list)
     result.review = [
         {"name": e.get("selector", ""), "label": e.get("label", ""), "kind": e.get("field_type", ""),
          "value": "", "source": "needs_me", "required": True, "note": "still empty"}
@@ -434,6 +435,10 @@ def _run_application(
 
         result.tab = tab
         tabs.update(tab, company=company, role=role, ats=result.ats, form_url=result.form_url)
+        if not result.error and not result.filled and not result.review and result.stopped_at in ("no fields", ""):
+            # Nothing filled and nothing to review: the form was never reached (a sign-in step,
+            # a page still loading). Never report that as a filled application.
+            result.error = "I couldn't find the form on that page, so nothing was filled."
         if result.error and not result.review:
             tabs.update(tab, state=tabs.OPEN, note=result.error)
             _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, result.error)

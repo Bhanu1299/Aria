@@ -401,3 +401,28 @@ def test_pipeline_run_is_per_thread(env):
     t.join()
     assert seen == [None] and applicator._current_run() is run
     applicator._set_run(None)
+
+
+@pytest.mark.parametrize("stopped_at", ["no fields", ""])
+def test_reaching_no_form_is_a_failure_never_filled(monkeypatch, env, stopped_at):
+    # RTX Workday, 2026-10-23: nothing filled, nothing to review — it had stopped on sign-in.
+    def fill(job, progress_fn=None, tab=None):
+        return FillResult(ats="workday", form_url=FORM, review=[], filled={}, tab=tab, stopped_at=stopped_at)
+    monkeypatch.setattr(applicator.ats, "fill_application", fill)
+    out = applicator.run_application(dict(JOB))
+    assert out.startswith("I couldn't fill the application for ML Engineer at Acme")
+    assert "nothing was filled" in out and "Nothing needs you" not in out
+    assert [s for _, s, _ in env["sheet"]] == [sheets.STATUS_NEEDS_HUMAN]      # never "In review"
+    (entry,) = tabs.live()
+    assert entry["state"] == tabs.OPEN
+
+
+@pytest.mark.parametrize("stopped_at", ["Workday review page (filled from your last application)",
+                                        "Handshake dialog — Submit is yours", "LinkedIn Easy Apply review"])
+def test_a_named_stop_with_nothing_to_fill_is_still_a_fill(monkeypatch, env, stopped_at):
+    def fill(job, progress_fn=None, tab=None):
+        return FillResult(ats="workday", form_url=FORM, review=[], filled={}, tab=tab, stopped_at=stopped_at)
+    monkeypatch.setattr(applicator.ats, "fill_application", fill)
+    out = applicator.run_application(dict(JOB))
+    assert "form filled" in out
+    assert [s for _, s, _ in env["sheet"]] == [sheets.STATUS_IN_REVIEW]
