@@ -305,3 +305,50 @@ def test_verify_needs_the_whole_option_not_a_fragment(kind, want, actual, ok):
     f = planner.FormField("x", "Q", kind, True, ["No", "Not applicable", "Yes", "No, I do not have a disability"]
                           if kind != "combobox" else [])
     assert form_engine.matches(planner.Planned(f, want, "bank"), {"value": actual, "error": ""}) is ok
+
+
+# ── Ashby-style forms (2026-10-23: work authorization, essays, links were silently skipped) ──
+
+ASHBY_LIKE = """<style>._required_x::after{content:"*"}</style><form>
+<div><label class="_heading _required_x" for="loc">Location</label><input id="loc"></div>
+<div><label class="_heading" for="li">Link to your LinkedIn profile</label><input id="li"></div>
+<div><label class="_heading _required_x" for="wa">Are you legally authorized to work in the US for any employer?</label>
+  <div><button type="button" aria-pressed="false" data-option="yes"
+        onclick="this.setAttribute('aria-pressed','true');this.nextElementSibling.setAttribute('aria-pressed','false')">Yes</button
+  ><button type="button" aria-pressed="false" data-option="no"
+        onclick="this.setAttribute('aria-pressed','true');this.previousElementSibling.setAttribute('aria-pressed','false')">No</button
+  ><input type="checkbox" tabindex="-1" name="wa" style="position:absolute;opacity:0;width:1px;height:1px"></div></div>
+<div><label class="_heading" for="sp">Will you now or in the future require visa sponsorship?</label>
+  <div><button type="button" aria-pressed="false" data-option="yes">Yes</button><button type="button" aria-pressed="false"
+  data-option="no">No</button><input type="checkbox" tabindex="-1" name="sp" style="opacity:0"></div></div>
+<div><label class="_heading" for="ex">What makes you excited about the Acme mission?</label><textarea id="ex"></textarea></div>
+<div><label class="_heading" for="ot">If other, please specify below</label><textarea id="ot"></textarea></div>
+</form>"""
+
+
+def test_ashby_required_marks_and_yes_no_buttons_are_read(page):
+    page.set_content(ASHBY_LIKE)
+    got = {r["label"]: r for r in form_engine.scan(page)}
+    assert got["Location"]["required"] is True                        # a CSS-drawn asterisk
+    assert got["Link to your LinkedIn profile"]["required"] is False
+    wa = got["Are you legally authorized to work in the US for any employer?"]
+    assert (wa["kind"], wa["options"], wa["required"]) == ("buttons", ["Yes", "No"], True)
+    assert not [r for r in got.values() if r["kind"] == "checkbox"]  # the hidden checkboxes aren't fields
+
+
+def test_ashby_like_form_fills_buttons_links_and_optional_essays(page, bank):
+    data = json.loads(bank.read_text())
+    data["answers"]["work_authorization"] = "Yes"
+    bank.write_text(json.dumps(data))
+    page.set_content(ASHBY_LIKE)
+    spy = Spy()
+    res = form_engine.fill({"company": "Acme", "role": "Engineer"}, "posting", run=_run(page),
+                           draft_fn=spy.draft, guess_fn=spy.guess, llm_available=True)
+    rows = {r["label"]: r for r in res.review}
+    assert rows["Are you legally authorized to work in the US for any employer?"]["value"] == "Yes"
+    assert page.evaluate("document.querySelector('[data-option=yes]').getAttribute('aria-pressed')") == "true"
+    assert rows["Link to your LinkedIn profile"]["source"] == "bank"
+    # eligibility is never skipped silently, even optional: no answer in the bank → yours
+    assert rows["Will you now or in the future require visa sponsorship?"]["source"] == "needs_me"
+    assert rows["What makes you excited about the Acme mission?"]["source"] == "llm_draft"
+    assert rows["If other, please specify below"]["source"] == "skipped"

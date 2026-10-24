@@ -1,0 +1,99 @@
+"""tests/test_wake_verify.py — the wake model's hit is checked by Whisper before Aria wakes
+(2026-10-23: a video kept waking it; real and false hits both scored 0.70–0.73)."""
+from __future__ import annotations
+
+import time
+
+import numpy as np
+import pytest
+
+from aria.voice import wake_word
+from aria.voice.wake_word import WakeWordListener, heard_wake_word
+
+
+@pytest.mark.parametrize("text,ok", [
+    ("Aria, let's apply to some jobs", True),
+    ("Arya let's apply to some jobs", True),
+    ("hey aria what time is it", True),
+    ("so, Aria, open the dashboard", True),
+    ("Area, set a timer", True),                      # a sound-alike up front: you said the name
+    ("Good job, Michelle. I got really lucky", False),
+    ("the parking area was full", False),             # a sound-alike mid-sentence: dialogue
+    ("I'm just watching a video", False),
+    ("", False),
+])
+def test_heard_wake_word(text, ok):
+    assert heard_wake_word(text) is ok
+
+
+class Stream:
+    def __init__(self):
+        self.reads = 0
+
+    def read(self, n, exception_on_overflow=False):
+        self.reads += 1
+        time.sleep(0.005)
+        return np.zeros(n, dtype=np.int16).tobytes()
+
+
+class Transcriber:
+    def __init__(self, text, delay=0.05, boom=False, no_speech=0.1):
+        self.text, self.delay, self.boom, self.calls, self.no_speech = text, delay, boom, 0, no_speech
+
+    def check_wake(self, audio, timeout=5.0):
+        self.calls += 1
+        time.sleep(self.delay)
+        if self.boom:
+            raise RuntimeError("whisper down")
+        return self.text, self.no_speech
+
+
+def _listener(transcriber):
+    return WakeWordListener(lambda t: None, transcriber=transcriber)
+
+
+def test_verify_keeps_reading_the_mic_while_whisper_checks():
+    stream = Stream()
+    heard, chunks = _listener(Transcriber("Aria, apply")).\
+        _verify(stream, np.zeros(32000, dtype=np.int16), 512)
+    assert heard is True and len(chunks) == stream.reads > 0       # nothing said meanwhile is lost
+
+
+def test_verify_rejects_a_video():
+    heard, _ = _listener(Transcriber("good job Michelle"))._verify(Stream(), np.zeros(32000, dtype=np.int16), 512)
+    assert heard is False
+
+
+@pytest.mark.parametrize("t", [Transcriber("x", boom=True), Transcriber("x", delay=0.5)])
+def test_a_broken_or_slow_whisper_never_drops_a_real_wake(monkeypatch, t):
+    monkeypatch.setattr(wake_word, "_VERIFY_MAX_SECS", 0.1)
+    heard, _ = _listener(t)._verify(Stream(), np.zeros(32000, dtype=np.int16), 512)
+    assert heard is True
+
+
+def test_verify_can_be_turned_off(monkeypatch):
+    monkeypatch.setenv("ARIA_WAKE_VERIFY", "0")
+    t = Transcriber("good job Michelle")
+    assert _listener(t)._verify(Stream(), np.zeros(32000, dtype=np.int16), 512) == (True, [])
+    assert t.calls == 0
+
+
+def test_recording_starts_with_the_audio_read_during_the_check(monkeypatch, tmp_path):
+    monkeypatch.setattr(wake_word, "_WAV_PATH", str(tmp_path / "w.wav"))
+    loud = (np.ones(512, dtype=np.int16) * 4000).tobytes()
+
+    class Quiet(Stream):
+        def read(self, n, exception_on_overflow=False):
+            self.reads += 1
+            return np.zeros(n, dtype=np.int16).tobytes()
+    stream = Quiet()
+    path = _listener(None)._record_until_silence(stream, 16000, 512, prefix=[loud] * 20)
+    assert path is not None                               # the speech came only from the prefix
+
+
+def test_a_primed_aria_over_noise_is_rejected():
+    # the "Aria" prime makes Whisper write the name over room noise; its no_speech_prob gives it away
+    heard, _ = _listener(Transcriber("Aria", no_speech=0.56))._verify(Stream(), np.zeros(32000, dtype=np.int16), 512)
+    assert heard is False
+    heard, _ = _listener(Transcriber("Aria", no_speech=0.40))._verify(Stream(), np.zeros(32000, dtype=np.int16), 512)
+    assert heard is True

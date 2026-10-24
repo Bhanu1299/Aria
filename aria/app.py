@@ -108,6 +108,7 @@ transcriber_instance: Transcriber = None
 speaker: Speaker = None
 browser: BrowserExecutor = None
 hotkey_listener: HotkeyListener = None
+wake_word_listener: WakeWordListener = None
 _agent: Agent = None
 _dispatcher: Dispatcher = None
 
@@ -117,6 +118,16 @@ _dispatcher: Dispatcher = None
 # ---------------------------------------------------------------------------
 def _shutdown(signum, frame):
     print("\nAria stopping...")
+    # The wake word thread runs an FFT ~30x a second; if the process tears down around it,
+    # native code (SciPy's _uarray, libtorch's static destructors) segfaults. Stop it first.
+    if wake_word_listener is not None:
+        try:
+            wake_word_listener.stop()
+            t = getattr(wake_word_listener, "_thread", None)
+            if t is not None:
+                t.join(timeout=1.5)
+        except Exception as e:
+            print(f"Error stopping wake word: {e}")
     if hotkey_listener is not None:
         try:
             hotkey_listener.stop()
@@ -131,8 +142,18 @@ def _shutdown(signum, frame):
         agent_browser.close()
     except Exception as e:
         print(f"Error closing agent browser: {e}")
+    try:
+        from aria.llm import autostart
+        autostart.stop()                  # its atexit hook won't run after os._exit
+        prevent_sleep.stop()
+    except Exception as e:
+        print(f"Error in final cleanup: {e}")
     print("Aria stopped.")
-    sys.exit(0)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # Skip interpreter teardown: Whisper / ONNX / audio threads still hold native state, and
+    # C++ static destructors racing them crash the process (zsh: segmentation fault).
+    os._exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +257,7 @@ def handle_command(transcript: str) -> None:
                     menubar=menubar,
                     keyterms_prompt=_KEYTERMS_PROMPT,
                     run_turn=_run_followup_turn,
+                    answer=answer,
                 )
             prompt_suggester.suggest_async("", answer, speaker)
             _count = memory.increment_command_count()
@@ -499,6 +521,7 @@ def main():
     hotkey_listener.start()
 
     # 8. Wake word listener (always-on; gracefully disabled if openwakeword missing)
+    global wake_word_listener
     wake_word_listener = WakeWordListener(
         handle_command_fn=handle_command,
         processing_event=_processing,

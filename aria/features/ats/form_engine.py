@@ -63,8 +63,8 @@ SCAN_JS = r"""
     const t = clean(c.innerText || c.textContent);
     return t.length > 1 && t.length < 400 && !NOISE.test(t) && vis(c);
   }
-  // The nearest label-like text before `el` inside its closest ancestors (up to maxDepth).
-  function nearLabel(el, maxDepth) {
+  // The nearest label-like element before `el` inside its closest ancestors (up to maxDepth).
+  function nearLabelEl(el, maxDepth) {
     let node = el;
     for (let depth = 0; depth < (maxDepth || 7) && node.parentElement; depth++) {
       node = node.parentElement;
@@ -72,10 +72,31 @@ SCAN_JS = r"""
       for (const sel of [LABELISH, 'p, span, div']) {
         const cands = Array.from(node.querySelectorAll(sel)).filter(c => before(c, el) && usable(c, el) &&
           (sel === LABELISH || c.children.length === 0));
-        if (cands.length) return clean(cands[cands.length - 1].innerText || cands[cands.length - 1].textContent);
+        if (cands.length) return cands[cands.length - 1];
       }
     }
-    return '';
+    return null;
+  }
+  function nearLabel(el, maxDepth) {
+    const n = nearLabelEl(el, maxDepth);
+    return n ? clean(n.innerText || n.textContent) : '';
+  }
+  // Required shown by styling, not text: a "required" class on the label (Ashby's _required_x)
+  // or an asterisk drawn by CSS (::after / ::before) — innerText never includes either.
+  function marked(n) {
+    if (!n || n.nodeType !== 1) return false;
+    const c = typeof n.className === 'string' ? n.className : '';
+    if (/(?:^|[\s_-])required/i.test(c) && !/optional|not-required/i.test(c)) return true;
+    try {
+      const drawn = (getComputedStyle(n, '::after').content || '') + (getComputedStyle(n, '::before').content || '');
+      if (/[*✱]/.test(drawn)) return true;
+    } catch (e) {}
+    return false;
+  }
+  function labelFor(el) {
+    const key = el.id || el.name;
+    if (!key) return null;
+    try { return document.querySelector('label[for="' + CSS.escape(key) + '"]'); } catch (e) { return null; }
   }
   function ownLabel(el) {
     if (el.labels && el.labels.length) { const t = clean(el.labels[0].innerText || el.labels[0].textContent); if (t) return t; }
@@ -91,7 +112,8 @@ SCAN_JS = r"""
     return clean(sib ? (sib.innerText || sib.textContent) : el.value);
   }
   function req(el, raw) {
-    return !!(el.required || el.getAttribute('aria-required') === 'true' || /[*✱]/.test(raw || '') || /\(required\)/i.test(raw || ''));
+    return !!(el.required || el.getAttribute('aria-required') === 'true' || /[*✱]/.test(raw || '') || /\(required\)/i.test(raw || '')
+      || marked(el.labels && el.labels[0]) || marked(labelFor(el)) || marked(nearLabelEl(el, 4)));
   }
   const strip = t => clean((t || '').replace(/[*✱]+/g, ' ').replace(/\((required|optional)\)/ig, ' '));
   // Workday-style stable ids on the control or its wrapper — adapters map them to bank keys
@@ -107,6 +129,8 @@ SCAN_JS = r"""
     if (el.closest('[aria-hidden="true"]') && type !== 'file') continue;
     if (el.closest('[class*="autofill" i]')) continue;      // "autofill from resume" drop zones aren't questions
     if (type === 'radio' || type === 'checkbox') {
+      // Ashby-style Yes / No buttons keep a hidden checkbox beside them: the buttons are the field
+      if (el.parentElement && el.parentElement.querySelectorAll('button[aria-pressed], button[data-option]').length >= 2) continue;
       // checkboxes named q-1, q-2 … (or q[1], q[2]) are one question
       const stem = type === 'checkbox' ? (el.name || '').replace(/(?:[-_]\d+|\[\d*\])$/, '') : el.name;
       const key = type + ':' + (stem || fid(el));
@@ -141,6 +165,25 @@ SCAN_JS = r"""
     out.push({fid: fid(el), kind: kind, label: strip(raw), required: req(el, raw), options: options,
               max_chars: el.maxLength > 0 && el.maxLength < 100000 ? el.maxLength : 0,
               accept: el.getAttribute('accept') || '', name: el.name || el.id || '', aid: aidOf(el)});
+  }
+  // Choices drawn as buttons (Ashby's Yes / No): one field, each button an option.
+  const bgroups = new Map();
+  for (const b of document.querySelectorAll('button[aria-pressed], button[data-option]')) {
+    if (!vis(b) || b.closest('nav, header, [role=toolbar]')) continue;
+    const g = bgroups.get(b.parentElement) || [];
+    g.push(b);
+    bgroups.set(b.parentElement, g);
+  }
+  for (const [box, btns] of bgroups) {
+    if (btns.length < 2) continue;
+    const hidden = box.querySelector('input[type=checkbox], input[type=radio]');
+    const lab = (hidden && labelFor(hidden)) || nearLabelEl(btns[0], 4);
+    const raw = lab ? clean(lab.innerText || lab.textContent) : '';
+    if (!raw) continue;
+    btns.forEach(b => fid(b));
+    out.push({fid: fid(btns[0]), kind: 'buttons', label: strip(raw), required: marked(lab) || /[*✱]/.test(raw),
+              options: btns.map(b => clean(b.innerText || b.getAttribute('aria-label') || '')), max_chars: 0, accept: '',
+              name: (hidden && hidden.name) || '', aid: aidOf(btns[0]), members: btns.map(b => b.dataset.ariaFid)});
   }
   for (const key of Object.keys(groups)) {
     const els = groups[key];
@@ -187,7 +230,11 @@ READ_JS = r"""
     const el = by(f.fid);
     if (!el) { out[f.fid] = {value: null, error: ''}; continue; }
     let value = '';
-    if (f.kind === 'radio' || f.kind === 'checkgroup') {
+    if (f.kind === 'buttons') {
+      const on = (f.members || [f.fid]).map(by).filter(e => e && (e.getAttribute('aria-pressed') === 'true' ||
+        /(?:^|[\s_-])(?:selected|active|checked|pressed)(?:$|[\s_-])/i.test(e.className || '')));
+      value = on.map(e => clean(e.innerText)).join('; ');
+    } else if (f.kind === 'radio' || f.kind === 'checkgroup') {
       const picked = (f.members || [f.fid]).map(by).filter(e => e && e.checked);
       value = picked.map(e => { const l = (e.labels && e.labels[0]) || e.closest('label');
         return clean(l ? l.innerText : e.value); }).join('; ');
@@ -355,6 +402,12 @@ def fill_one(page, p: Planned, members: Optional[list] = None) -> bool:
         if want != el.is_checked():
             el.check(force=True, timeout=3000) if want else el.uncheck(force=True, timeout=3000)
         return True
+    if f.kind == "buttons":
+        target = _choose(value, f.options)
+        if target is None or not members:
+            return False
+        _loc(page, members[f.options.index(target)]).click(timeout=3000)
+        return True
     if f.kind in ("radio", "checkgroup"):
         wanted = [v.strip() for v in str(value).split(";") if v.strip()] if f.kind == "checkgroup" else [value]
         ok = False
@@ -398,7 +451,7 @@ def matches(p: Planned, got: dict) -> bool:
     norm = lambda t: re.sub(r"\s+", " ", t).strip().lower()
     wanted = [v.strip() for v in want.split(";") if v.strip()] if f.kind == "checkgroup" else [want]
     targets = [norm((_choose(v, f.options) if f.options else None) or v) for v in wanted]
-    if f.kind in ("select", "radio", "checkgroup", "multiselect"):
+    if f.kind in ("select", "radio", "checkgroup", "multiselect", "buttons"):
         # native selects / radios read back the exact option text: the whole option must match
         got = {norm(x) for x in actual.split(";")} if f.kind in ("checkgroup", "multiselect") else {norm(actual)}
         return all(t in got for t in targets)

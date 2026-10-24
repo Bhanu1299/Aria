@@ -6,8 +6,11 @@ start(say, voice_ask, limit=None) → spoken line; the run goes on in a backgrou
             and MAX_OPEN_TABS minus the application tabs already open
   2. each   fill_one: new tab → open the posting → applicator.run_application in that
             tab → never submits. A wall (CAPTCHA / sign-in / email code) does NOT stop the
-            run: it's noted on the tab and the run moves on (RunControl.wait_walls = False).
-            A single fill outside a run still waits for the user (wait_walls = True).
+            run: Aria says once what's needed ("Aderant needs you to sign in — do it whenever")
+            and moves on; that tab waits. Between jobs, and for WAITING_SECS after the last one,
+            each waiting tab is checked: the moment its wall is gone (you signed in), the fill
+            picks up there (at most MAX_RESUMES times a job). A single fill outside a run still
+            waits for the user (RunControl.wait_walls = True).
   3. guard  caffeinate for the whole run; pause / stop via control.current
   4. voice  nothing is spoken while filling (progress goes to the terminal / log). Once,
             at the end, run_report: how many are ready for review, which need answers,
@@ -39,6 +42,14 @@ logger = logging.getLogger(__name__)
 MAX_OPEN_TABS = 10
 WALL_POLL_SECS = 3.0
 WALL_TIMEOUT_SECS = 15 * 60
+WAITING_SECS = 20 * 60        # after the last job, keep watching tabs that wait for you
+MAX_RESUMES = 2
+_HINT = {"login": "to sign in", "captcha": "to solve a CAPTCHA", "email_code": "to enter an email code",
+         "terms": "to accept its terms", "agreement": "to accept a notice"}
+
+# Tabs waiting for the user in the current run: entry id → {kind, url, seen, resumes}
+_waiting: dict = {}
+_wlock = threading.Lock()
 
 _thread: Optional[threading.Thread] = None
 _NEW = {"", "new", "not applied", "not yet applied", "to apply"}
@@ -157,6 +168,8 @@ def run_report(ids: list, done: int) -> str:
             needs.append(f"{name} ({len(e['needs_me'])})")
         elif e.get("state") in (tabs.FILLED, tabs.SUBMITTED):
             ready.append(name)
+        elif e and tab in _waiting:
+            continue                               # listed below as waiting for you
         elif e:
             stopped.append(f"{name}: {_why(e.get('note', ''))}")
     if ready:
@@ -165,6 +178,10 @@ def run_report(ids: list, done: int) -> str:
         out += f" {len(needs)} need{'s' if len(needs) == 1 else ''} answers I don't have: {_list_names(needs)}."
     if stopped:
         out += f" {len(stopped)} stopped — {'; '.join(stopped[:5])}" + (" and more." if len(stopped) > 5 else ".")
+    waiting = [n for t, n in zip(ids, [(tabs.get(t) or {}).get("company") or "one job" for t in ids]) if t in _waiting]
+    if waiting:
+        out += (f" {len(waiting)} wait{'s' if len(waiting) == 1 else ''} for you to sign in or clear a check: "
+                f"{_list_names(waiting)} — I'll finish each one as soon as you do.")
     if ready or needs or stopped:
         out += " It's all on the dashboard."
     return out
@@ -183,12 +200,19 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
     prevent_sleep.start()
     done = 0
     ids: list = []
+    with _wlock:
+        _waiting.clear()
     try:
         for job in jobs:     # open + fill quietly; results live in the tab, review file and dashboard
             ctl.checkpoint()
             _note(fill_one(job, say, None, ctl, ids=ids))
             done += 1
+            _resume_ready(say, ctl)                # anyone you signed in to meanwhile
         _speak(say, run_report(ids, done))
+        deadline = time.time() + WAITING_SECS
+        while waiting_names() and time.time() < deadline and not ctl.stopped:
+            ctl.wait(WALL_POLL_SECS)
+            _resume_ready(say, ctl, speak=True)
     except control.Stopped:
         _speak(say, f"Stopped after {done} application{'s' if done != 1 else ''}, nothing submitted. "
                     "Every tab stays open.")
@@ -203,12 +227,96 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
             control.current = None
 
 
-def _skip_wall(entry: dict, kind: str) -> None:
-    """Batch run: note the wall (correction row + log), don't speak, don't wait."""
+def _url(tab: str) -> str:
+    try:
+        return agent_browser.run(lambda page: page.url, tab=tab)
+    except Exception:
+        return ""
+
+
+def _skip_wall(entry: dict, kind: str, say=None) -> None:
+    """Batch run: don't wait. Say once what's needed, note it, and watch the tab — the fill picks
+    up as soon as the wall is gone (_resume_ready)."""
     label = walls.NAMES.get(kind, "something only you can clear")
+    company = entry.get("company") or "A job"
     job = {"url": entry.get("url", ""), "company": entry.get("company", ""), "row": entry.get("row")}
-    corrections.record(job, kind, "wall", f"{label} — skipped for now (batch run)", ats=entry.get("ats", ""))
-    _note(f"{entry.get('company') or 'A job'} is showing {label}; moving on, it's in the end-of-run report.")
+    corrections.record(job, kind, "wall", f"{label} — waiting for you (batch run)", ats=entry.get("ats", ""))
+    tab = entry["id"]
+    with _wlock:
+        first = tab not in _waiting
+        w = _waiting.setdefault(tab, {"kind": kind, "resumes": 0})
+        w["kind"], w["url"] = kind, _url(tab)
+        # adapter-only walls (Workday's sign-in step) aren't seen by walls.check: then "cleared"
+        # means the tab moved on to another page
+        w["seen"] = walls.check(tab) == kind
+    if not first:
+        return
+    msg = (f"{company} needs you {_HINT.get(kind, 'for something only you can do')}, in its tab in Aria's "
+           "Chrome. Do it whenever — I'll keep going and finish it as soon as you're done.")
+    notifier.send_notification(f"Aria — {company}", msg)
+    if say is not None:
+        _speak(say, msg)
+    else:
+        _note(msg)
+
+
+def _cleared(tab: str, w: dict) -> bool:
+    if walls.check(tab):
+        return False
+    return True if w.get("seen") else _url(tab) != w.get("url")
+
+
+def _resume_ready(say, ctl: Optional[control.RunControl], speak: bool = False) -> list:
+    """Pick up every waiting tab whose wall is gone. Returns [(entry, outcome)]."""
+    with _wlock:
+        ids = list(_waiting)
+    done = []
+    for tab in ids:
+        entry = tabs.get(tab)
+        w = _waiting.get(tab)
+        if not entry or entry.get("state") == tabs.CLOSED or w is None:
+            with _wlock:
+                _waiting.pop(tab, None)
+            continue
+        try:
+            ready = _cleared(tab, w)
+        except Exception as exc:
+            logger.debug("waiting-tab check failed: %s", exc)
+            ready = False
+        if not ready:
+            continue
+        with _wlock:
+            _waiting.pop(tab, None)
+        if w["resumes"] >= MAX_RESUMES:
+            tabs.update(tab, note=f"still blocked by {walls.NAMES.get(w['kind'], 'a wall')} after {MAX_RESUMES} tries")
+            continue
+        _note(f"{entry.get('company') or 'A job'}: you're through — picking the fill up there.")
+
+        def again(kind: str, cleared: Optional[Callable[[], bool]] = None, entry=entry, w=w) -> bool:
+            _skip_wall(entry, kind, None)
+            with _wlock:
+                if entry["id"] in _waiting:
+                    _waiting[entry["id"]]["resumes"] = w["resumes"] + 1
+            return False
+        try:
+            out = applicator.run_application(dict(applicator._job_of(entry), url=entry.get("url", "")),
+                                             entry=tabs.get(tab), gate=ctl.checkpoint if ctl else None,
+                                             wait_fn=again)
+        except control.Stopped:
+            raise
+        except Exception as exc:
+            logger.error("resume after wall failed: %s", exc)
+            out = f"Picking {entry.get('company') or 'it'} back up failed: {exc}"
+        done.append((entry, out))
+        if speak:
+            _speak(say, f"{entry.get('company') or 'That job'}: {out}")
+    return done
+
+
+def waiting_names() -> list:
+    with _wlock:
+        ids = list(_waiting)
+    return [(tabs.get(t) or {}).get("company") or "one job" for t in ids]
 
 
 def wait_wall(entry: dict, kind: str, say, ctl: Optional[control.RunControl],
@@ -262,7 +370,7 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
             kind = walls.check(tab)
             if kind and not (waits and wait_wall(entry, kind, say, ctl)):
                 if not waits:
-                    _skip_wall(entry, kind)
+                    _skip_wall(entry, kind, say)
                 tabs.update(tab, state=tabs.OPEN, note=f"blocked by {walls.NAMES[kind]}")
                 run.finish("error", f"blocked by {walls.NAMES[kind]}")
                 return f"{job.get('company')} is still blocked, so I left its tab open unfilled."
@@ -270,7 +378,7 @@ def fill_one(job: dict, say, voice_ask=None, ctl: Optional[control.RunControl] =
 
         def wait_once(kind: str, cleared: Optional[Callable[[], bool]] = None) -> bool:
             if not waits:
-                _skip_wall(entry, kind)
+                _skip_wall(entry, kind, say)
                 return False
             if kind in timed_out:
                 return False

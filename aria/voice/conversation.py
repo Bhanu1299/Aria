@@ -11,7 +11,14 @@ Flow per window:
   silence) → transcribe → closing phrase or silence ends the conversation
   → otherwise run the turn and re-open the window.
 
-Disable with ARIA_CONVERSATION=0 in .env or the environment.
+The window opens only when Aria's answer asked something (a "?" near its end):
+after a plain answer the mic stays shut until the wake word or ⌥Space. And sound
+already playing the moment the mic opens (a video, music — nobody starts talking
+within _BACKGROUND_SECS of the cue) closes it unheard. Both since 2026-10-23: a
+video's dialogue was being taken as follow-ups, turn after turn.
+
+ARIA_CONVERSATION: 1 (default) = after a question only · always = after every
+answer · 0 = off.
 Everything here is defensive: hold() never raises to the command loop.
 """
 
@@ -39,6 +46,7 @@ _MAX_UTTERANCE = 12.0            # s hard cap per follow-up
 _MIN_SPEECH = 0.25               # s of actual speech required
 
 _MAX_FOLLOWUPS = 6               # safety cap per conversation
+_BACKGROUND_SECS = 0.25          # sound this soon after the cue = something already playing
 
 _CUE_SOUND = "/System/Library/Sounds/Pop.aiff"
 
@@ -63,6 +71,14 @@ def enabled() -> bool:
     return os.getenv("ARIA_CONVERSATION", "1").strip().lower() not in {
         "0", "false", "off", "no",
     }
+
+
+def invites_reply(answer: Optional[str]) -> bool:
+    """Should the mic re-open after this answer? Only if it asked something — unless
+    ARIA_CONVERSATION=always. None (answer unknown) keeps the window."""
+    if answer is None or os.getenv("ARIA_CONVERSATION", "1").strip().lower() == "always":
+        return True
+    return "?" in (answer or "").strip()[-160:]
 
 
 def _normalize(text: str) -> str:
@@ -128,6 +144,9 @@ def _listen_followup() -> Optional[np.ndarray]:
             rms = float(np.sqrt(np.mean(audio_np.astype(np.float32) ** 2)))
             total_elapsed += chunk_secs
 
+            if rms >= _SPEECH_RMS and not speech_started and total_elapsed <= _BACKGROUND_SECS:
+                print("[Aria] Sound was already playing when the mic opened — not a follow-up.")
+                return None
             if rms >= _SPEECH_RMS:
                 speech_started = True
                 silence_duration = 0.0
@@ -164,6 +183,7 @@ def hold(
     menubar,
     keyterms_prompt: str,
     run_turn: Callable[[str], str],
+    answer: Optional[str] = None,
 ) -> None:
     """
     Keep the conversation open after an answer: listen for follow-ups and
@@ -171,9 +191,12 @@ def hold(
     phrase, or the follow-up cap is hit. Never raises.
 
     run_turn(text) -> spoken answer; it owns agent execution and logging.
+    answer = what Aria just said; each window opens only if the last answer invites a reply.
     """
     try:
         for _ in range(_MAX_FOLLOWUPS):
+            if not invites_reply(answer):
+                return
             if menubar is not None:
                 menubar.set_state("LISTENING")
             _play_cue()

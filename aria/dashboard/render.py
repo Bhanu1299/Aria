@@ -290,7 +290,7 @@ i.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var
 a.srcstate i.dot,.chip.bad i.dot{background:var(--bad)}
 button.themebtn{justify-content:flex-start;background:none;color:var(--muted);font-size:12px;padding:7px 10px}
 main{min-width:0;padding:32px 32px 72px}
-.tab{display:none;max-width:860px;margin:0 auto}.tab.wide{max-width:1080px}.tab.on{display:block}
+.tab{display:none;max-width:1400px;margin:0 auto}.tab.wide{max-width:1400px}.tab.on{display:block}
 .phead{margin:0 0 22px}.ptitle{font:400 38px/1.1 var(--serif);margin:0;letter-spacing:-.01em}
 .psub{margin:6px 0 0;color:var(--muted)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:0 0 16px;min-width:0;

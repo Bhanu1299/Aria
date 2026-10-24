@@ -30,12 +30,13 @@ from __future__ import annotations
 from aria.core import paths as _aria_paths
 
 import logging
+import re
 import os
 import subprocess
 import threading
 import time
 import wave
-from typing import Callable
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -107,6 +108,28 @@ _CUSTOM_THRESHOLD = 0.7   # starting point — tune after real-world testing
 # for a few hundred ms, a stray sound-alike in Aria's own speech rarely does.
 _BARGE_THRESHOLD = 0.85
 _BARGE_HITS = 3
+# Second check (2026-10-23: real and false wakes both scored 0.70–0.73, so no threshold can
+# separate them): Whisper transcribes the 2 s window that fired and the wake counts only if it
+# heard "Aria". Recording carries on while it checks, so the command's first words aren't lost.
+# Measured on the training clips (2026-10-23): primed with "Aria", Whisper heard the name in
+# 80/80 of the user's clips (no_speech_prob ≤ 0.42); unprimed only 43/60. The prime makes it
+# write "Aria" over noise / room sound too, but those all had no_speech_prob ≥ 0.45 → rejected.
+# ARIA_WAKE_VERIFY=0 turns the check off.
+_VERIFY_MAX_SECS = 3.0
+_MAX_NO_SPEECH = 0.45
+_WAKE_WORDS = re.compile(r"\b(?:aria|arya|ariya|ariah|aryah|aarya|arria|aria's|arya's)\b")
+_WAKE_FIRST = re.compile(r"^(?:hey |hi |ok |okay |yo )?(?:area|maria|ariel|arian|aaria|orya|oria)\b")
+
+
+def heard_wake_word(text: str) -> bool:
+    """Did Whisper hear the wake word? The name anywhere; its sound-alikes only up front."""
+    t = re.sub(r"[^a-z' ]+", " ", (text or "").lower())
+    t = re.sub(r"\s+", " ", t).strip()
+    return bool(_WAKE_WORDS.search(t) or _WAKE_FIRST.match(t))
+
+
+def _verify_enabled() -> bool:
+    return os.getenv("ARIA_WAKE_VERIFY", "1").strip().lower() not in {"0", "false", "off", "no"}
 _CUSTOM_WINDOW_SECS = 2.0
 
 
@@ -491,11 +514,18 @@ class WakeWordListener:
                     continue
 
                 if score >= _CUSTOM_THRESHOLD:
+                    heard, prefix = self._verify(stream, buffer, _CHUNK_SIZE)
+                    if not heard:
+                        print(f"[Aria] Wake model fired (score={score:.2f}) but Whisper didn't hear "
+                              "\"Aria\" — ignored.")
+                        wake_stats.log_event("verify_reject", "custom_onnx", score)
+                        last_triggered = time.time() - _COOLDOWN_SECS + 1.0     # listen again in 1 s
+                        continue
                     print(f"[Aria] Wake word detected (custom model, score={score:.2f})")
                     wake_stats.log_event("detection", "custom_onnx", score)
                     if self._can_barge_in():          # e.g. the welcome-back line: stop it, listen
                         self._barge_in()
-                    self._on_wake(stream, _SAMPLE_RATE, _CHUNK_SIZE)
+                    self._on_wake(stream, _SAMPLE_RATE, _CHUNK_SIZE, prefix)
                     last_triggered = time.time()
                 elif score >= _NEAR_MISS_FLOOR and now - last_near_miss > 3.0:
                     last_near_miss = now
@@ -520,6 +550,36 @@ class WakeWordListener:
     # Shared: post-wake recording + dispatch
     # ------------------------------------------------------------------
 
+    def _verify(self, stream, window: np.ndarray, chunk_size: int) -> tuple:
+        """(heard "Aria", chunks read meanwhile). Whisper runs on the window in a thread while
+        the mic keeps being read, so nothing said after the wake word is dropped."""
+        if self._transcriber is None or not _verify_enabled():
+            return True, []
+        out: dict = {}
+        audio = window.astype(np.float32) / 32768.0
+
+        def run() -> None:
+            try:
+                out["text"], out["no_speech"] = self._transcriber.check_wake(audio)
+            except Exception as exc:
+                logger.warning("wake verify failed: %s", exc)
+        t = threading.Thread(target=run, daemon=True, name="aria-wake-verify")
+        t.start()
+        chunks: list = []
+        deadline = time.time() + _VERIFY_MAX_SECS
+        while t.is_alive() and time.time() < deadline:
+            try:
+                chunks.append(stream.read(chunk_size, exception_on_overflow=False))
+            except OSError:
+                break
+        t.join(timeout=0.1)
+        if "text" not in out:                     # Whisper errored or was too slow: don't drop a real wake
+            return True, chunks
+        heard = heard_wake_word(out["text"]) and out.get("no_speech", 1.0) < _MAX_NO_SPEECH
+        if not heard:
+            logger.info("wake verify: rejected (no_speech=%.2f)", out.get("no_speech", 1.0))
+        return heard, chunks
+
     def _can_barge_in(self) -> bool:
         if self._interruptible is None or self._on_barge_in is None:
             return False
@@ -542,13 +602,14 @@ class WakeWordListener:
         except Exception:
             pass
 
-    def _on_wake(self, stream, sample_rate: int, chunk_size: int) -> None:
-        """Called immediately after any backend detects the wake word."""
+    def _on_wake(self, stream, sample_rate: int, chunk_size: int, prefix: Optional[list] = None) -> None:
+        """Called immediately after any backend detects the wake word. `prefix` = audio already
+        read from the stream (while the wake word was being verified)."""
         self._play_sound(_DING_SOUND)
         self._set_menubar("LISTENING")
         listening_indicator.show("Listening...")
 
-        wav_path = self._record_until_silence(stream, sample_rate, chunk_size)
+        wav_path = self._record_until_silence(stream, sample_rate, chunk_size, prefix)
         listening_indicator.hide()
 
         if wav_path is None:
@@ -597,9 +658,11 @@ class WakeWordListener:
         return float(np.sqrt(np.mean(audio_np.astype(np.float32) ** 2)))
 
     def _record_until_silence(
-        self, stream, sample_rate: int, chunk_size: int
+        self, stream, sample_rate: int, chunk_size: int, prefix: Optional[list] = None
     ) -> str | None:
-        """VAD recording from the active mic stream. Returns WAV path or None."""
+        """VAD recording from the active mic stream (after any `prefix` chunks already read).
+        Returns WAV path or None."""
+        pending = list(prefix or [])
         chunks: list[bytes] = []
         speech_started = False
         speech_duration = 0.0
@@ -610,7 +673,7 @@ class WakeWordListener:
 
         while total_elapsed < _VAD_MAX_SECS:
             try:
-                chunk = stream.read(chunk_size, exception_on_overflow=False)
+                chunk = pending.pop(0) if pending else stream.read(chunk_size, exception_on_overflow=False)
             except OSError:
                 break
 

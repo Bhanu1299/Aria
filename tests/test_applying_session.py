@@ -32,7 +32,9 @@ def env(monkeypatch, tmp_path):
     said = []
     commands.configure(say=said.append, voice_ask=None)
     front = {"names": []}
-    browser = {"closed": [], "fronted": [], "attached": None}
+    browser = {"closed": [], "fronted": [], "attached": None, "urls": {}}
+    monkeypatch.setattr(agent_browser, "run", lambda fn, tab=None: browser["urls"].get(tab, ""))
+    session._waiting.clear()
     monkeypatch.setattr(agent_browser, "front_tabs", lambda names: [n for n in names if n in front["names"]])
     monkeypatch.setattr(agent_browser, "close_tab", lambda name: browser["closed"].append(name) or True)
     monkeypatch.setattr(agent_browser, "navigate", lambda *a, **k: None)
@@ -459,7 +461,11 @@ def test_a_batch_run_never_waits_at_a_wall(monkeypatch, env):
     ctl = control.RunControl()
     ctl.wait_walls = False
     out = session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=ctl)
-    assert "still blocked" in out and env["said"] == [] and env["notes"] == []
+    assert "still blocked" in out
+    # said once, notified once — then the run moves on; the tab waits for you
+    assert env["said"] == ["Ookla needs you to sign in, in its tab in Aria's Chrome. Do it whenever — "
+                           "I'll keep going and finish it as soon as you're done."]
+    assert len(env["notes"]) == 1 and session.waiting_names() == ["Ookla"]
     [e] = tabs.live()
     assert e["state"] == tabs.OPEN and session._why(e["note"]) == "stopped at sign-in", e["note"]
     assert ("login", "wall") in env["fixes"]
@@ -477,7 +483,7 @@ def test_mid_form_walls_in_a_batch_run_are_skipped_not_waited(monkeypatch, env):
     ctl = control.RunControl()
     ctl.wait_walls = False
     assert session.fill_one(_row(14, "Ookla", 3), env["said"].append, ctl=ctl) == "filled"
-    assert seen == [False] and env["said"] == []
+    assert seen == [False] and len(env["said"]) == 1 and "CAPTCHA" in env["said"][0]
 
 
 def test_start_takes_a_limit_and_runs_without_waiting(monkeypatch, env):
@@ -498,3 +504,85 @@ def test_start_takes_a_limit_and_runs_without_waiting(monkeypatch, env):
 ])
 def test_report_says_why_in_a_few_words(note, why):
     assert session._why(note) == why
+
+
+# ── waiting tabs: pick up the moment you're through (2026-10-23) ────────────
+
+def _waiting_tab(env, monkeypatch, company="Aderant", kind="login", seen=True, url="https://x.example/login"):
+    e = tabs.add(_row(20, company, 3))
+    tabs.update(e["id"], state=tabs.OPEN, note=f"blocked by {kind}")
+    env["browser"]["urls"][e["id"]] = url
+    monkeypatch.setattr(session.walls, "check", lambda tab: kind if seen else None)
+    session._skip_wall(tabs.get(e["id"]), kind, env["said"].append)
+    return e
+
+
+def test_a_cleared_sign_in_is_picked_up_and_filled(env, monkeypatch):
+    e = _waiting_tab(env, monkeypatch)
+    resumed = []
+    monkeypatch.setattr(applicator, "run_application", lambda job, entry=None, **kw: resumed.append(entry["id"]) or "filled")
+    assert session._resume_ready(env["said"].append, None) == []          # still on the sign-in
+    monkeypatch.setattr(session.walls, "check", lambda tab: None)        # you signed in
+    done = session._resume_ready(env["said"].append, None)
+    assert resumed == [e["id"]] and done[0][1] == "filled" and session.waiting_names() == []
+
+
+def test_an_adapter_only_wall_resumes_when_the_page_moves_on(env, monkeypatch):
+    e = _waiting_tab(env, monkeypatch, "RTX", seen=False, url="https://wd5.example/apply/signin")
+    monkeypatch.setattr(applicator, "run_application", lambda job, entry=None, **kw: "filled")
+    assert session._resume_ready(env["said"].append, None) == []          # walls.check can't see Workday's
+    env["browser"]["urls"][e["id"]] = "https://wd5.example/apply/myInformation"
+    assert [x[1] for x in session._resume_ready(env["said"].append, None)] == ["filled"]
+
+
+def test_a_wall_that_keeps_coming_back_stops_after_max_resumes(env, monkeypatch):
+    e = _waiting_tab(env, monkeypatch)
+    state = {"wall": False}
+    monkeypatch.setattr(session.walls, "check", lambda tab: "login" if state["wall"] else None)
+
+    def blocked_again(job, entry=None, wait_fn=None, **kw):
+        state["wall"] = True                   # the sign-in shows up again mid-fill…
+        wait_fn("login")
+        state["wall"] = False                  # …and you clear it again
+        return "blocked"
+    monkeypatch.setattr(applicator, "run_application", blocked_again)
+    for _ in range(session.MAX_RESUMES + 2):
+        session._resume_ready(env["said"].append, None)
+    assert session.waiting_names() == [] and "after 2 tries" in tabs.get(e["id"])["note"]
+
+
+def test_the_report_lists_who_is_waiting_for_you(env, monkeypatch):
+    e = _waiting_tab(env, monkeypatch)
+    ok = tabs.add(_row(21, "Pinecone", 4))
+    tabs.update(ok["id"], state=tabs.FILLED)
+    out = session.run_report([ok["id"], e["id"]], 2)
+    assert "1 ready for your review: Pinecone." in out
+    assert "1 waits for you to sign in or clear a check: Aderant — I'll finish each one as soon as you do." in out
+
+
+def test_the_run_keeps_watching_after_the_last_job(env, monkeypatch):
+    monkeypatch.setattr(sheets, "default_sheet", lambda: type("S", (), {"jobs": lambda self: list(ROWS[2:3])})())
+    monkeypatch.setattr(session, "WALL_POLL_SECS", 0.01)
+    state = {"signed_in": False}
+
+    def fill(job, say, voice_ask=None, ctl=None, ids=None):
+        e = tabs.add(job)
+        tabs.update(e["id"], state=tabs.OPEN, note="blocked by login")
+        ids.append(e["id"])
+        env["browser"]["urls"][e["id"]] = "https://x.example/login"
+        session._skip_wall(tabs.get(e["id"]), "login", say)
+        import threading
+        threading.Timer(0.2, lambda: state.update(signed_in=True)).start()     # you sign in a bit later
+        return "blocked"
+
+    def resumed(job, entry=None, **kw):
+        tabs.update(entry["id"], state=tabs.FILLED)
+        return "Ashby form filled."
+    monkeypatch.setattr(session, "fill_one", fill)
+    monkeypatch.setattr(session.walls, "check", lambda tab: None if state["signed_in"] else "login")
+    monkeypatch.setattr(applicator, "run_application", resumed)
+    session.start(env["said"].append)
+    session._thread.join(3)
+    report = next(s for s in env["said"] if s.startswith("Done with 1 job"))
+    assert "waits for you to sign in" in report and "Scale AI" in report
+    assert env["said"][-1] == "Scale AI: Ashby form filled."

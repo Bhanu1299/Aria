@@ -131,6 +131,13 @@ DEFAULT_PATTERNS: list[tuple[str, str]] = [
     ("referral_source", r"\bhow did you (?:hear|find out|learn|come across)\b|\bwhere did you (?:hear|find|learn|see)\b|"
                         r"\bsource where you (?:learned|heard|found)|\breferral source\b"),
     ("sponsorship", r"\bsponsor"),
+    # links, however the form words them ("Link to your LinkedIn profile", "Link to your GitHub");
+    # the site name alone isn't enough ("Did you hear about us on LinkedIn?" is no profile link)
+    ("linkedin", r"\b(?:link|url) (?:to|for) (?:your |the )?linked ?in\b|\blinked ?in\b.*\b(?:profile|url|link|page)\b"),
+    ("github", r"\b(?:link|url) (?:to|for) (?:your |the )?github\b|\bgithub\b.*\b(?:profile|url|link|username|handle)\b"),
+    ("website", r"\bwebsite or portfolio\b|\bportfolio or website\b|\b(?:link|url) (?:to|for) (?:your )?(?:portfolio|website)\b|"
+                r"\bpersonal (?:website|site)\b"),
+    ("country", r"\bcountry\b.*\bresid|\bresid\w*\b.*\bcountry\b|\bcountry (?:you|where you) (?:live|are based)"),
     ("work_authorization", r"\bauthori[sz]ed to work|\bwork authori[sz]ation|\beligible to work|\bright to work"),
     ("relocation", r"\brelocat"),
     ("grad_date", r"\bgraduat(?:e|ion)\b.*\b(?:date|when|year)|\bwhen (?:did|do|will) you graduate|"

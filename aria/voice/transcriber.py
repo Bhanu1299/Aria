@@ -55,6 +55,17 @@ class Transcriber:
             logger.error("Transcription timed out for: %s", audio_path)
             return ""
 
+    def check_wake(self, audio: np.ndarray, timeout: float = 5.0) -> tuple:
+        """(text, no_speech_prob) for the wake word's window: greedy, primed with "Aria" so the
+        name is spelled right. The prime also makes Whisper write "Aria" over plain noise —
+        no_speech_prob is what tells those apart (wake_word.py decides)."""
+        result_q: queue.Queue = queue.Queue()
+        self._request_q.put((audio, "Aria", result_q, "wake"))
+        try:
+            return result_q.get(timeout=timeout)
+        except queue.Empty:
+            return "", 1.0
+
     def transcribe_numpy(self, audio: np.ndarray, initial_prompt: str = "") -> str:
         """Submit a numpy float32 audio array for transcription. Blocks until result."""
         result_q: queue.Queue[str] = queue.Queue()
@@ -93,7 +104,18 @@ class Transcriber:
             if item is _STOP:
                 break
 
-            audio_or_path, initial_prompt, result_q = item
+            audio_or_path, initial_prompt, result_q = item[:3]
+            if len(item) > 3 and item[3] == "wake":
+                try:
+                    segs = list(self._model.transcribe(audio_or_path, beam_size=1, language="en",
+                                                       initial_prompt=initial_prompt,
+                                                       condition_on_previous_text=False)[0])
+                    result_q.put(("".join(s.text for s in segs).strip(),
+                                  min([s.no_speech_prob for s in segs], default=1.0)))
+                except Exception as exc:
+                    logger.error("Wake check error: %s", exc)
+                    result_q.put(("", 1.0))
+                continue
             is_numpy = isinstance(audio_or_path, np.ndarray)
             label = f"numpy array ({len(audio_or_path)} samples)" if is_numpy else str(audio_or_path)
             print(f"[TRANSCRIBE] Transcribing {label}...")

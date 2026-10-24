@@ -21,7 +21,9 @@ plan(form, job, profile) → [Planned], each with a source:
   needs_me   UNKNOWN: a fact or sensitive answer missing from the bank — the ONLY thing
              that goes to the user
   failed     the LLM couldn't write it (gateway down / error)
-  skipped    optional, nothing to say
+  skipped    optional, nothing to say — never an eligibility question (work authorization,
+             sponsorship: those come to the user when the bank has no answer; optional voluntary
+             demographics may stay blank) and never an optional essay that asks something
 
 HARD RULE: open_text never becomes needs_me.
 """
@@ -58,6 +60,8 @@ _QUESTIONISH = re.compile(
 _OPTIONAL_CATCHALL = re.compile(
     r"additional information|anything else|other (?:comments|information)|\bcomments?\b|\bnotes?\b|\bmessage\b", re.I
 )
+# "If other, please specify" / "If yes, explain": only answered when the earlier choice says so.
+_CONDITIONAL = re.compile(r"^\s*(?:if (?:other|yes|no|so|applicable|you (?:selected|answered|chose))|please specify)\b", re.I)
 # Agreements, attestations and consents are the user's to give — never filled for them.
 _ATTESTATION = re.compile(
     r"\bagree|\backnowledg|\barbitrat|\bconsent|\bcertif|\battest|\bpolicy\b|\bterms\b|"
@@ -91,7 +95,7 @@ _COMPANY_SPECIFIC = re.compile(
 class FormField:
     name: str                 # DOM id (Greenhouse) or the engine's data-aria-fid
     label: str
-    kind: str                 # text | textarea | file | select | multiselect | location | checkbox | radio | date
+    kind: str                 # text | textarea | file | select | multiselect | location | checkbox | radio | buttons | date
     required: bool = False
     options: list = field(default_factory=list)
     section: str = "questions"  # questions | eeoc | demographic | dom
@@ -303,6 +307,24 @@ def _unknown(p: Planned, note: str) -> None:
     p.note = note if p.field.required else ""
 
 
+# Optional voluntary self-identification may stay blank; eligibility never silently does.
+_DEMOGRAPHIC = re.compile(r"gender|\bsex\b|race|ethnic|hispanic|latin[oax]|veteran|disabilit|pronoun|orientation|"
+                          r"transgender|lgbt", re.I)
+
+
+def _missing_sensitive(p: Planned, note: str, key: Optional[str] = None) -> None:
+    if (key or "").startswith("eeo.") or _DEMOGRAPHIC.search(p.field.label or ""):
+        _unknown(p, note)
+    else:
+        _ask(p, note)
+
+
+def _ask(p: Planned, note: str) -> None:
+    """Missing and never skipped, required or not: the user sees it at review (2026-10-23: work
+    authorization / sponsorship on Ashby were 'optional' and silently left blank)."""
+    p.source, p.note = "needs_me", note
+
+
 def _bank(f: FormField, job_ctx: dict, llm_available: bool):
     """(answer, matched key) from the bank for this field."""
     edu = _EDU_FIELD.match(f.name)
@@ -390,11 +412,14 @@ def plan(
             continue
         if key:
             p.category = "sensitive" if is_sensitive(f) else "fact"
-            _unknown(p, _why_unfilled(key, f, job_ctx))
+            if p.category == "sensitive":
+                _missing_sensitive(p, _why_unfilled(key, f, job_ctx), key)
+            else:
+                _unknown(p, _why_unfilled(key, f, job_ctx))
             continue
         if is_sensitive(f):
             p.category = "sensitive"
-            _unknown(p, "sensitive — answer it once in My answers; never guessed")
+            _missing_sensitive(p, "sensitive — answer it once in My answers; never guessed")
             continue
 
         if _PREFERENCE.search(f.label) and not f.options:
@@ -416,9 +441,11 @@ def plan(
         if open_text_kind(f):
             p.category = "open_text"
             # Optional one-liners ("What address will you work from?") are facts or logistics,
-            # not essays; optional textareas only when they ask about you or the job.
-            if f.required or (f.kind == "textarea" and _DRAFT_LABEL.search(f.label)
-                              and not _OPTIONAL_CATCHALL.search(f.label)):
+            # not essays; an optional textarea is written whenever it asks something (2026-10-23:
+            # "What makes you excited about the ElevenLabs mission?" was left blank) — never a
+            # catch-all ("Anything else?") or a follow-up to another answer ("If other, specify").
+            if f.required or (f.kind == "textarea" and (_DRAFT_LABEL.search(f.label) or is_question(f.label))
+                              and not _OPTIONAL_CATCHALL.search(f.label) and not _CONDITIONAL.search(f.label)):
                 to_draft.append(p)
             continue
 
