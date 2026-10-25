@@ -130,11 +130,24 @@ def log_corrections(job: dict, ats_name: str, rows: list, error: str, run: Optio
         corrections.record(job, "fill_error", "fill", error, ats=ats_name, run=run)
 
 
+BLANK_PAGE = "blank page"
+
+
+def _landed(t) -> bool:
+    """The tab left about:blank after navigate (a page we can read is showing)."""
+    try:
+        url = t.run(lambda page: page.url)
+    except Exception:
+        return True                     # can't tell — let the resolver look
+    return url is None or str(url).startswith("http")
+
+
 def _generic(job: dict, progress_fn, tab: Optional[str] = None,
-             wait_fn: Optional[Callable[[str], bool]] = None) -> FillResult:
+             wait_fn: Optional[Callable[[str], bool]] = None, here: str = "") -> FillResult:
     """posting → resolve_apply_target (link / popup / modal / iframe, redirects settled, ATS
     named) → that ATS's adapter: login → fill → verify. Everything runs inside use_tab(tab),
-    keeping the caller's pause/stop gate."""
+    keeping the caller's pause/stop gate. here = the page the tab already shows: resolving
+    starts there (after a sign-in, the form you're on), not back at the posting."""
     import aria.web.agent_browser as agent_browser
     from aria.features.ats import adapters
     from aria.features.ats.apply_target import Tab, resolve_apply_target
@@ -143,7 +156,13 @@ def _generic(job: dict, progress_fn, tab: Optional[str] = None,
     try:
         with agent_browser.use_tab(tab, gate=agent_browser.current_gate()):
             t = Tab.of(tab)
-            t.navigate(job["url"], settle_secs=3.0)
+            if not here:
+                t.navigate(job["url"], settle_secs=3.0)
+                if not _landed(t):
+                    result.form_url = job["url"]
+                    result.error = "The posting never loaded, the tab stayed blank. Say retry and I'll open it again."
+                    result.stopped_at = BLANK_PAGE
+                    return result
             target = resolve_apply_target(t, job, progress_fn, wait_fn)
             if target.stopped:                  # closed / already applied / email only / … — no form to fill
                 from aria.features.ats import situations
@@ -173,23 +192,26 @@ def _generic(job: dict, progress_fn, tab: Optional[str] = None,
 
 
 def fill_application(job: dict, progress_fn: Optional[Callable[[str], None]] = None,
-                     tab: Optional[str] = None, wait_fn: Optional[Callable[[str], bool]] = None) -> FillResult:
+                     tab: Optional[str] = None, wait_fn: Optional[Callable[[str], bool]] = None,
+                     here: str = "") -> FillResult:
     """wait_fn(kind) → True once the user cleared a wall (CAPTCHA / login / agreement) that
-    showed up mid-form; the form engine then carries on."""
+    showed up mid-form; the form engine then carries on. here = the URL the job's tab already
+    shows (a resumed fill): it's filled where it is, never reloaded from the posting."""
     url = (job or {}).get("url", "")
     if not url:
         return FillResult(error="That job has no application URL.")
-    seen = identify(url) or ""
+    seen = identify(here or url) or ""
     html = ""
     if not seen:                 # company career page — the ATS may be embedded in it
         try:
             import aria.web.agent_browser as agent_browser
-            agent_browser.navigate(url, settle_secs=2.5, tab=tab)
+            if not here:
+                agent_browser.navigate(url, settle_secs=2.5, tab=tab)
             html = agent_browser.run(lambda page: page.content(), tab=tab)
-            seen = identify(url, html) or ""
+            seen = identify(here or url, html) or ""
         except Exception as exc:
             logger.warning("couldn't load %s to detect the ATS: %s", url, exc)
-    if detect(url, html) == "greenhouse":
+    if detect(here or url, html) == "greenhouse":
         from aria.features.ats import greenhouse
         gh_tab = tab or greenhouse.TAB
         gh = greenhouse.fill(job, progress_fn, tab=gh_tab)
@@ -203,6 +225,8 @@ def fill_application(job: dict, progress_fn: Optional[Callable[[str], None]] = N
                           filled=gh.filled, tab=gh_tab, error=gh.error)
     if progress_fn and seen:
         progress_fn(f"That's a {seen.title()} form — filling it field by field.")
-    result = _generic(job, progress_fn, tab, wait_fn) if wait_fn is not None else _generic(job, progress_fn, tab)
+    resume = {"here": here} if here else {}
+    result = (_generic(job, progress_fn, tab, wait_fn, **resume) if wait_fn is not None
+              else _generic(job, progress_fn, tab, **resume))
     result.identified = result.identified or seen
     return result

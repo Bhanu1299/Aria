@@ -96,6 +96,8 @@ PAGES = {
     "https://careers.acme.test/nothing": "<h1>Engineer</h1><p>Email us your resume.</p>",
     "https://careers.acme.test/to_lever": '<h1>Engineer</h1><a href="https://jobs.lever.co/acme/1/apply">Apply</a>',
     "https://jobs.lever.co/acme/1/apply": FORM,
+    "https://careers.acme.test/ukg": """<h1>Engineer</h1><ukg-button data-tag-name="button"
+        onclick="window.location='/form'">Apply now</ukg-button>""",
     "https://careers.acme.test/embed": '<h1>Engineer</h1><iframe src="https://jobs.lever.co/acme/1/apply"></iframe>',
 }
 
@@ -290,3 +292,58 @@ def test_verify_reports_what_did_not_stick():
                                            {"label": "B", "value": "", "source": "failed", "status": "failed"}])
     rb = adapters.Adapter().verify(None, ctx)
     assert (rb.ok, rb.mismatches) == (False, ["B"])
+
+
+def test_a_custom_element_apply_button_is_clicked(context):
+    """Ellwood (UltiPro): "Apply now" is a <ukg-button>, not a <button> — it was never seen."""
+    tab, holder = open_tab(context, "https://careers.acme.test/ukg")
+    t = resolve_apply_target(tab, {"url": "https://careers.acme.test/ukg"})
+    assert (t.kind, t.url) == ("same_tab", "https://careers.acme.test/form")
+
+
+def test_a_resumed_fill_starts_where_the_tab_is_never_back_at_the_posting(monkeypatch):
+    """User, 2026-10-24: after signing in, the fill went back to the posting (a new Apply, a new
+    sign-in). A tab that already shows a page is filled from that page."""
+    went = []
+
+    class Spy(adapters.Adapter):
+        def fill(self, tab, ctx):
+            ctx.report = adapters.FillReport(rows=[{"name": "q", "label": "Q", "source": "bank", "value": "x",
+                                                    "status": "filled"}], form_url=ctx.target.url)
+            return ctx.report
+
+    here = "https://recruiting.ultipro.com/ELL1002/JobBoard/x/OpportunityApply?id=1"
+    target = apply_target.ApplyTarget(tab=None, ats="generic", kind="inline", url=here, posting_text="")
+    monkeypatch.setattr(apply_target, "resolve_apply_target", lambda tab, job, progress_fn=None, wait_fn=None: target)
+    monkeypatch.setattr(adapters, "pick", lambda name: Spy())
+    monkeypatch.setattr(apply_target.Tab, "of", classmethod(lambda cls, name: cls(name, lambda fn: "<html></html>",
+                                                                                    lambda u, settle_secs=0: went.append(u),
+                                                                                    lambda p: None)))
+    import aria.web.agent_browser as agent_browser
+    monkeypatch.setattr(agent_browser, "navigate", lambda url, **kw: went.append(url))
+    monkeypatch.setattr(agent_browser, "run", lambda fn, tab=None: "<html></html>")
+    job = {"url": "https://recruiting.ultipro.com/ELL1002/JobBoard/x/OpportunityDetail?id=1", "company": "Ellwood"}
+    result = ats.fill_application(job, tab="apply-1", here=here)
+    assert went == [] and result.form_url == here
+    ats.fill_application(job, tab="apply-1")                    # a fresh tab still opens the posting
+    assert job["url"] in went
+
+
+def test_a_job_with_an_open_tab_is_found_by_row_id_or_url(monkeypatch):
+    from aria.features.applying import tabs
+    entry = {"id": "apply-J0208-1", "row": 10, "job_id": "J0208", "url": "https://x/job", "state": "open"}
+    monkeypatch.setattr(tabs, "live", lambda: [entry])
+    assert tabs.open_for({"row": 10, "url": "https://x/job"}) is entry
+    assert tabs.open_for({"job_id": "J0208"}) is entry
+    assert tabs.open_for({"row": 11, "url": "https://x/other"}) is None
+
+
+def test_generic_path_stops_on_a_page_that_never_loaded(monkeypatch):
+    monkeypatch.setattr(apply_target, "resolve_apply_target",
+                        lambda *a, **k: pytest.fail("a blank page is never resolved"))
+    monkeypatch.setattr(apply_target.Tab, "of", classmethod(lambda cls, name: cls(name, lambda fn: "about:blank",
+                                                                                    lambda u, settle_secs=0: None,
+                                                                                    lambda p: None)))
+    result = ats.fill_application({"url": "https://meijer.wd5.myworkdayjobs.com/x/job/1", "company": "Meijer"},
+                                  tab="apply-1")
+    assert result.stopped_at == ats.BLANK_PAGE and "never loaded" in result.error and not result.filled

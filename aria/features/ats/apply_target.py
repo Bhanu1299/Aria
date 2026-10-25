@@ -66,7 +66,12 @@ ATS_FRAME_JS = """() => (Array.from(document.querySelectorAll('iframe')).map(f =
 AFFORDANCES_JS = """() => {
   const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-  return Array.from(document.querySelectorAll('a, button, [role=button], input[type=button], input[type=submit]'))
+  // custom-element buttons count too (UltiPro / UKG's <ukg-button>Apply now</ukg-button>)
+  const custom = Array.from(document.querySelectorAll('*')).filter(e => /-BUTTON$/.test(e.tagName) ||
+    e.getAttribute('data-tag-name') === 'button');
+  const all = Array.from(document.querySelectorAll('a, button, [role=button], input[type=button], input[type=submit]'));
+  custom.forEach(e => { if (!all.includes(e) && !all.some(a => e.contains(a))) all.push(e); });
+  return all
     .map((e, i) => { e.setAttribute('data-aria-apply', String(i));
       return {i: i, tag: e.tagName.toLowerCase(), visible: vis(e),
         text: ((e.innerText || e.value || e.getAttribute('aria-label') || '') + '').replace(/\\s+/g, ' ').trim().slice(0, 80),

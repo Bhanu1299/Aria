@@ -173,3 +173,34 @@ def test_short_field_wordings_take_the_field_name(reviews):
     cards, _ = answers.cards(ab.load(), reviews)
     start = next(c for c in cards if c["key"] == "edu_start_year")
     assert start["title"] == "Education start year" and start["questions"] == ["Start date year"]
+
+
+# ── Your history: lists with Add / Remove / Save (user 2026-10-25) ──────────────
+
+def test_history_lists_render_with_add_template_and_resume_badge(tmp_path, monkeypatch):
+    monkeypatch.setattr(ab, "BANK_PATH", tmp_path / "answer_bank.json")
+    (tmp_path / "answer_bank.json").write_text(json.dumps({"answers": {}}))
+    monkeypatch.setattr(ab, "_resume_lists", lambda: {"experience": [
+        {"title": "Intern", "company": "Globex <b>", "location": "", "start": "Jan 2025", "end": "May 2025",
+         "description": "• Built billing"}]})
+    html = answers.render(Source(True, {}))
+    sec = re.search(r'<section class="listcard" data-section="experience">.*?</section>', html, re.S).group(0)
+    assert "from your resume — not saved yet" in sec
+    assert 'value="Globex &lt;b&gt;"' in sec                          # escaped
+    assert "<template>" in sec and "+ Add job" in sec and "Save work experience" in sec
+    assert sec.count('<div class="entry">') == 2                       # one entry + the blank template
+    for section in ("education", "projects", "certifications", "languages"):
+        assert f'data-section="{section}"' in html
+
+
+def test_saving_a_list_through_the_dashboard(tmp_path, monkeypatch):
+    monkeypatch.setattr(ab, "BANK_PATH", tmp_path / "answer_bank.json")
+    (tmp_path / "answer_bank.json").write_text(json.dumps({"answers": {}}))
+    entries = [{"school": "State U", "degree": "M.S."}, {"school": "Tech Institute", "degree": "B.Tech."}]
+    got = answers.act({"op": "set_list", "section": "education", "entries": entries})
+    assert got["ok"] and [e["degree"] for e in ab.get_list("education")] == ["M.S.", "B.Tech."]
+    html = answers.render(Source(True, {}))
+    sec = re.search(r'data-section="education">.*?</section>', html, re.S).group(0)
+    assert "not saved yet" not in sec and 'value="Tech Institute"' in sec
+    with pytest.raises(answers.AnswerError):
+        answers.act({"op": "set_list", "section": "hobbies", "entries": []})

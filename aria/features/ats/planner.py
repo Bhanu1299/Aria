@@ -186,6 +186,28 @@ _ATTEST_PHRASE = re.compile(
     r"\btrue,? (?:and |, )?(?:accurate|correct|complete)\b|\baccurate and complete\b|"
     r"\bto the best of my knowledge\b", re.I)
 _CONSENT_OPTION = re.compile(r"\b(?:i )?(?:agree|acknowledge|consent|accept|certify|attest)\b", re.I)
+# "Have you previously worked for Salesforce / this organization / GlobalFoundries as an
+# employee or intern?" — answered from the resume in code, never an LLM guess (training/ATS:
+# every one of the user's Workday applications said No).
+_WORKED_HERE = re.compile(r"\b(?:have you|did you)\b.*\b(?:previously|ever|formerly|before)?\s*"
+                          r"(?:worked|been employed|interned|been an? (?:employee|intern|contractor)|"
+                          r"been contracted|contracted)\b", re.I)
+_THIS_EMPLOYER = re.compile(r"\bthis (?:organi[sz]ation|company|employer|firm)\b|\bour (?:company|organi[sz]ation)\b|"
+                            r"\bfor us\b", re.I)
+
+
+def worked_here(label: str, company: str, resume_words: str) -> Optional[str]:
+    """"No" when the label asks whether you worked for THIS employer and it isn't on your
+    resume; "ask" when it is (only you know); None when the label isn't that question."""
+    name = re.sub(r"\s+", " ", company or "").strip()
+    named = bool(name) and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", label or "", re.I)
+    if not _WORKED_HERE.search(label or "") or not (named or _THIS_EMPLOYER.search(label or "")):
+        return None
+    if name and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", resume_words or "", re.I):
+        return "ask"
+    return "No"
+
+
 _TODAY_LABEL = re.compile(r"^(?:today'?s )?date$|^(?:signature|current|signed) date$|^date signed$", re.I)
 _RESIDENCE = re.compile(r"\bcountry\b|(?:location|country|place) of residence|\bresid(?:e|ence)\b", re.I)
 
@@ -353,6 +375,14 @@ def _bank(f: FormField, job_ctx: dict, llm_available: bool):
     return None, key
 
 
+def _resume_words(resume: Optional[str]) -> str:
+    from aria.features.ats import resume_text
+    try:
+        return resume_text.text(resume) if resume else ""
+    except Exception:
+        return ""
+
+
 def plan(
     form: ParsedForm,
     job: dict,
@@ -370,6 +400,7 @@ def plan(
     plans: list[Planned] = []
     to_guess: list[Planned] = []
     to_draft: list[Planned] = []
+    resume_words: Optional[str] = None
 
     for f in form.fields:
         p = Planned(f)
@@ -401,6 +432,19 @@ def plan(
         if answer_bank.always_ask(f.label):
             p.category = "fact"
             _unknown(p, "you asked to always answer this yourself")
+            continue
+
+        if resume_words is None and _WORKED_HERE.search(f.label or ""):
+            resume_words = _resume_words(resume)
+        before = worked_here(f.label, company, resume_words or "") if f.kind != "textarea" else None
+        if before == "No":
+            value = answer_bank.choose_option("No", f.options) if f.options else "No"
+            if value:
+                p.category, p.value, p.source, p.note = "fact", value, "bank", "not on your resume"
+                continue
+        elif before == "ask":
+            p.category = "fact"
+            _ask(p, f"{company} is on your resume — did you work there?")
             continue
 
         found, key = _bank(f, job_ctx, llm_available)

@@ -49,6 +49,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -178,6 +179,21 @@ _OPEN_QUESTION = re.compile(r"^(?:what|where|which|when|how|who|why|please (?:de
 _YES_NO_QUESTION = re.compile(r"^(?:do|does|are|is|have|has|will|would|can|could|did|were|was)\b")
 # Answered from the job (the sheet's source) first; the bank's value is the default.
 JOB_KEYS = {"referral_source"}
+# "How did you hear about us?" with no sheet source and no bank answer (user, 2026-10-24):
+# a recruiter, whatever the form calls it; else the closest the form offers.
+REFERRAL_DEFAULT = "Recruiter"
+_REFERRAL_PREFERENCE = (
+    r"\brecruiter\b.*\b(?:contact|reach|email|call|message|outreach)|\bcontacted by (?:a |an )?recruiter",
+    r"\brecruiter\b|\bsourcer\b|\bheadhunter\b",
+    r"\brecruit",
+    r"\blinked ?in\b",
+    r"\bjob (?:board|site|posting|search)|\bonline\b|\binternet\b|\bcareers? (?:site|page|website)|\bcompany website\b",
+    r"^other\b",
+)
+_REFERRAL_LABEL = re.compile(r"\bhow did you (?:hear|find out|learn|come across)\b|\bwhere did you (?:hear|find|learn|see)\b|"
+                             r"\bsource where you (?:learned|heard|found)|\breferral source\b", re.I)
+# A phone number's extension / dial code is never the phone number itself
+_NOT_PHONE = re.compile(r"\bext(?:ension)?\b|\b(?:country|dial(?:ing)?|area) (?:phone )?code\b|\bphone (?:device )?type\b")
 
 _PLACEHOLDER = re.compile(r"^<.*>$")
 _YES = {"yes", "y", "true"}
@@ -361,9 +377,39 @@ _DEGREE_LEVELS = [   # (level, words in a value, words in an option) — most sp
 ]
 
 
+# The exact kind of degree, before its level (2026-10-25: "Master of Science" became Meijer's "MA"
+# — fuzzy matching on an abbreviation list). Each kind: (words, kinds to try when it isn't listed).
+_DEGREE_KINDS = {
+    "ms": (r"\bm\.?\s?sc?\b\.?|master of science|master's of science", ()),
+    "ma": (r"\bm\.?\s?a\b\.?|master of arts", ()),
+    "mtech": (r"\bm\.?\s?tech\b\.?|master of technology", ("meng", "ms")),
+    "meng": (r"\bm\.?\s?eng\b\.?|\bm\.?\s?e\b\.?|master of engineering", ("mtech", "ms")),
+    "bs": (r"\bb\.?\s?sc?\b\.?|bachelor of science|bachelor's of science", ()),
+    "ba": (r"\bb\.?\s?a\b\.?|bachelor of arts", ()),
+    "btech": (r"\bb\.?\s?tech\b\.?|bachelor of technology", ("be", "bs")),
+    "be": (r"\bb\.?\s?e\b\.?|\bb\.?\s?eng\b\.?|bachelor of engineering", ("btech", "bs")),
+}
+
+
+def _degree_kind(text: str) -> Optional[str]:
+    t = (text or "").lower().strip()
+    for kind, (words, _fallback) in _DEGREE_KINDS.items():
+        if re.match(r"^(?:" + words + r")(?:$|[\s,(/-])", t) or re.fullmatch(words, t):
+            return kind
+    return None
+
+
 def choose_degree(value: str, options: Sequence[str]) -> Optional[str]:
-    """The option at the same level as the degree in the bank ("Master of Science, CS" →
-    "Master's Degree"). MBA and PhD never fall back to a generic master's/doctor option."""
+    """The option for the degree in the bank: the same kind first (M.S. → "MS" / "Master of
+    Science", never "MA"), then its nearest kind (B.Tech. → "Bachelor of Engineering" / "BS"),
+    then the same level ("Master of Science, CS" → "Master's Degree"). MBA and PhD never fall
+    back to a generic master's/doctor option."""
+    kind = _degree_kind(value)
+    if kind:
+        for want in (kind,) + _DEGREE_KINDS[kind][1]:
+            hits = [o for o in options if _degree_kind(o) == want]
+            if len(hits) == 1:
+                return hits[0]
     v = (value or "").lower()
     for level, in_value, in_option in _DEGREE_LEVELS:
         if re.search(in_value, v):
@@ -429,6 +475,35 @@ def _salary_for(bank: dict, job: Optional[dict]) -> Optional[str]:
 
 COUNTRY_ALIASES = {"united states": {"us", "usa", "u s", "u s a", "united states of america", "america"},
                    "united kingdom": {"uk", "u k", "great britain", "britain"}}
+# The bank says "NY", Workday's State list says "New York" (2026-10-25: Meijer's State failed on
+# exactly this; Simplify ships the same table as stateAbbreviationsToNames).
+US_STATES = {
+    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas", "ca": "california",
+    "co": "colorado", "ct": "connecticut", "de": "delaware", "fl": "florida", "ga": "georgia",
+    "hi": "hawaii", "id": "idaho", "il": "illinois", "in": "indiana", "ia": "iowa", "ks": "kansas",
+    "ky": "kentucky", "la": "louisiana", "me": "maine", "md": "maryland", "ma": "massachusetts",
+    "mi": "michigan", "mn": "minnesota", "ms": "mississippi", "mo": "missouri", "mt": "montana",
+    "ne": "nebraska", "nv": "nevada", "nh": "new hampshire", "nj": "new jersey", "nm": "new mexico",
+    "ny": "new york", "nc": "north carolina", "nd": "north dakota", "oh": "ohio", "ok": "oklahoma",
+    "or": "oregon", "pa": "pennsylvania", "ri": "rhode island", "sc": "south carolina",
+    "sd": "south dakota", "tn": "tennessee", "tx": "texas", "ut": "utah", "vt": "vermont",
+    "va": "virginia", "wa": "washington", "wv": "west virginia", "wi": "wisconsin", "wy": "wyoming",
+    "dc": "district of columbia", "pr": "puerto rico", "gu": "guam", "vi": "virgin islands",
+    "as": "american samoa", "mp": "northern mariana islands",
+}
+_STATE_NAMES = {name: abbr for abbr, name in US_STATES.items()}
+
+
+def _state_option(nv: str, opts: list) -> Optional[str]:
+    """NY ↔ New York, when the options are a list of states."""
+    if nv in US_STATES:
+        want = {US_STATES[nv]}
+    elif nv in _STATE_NAMES:
+        want = {_STATE_NAMES[nv]}
+    else:
+        return None
+    hits = [o for o in opts if _core(o) in want or normalize(o) in want]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _core(option: str) -> str:
@@ -458,6 +533,9 @@ def choose_option(value: str, options: Sequence[str]) -> Optional[str]:
         hits = [o for o in opts if _core(o) in aliases]
         if len(hits) == 1:
             return hits[0]
+    state = _state_option(nv, opts)
+    if state:
+        return state
     years = [o for o in opts if re.fullmatch(r"\d{4}", str(o).strip())]
     if years and len(years) >= len(opts) - 1:             # a year list: 05/18/2026 → 2026
         y = re.findall(r"\b(19\d{2}|20\d{2})\b", str(value))
@@ -547,6 +625,8 @@ def _resolve(bank: dict, key: str, matched: str, score: float, options, job,
             chosen = choose_option(yn, options) if yn else None
         elif key == "grad_date":
             chosen = choose_date_option(value, options) or choose_option(value, options)
+        elif key == "referral_source":
+            chosen = choose_referral(value, options)
         else:
             chosen = choose_option(value, options)
         if chosen is None:
@@ -587,7 +667,8 @@ def lookup_key(key: str, options: Optional[Sequence[str]] = None, job: Optional[
     """The bank's answer for a known key (e.g. a form field identified by its name, not its
     label). Never raises."""
     try:
-        return _resolve(load(path), key, key, 100.0, options, job, normalize(label))
+        found = _resolve(load(path), key, key, 100.0, options, job, normalize(label))
+        return found or (referral_default(options, matched=key) if key == "referral_source" else None)
     except Exception as exc:
         logger.error("answer_bank.lookup_key(%r) failed: %s", key, exc)
         return None
@@ -651,7 +732,26 @@ def _match_field(bank: dict, q: str, llm: bool = False) -> Match:
 def _guard(q: str, m: "Match") -> "Match":
     if m.key in _EDU_KEYS and _HIGH_SCHOOL.search(q):
         return Match()
+    if m.key == "phone" and _NOT_PHONE.search(q):       # "Phone Extension" got the phone number (Meijer)
+        return Match()
     return m
+
+
+def is_referral_label(label: str) -> bool:
+    return bool(_REFERRAL_LABEL.search(normalize(label)))
+
+
+def choose_referral(value: str, options: Sequence[str]) -> Optional[str]:
+    """The option for "how did you hear about us": `value` itself if the form has it, else a
+    recruiter option, else LinkedIn / a job board / Other — the first kind the form offers."""
+    exact = choose_option(value, options)
+    if exact is not None:
+        return exact
+    for pattern in _REFERRAL_PREFERENCE:
+        hits = [o for o in options if str(o).strip() and re.search(pattern, normalize(o))]
+        if hits:
+            return hits[0]
+    return None
 
 
 def _match(bank: dict, q: str) -> tuple[Optional[str], Optional[str], float, str]:
@@ -766,8 +866,18 @@ def _lookup(bank: dict, label: str, options, job, llm: bool = False) -> Optional
         if found:
             return found
     if m.question:
-        return _learned(bank, m.question, m.question, m.score, options)
+        found = _learned(bank, m.question, m.question, m.score, options)
+        if found:
+            return found
+    if m.key == "referral_source" or (m.question and is_referral_label(m.question)):
+        return referral_default(options, matched=q)
     return None
+
+
+def referral_default(options: Optional[Sequence[str]] = None, matched: str = "") -> Optional[Answer]:
+    """Nothing in the sheet, the bank or your saved answers: Recruiter (the closest option)."""
+    value = choose_referral(REFERRAL_DEFAULT, options) if options else REFERRAL_DEFAULT
+    return Answer(key="referral_source", value=value, source="bank", matched=matched or "default") if value else None
 
 
 def matched_key(label: str, path: Optional[Path] = None, llm: bool = False) -> Optional[str]:
@@ -931,6 +1041,13 @@ def _apply(target: str, key: str, value, job: str = "", path: Optional[Path] = N
                 aliases[key] = items
             else:
                 aliases.pop(key, None)
+        elif target == "list":
+            lists = data.setdefault("lists", {})
+            old = lists.get(key, _MISSING)
+            if value is _MISSING:
+                lists.pop(key, None)
+            else:
+                lists[key] = value
         elif target == "salary_floor":
             rule = data.setdefault("salary_rule", {})
             old = rule.get("floor", _MISSING)
@@ -960,6 +1077,74 @@ def set_answer(key: str, value: Optional[str], source: str = "dashboard", path: 
         raise ValueError(f"bad answer key {key!r}")
     v = (value or "").strip()
     return _edit("answer", key, v if v else None, source=source, path=path)
+
+
+# ---------------------------------------------------------------------------
+# Lists: your jobs, schools, projects … (each entry a set of fields; the dashboard adds/removes)
+# ---------------------------------------------------------------------------
+
+# section → [(field, label, kind)] — kind "line" | "text" (multi-line). Dates as "Jan 2025" / "Present".
+LIST_FIELDS = OrderedDict([
+    ("experience", [("title", "Job title", "line"), ("company", "Company", "line"), ("location", "Location", "line"),
+                    ("start", "Start (e.g. Jan 2025)", "line"), ("end", "End (e.g. May 2025, or Present)", "line"),
+                    ("description", "What you did", "text")]),
+    ("education", [("school", "School", "line"), ("degree", "Degree (e.g. M.S., B.Tech.)", "line"),
+                   ("field", "Field of study", "line"), ("start", "Start (e.g. Aug 2024)", "line"),
+                   ("end", "End / expected (e.g. May 2026)", "line"), ("gpa", "GPA", "line")]),
+    ("projects", [("name", "Project", "line"), ("start", "Start", "line"), ("end", "End (or Present)", "line"),
+                  ("link", "Link", "line"), ("description", "What it does", "text")]),
+    ("certifications", [("name", "Certification", "line"), ("issuer", "Issued by", "line"), ("date", "Date", "line")]),
+    ("languages", [("language", "Language", "line"), ("proficiency", "Proficiency (e.g. Native, Fluent)", "line")]),
+])
+LIST_TITLES = {"experience": "Work experience", "education": "Education", "projects": "Projects",
+               "certifications": "Certifications", "languages": "Languages"}
+_MAX_ENTRIES = 30
+_MAX_FIELD = 4000
+
+
+def _resume_lists() -> dict:
+    try:
+        from aria.features.ats import planner, resume_sections, resume_text
+        return resume_sections.parse(resume_text.text(planner.resume_path()))
+    except Exception as exc:
+        logger.warning("answer_bank: resume lists unreadable: %s", exc)
+        return {}
+
+
+def list_state(section: str, path: Optional[Path] = None) -> tuple:
+    """(entries, saved). Not saved yet → the entries read from your resume (saved=False)."""
+    if section not in LIST_FIELDS:
+        raise ValueError(f"unknown list {section!r}")
+    stored = (_read_file(path or BANK_PATH).get("lists") or {})
+    if section in stored:
+        return [dict(e) for e in stored[section] if isinstance(e, dict)], True
+    return [dict(e) for e in _resume_lists().get(section, [])], False
+
+
+def get_list(section: str, path: Optional[Path] = None) -> list:
+    """Your entries for a section — what the forms get. Never raises."""
+    try:
+        return list_state(section, path)[0]
+    except Exception as exc:
+        logger.warning("answer_bank: list %s unreadable: %s", section, exc)
+        return []
+
+
+def set_list(section: str, entries: list, source: str = "dashboard", path: Optional[Path] = None) -> int:
+    """Replace a whole section (an empty list = you have none — stays empty, not re-read from the resume)."""
+    if section not in LIST_FIELDS:
+        raise ValueError(f"unknown list {section!r}")
+    if not isinstance(entries, list) or len(entries) > _MAX_ENTRIES:
+        raise ValueError(f"{section}: a list of at most {_MAX_ENTRIES} entries")
+    keys = [f for f, _l, _k in LIST_FIELDS[section]]
+    clean = []
+    for e in entries:
+        if not isinstance(e, dict):
+            raise ValueError(f"{section}: every entry is a set of fields")
+        row = {k: str(e.get(k) or "").strip()[:_MAX_FIELD] for k in keys}
+        if any(row.values()):                       # an entry left completely blank is dropped
+            clean.append(row)
+    return _edit("list", section, clean, source=source, path=path)
 
 
 def set_learned(question: str, value: Optional[str], source: str = "dashboard") -> int:

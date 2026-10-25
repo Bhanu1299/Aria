@@ -299,13 +299,31 @@ def _capture_unlabeled(result, out: Path, stem: str) -> None:
         logger.warning("applicator: unlabeled-field capture failed: %s", exc)
 
 
+def _short_label(label: str) -> str:
+    """A form label cut to what's worth saying: the first clause, at most 12 words."""
+    text = re.sub(r"\s+", " ", label or "").strip(" *:")
+    text = re.split(r"(?<=[?.])\s", text)[0].rstrip("?.")
+    words = text.split()
+    return " ".join(words[:12]) + (" …" if len(words) > 12 else "")
+
+
+def _open_questions(result) -> str:
+    """The questions left for the user, named (2026-10-25: "3 facts are missing" gave the agent
+    nothing to answer "pull them out" with, so it re-ran the fill)."""
+    labels = [_short_label(r.get("label") or r.get("name", "")) for r in result.review
+              if r.get("source") == "needs_me"]
+    labels = [l for l in labels if l] or ["one field"]
+    head = "1 question is yours: " if len(labels) == 1 else f"{len(labels)} questions are yours: "
+    shown = labels[:4]
+    more = f", and {len(labels) - 4} more" if len(labels) > 4 else ""
+    return head + "; ".join(shown) + more + "."
+
+
 def spoken_result(result, company: str, role: str) -> str:
     ats_name = _ATS_NAME.get(result.ats, "Application")
     n_me, n_failed = result.count("needs_me"), result.count("failed")
     drafts = result.count("llm_draft") + result.count("reused")
-    need = ("Nothing needs you." if n_me == 0
-            else "1 fact is missing from your answer bank." if n_me == 1
-            else f"{n_me} facts are missing from your answer bank.")
+    need = "Nothing needs you." if n_me == 0 else _open_questions(result)
     out = f"{ats_name} form filled for {role} at {company}. {need}"
     if n_failed:
         out += f" {n_failed} field{'s' if n_failed != 1 else ''} wouldn't take a value."
@@ -370,6 +388,19 @@ def _run_logged(run: run_log.Run, job: dict, fn: Callable[[], str], label: bool 
     return out
 
 
+def _tab_page(tab: str) -> str:
+    """The page a job's tab already shows ("" = a fresh tab, or it's gone): the fill starts
+    there instead of reloading the posting."""
+    import aria.web.agent_browser as agent_browser
+    try:
+        if not agent_browser.has_tab(tab):
+            return ""
+        url = agent_browser.run(lambda page: page.url, tab=tab) or ""
+    except Exception:
+        return ""
+    return url if url.startswith("http") else ""
+
+
 def run_application(
     job: dict,
     progress_fn: Optional[Callable[[str], None]] = None,
@@ -412,15 +443,21 @@ def _run_application(
             _finish(job, "", "error", before, ok=False, note=note)
             return f"{role} at {company} has no application link I can open, so I marked it Needs human."
 
-        entry = entry or tabs.add(job)
+        # A job that already has its tab carries on THERE — where you signed in — never in a new
+        # tab back at the posting (user, 2026-10-24: a new tab asked for the login again).
+        entry = entry or tabs.open_for(job) or tabs.add(job)
         tab = entry["id"]
+        if entry.get("state") != tabs.FILLING:
+            tabs.update(tab, state=tabs.FILLING)
+        here = _tab_page(tab)
+        resume = {"here": here} if here else {}
         with _step("fill form") as step, agent_browser.use_tab(tab, gate=gate):
             if _is_linkedin(url):
                 result = _fill_linkedin(job, voice_ask_fn)
             elif wait_fn is not None:
-                result = ats.fill_application(job, say, tab=tab, wait_fn=wait_fn)
+                result = ats.fill_application(job, say, tab=tab, wait_fn=wait_fn, **resume)
             else:
-                result = ats.fill_application(job, say, tab=tab)
+                result = ats.fill_application(job, say, tab=tab, **resume)
             n_need = result.count("needs_me") if result.review else 0
             step.detail = (f"{_ATS_NAME.get(result.ats, result.ats or 'form')}: {len(result.filled or {})} filled, "
                            f"{n_need} need you" + (f" — {result.error}" if result.error else ""))
@@ -435,10 +472,16 @@ def _run_application(
 
         result.tab = tab
         tabs.update(tab, company=company, role=role, ats=result.ats, form_url=result.form_url)
-        if not result.error and not result.filled and not result.review and result.stopped_at in ("no fields", ""):
+        if not result.error and not result.filled and not result.review and \
+                result.stopped_at in ("no fields", "", "vision fallback"):
             # Nothing filled and nothing to review: the form was never reached (a sign-in step,
-            # a page still loading). Never report that as a filled application.
+            # a page still loading, a vision pass that did nothing). Never report that as filled.
             result.error = "I couldn't find the form on that page, so nothing was filled."
+        if result.error and not result.review and result.stopped_at == ats.BLANK_PAGE:
+            # The page never loaded: nothing is wrong with the job, so the sheet keeps its status.
+            tabs.update(tab, state=tabs.OPEN, note=result.error)
+            _finish(job, result.ats, "error", before, ok=False, note=result.error)
+            return f"I couldn't open the application for {role} at {company}. {result.error}"
         if result.error and not result.review:
             tabs.update(tab, state=tabs.OPEN, note=result.error)
             _sheet_update(job, sheets.STATUS_NEEDS_HUMAN, result.error)

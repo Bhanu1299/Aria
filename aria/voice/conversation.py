@@ -11,14 +11,13 @@ Flow per window:
   silence) → transcribe → closing phrase or silence ends the conversation
   → otherwise run the turn and re-open the window.
 
-The window opens only when Aria's answer asked something (a "?" near its end):
-after a plain answer the mic stays shut until the wake word or ⌥Space. And sound
-already playing the moment the mic opens (a video, music — nobody starts talking
-within _BACKGROUND_SECS of the cue) closes it unheard. Both since 2026-10-23: a
-video's dialogue was being taken as follow-ups, turn after turn.
+The window opens after every answer (2026-10-25, user's call). Sound already
+playing the moment the mic opens (a video, music — nobody starts talking within
+_BACKGROUND_SECS of the cue) closes it unheard (2026-10-23: a video's dialogue was
+being taken as follow-ups, turn after turn).
 
-ARIA_CONVERSATION: 1 (default) = after a question only · always = after every
-answer · 0 = off.
+ARIA_CONVERSATION: 1 (default) = after every answer · question = only after an
+answer that asked something · 0 = off.
 Everything here is defensive: hold() never raises to the command loop.
 """
 
@@ -27,13 +26,13 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import threading
 from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
 
 import aria.ui.listening_indicator as listening_indicator
+from aria.voice import vad
 
 SAMPLE_RATE = 16000
 _CHUNK = 512                     # 32 ms @ 16 kHz per read
@@ -49,6 +48,7 @@ _MAX_FOLLOWUPS = 6               # safety cap per conversation
 _BACKGROUND_SECS = 0.25          # sound this soon after the cue = something already playing
 
 _CUE_SOUND = "/System/Library/Sounds/Pop.aiff"
+_CUE_SECS = "0.45"
 
 # Phrases that end the conversation. Matched against the whole normalized
 # transcript so "thanks for that summary" does NOT end it, but "thanks" does.
@@ -74,9 +74,10 @@ def enabled() -> bool:
 
 
 def invites_reply(answer: Optional[str]) -> bool:
-    """Should the mic re-open after this answer? Only if it asked something — unless
-    ARIA_CONVERSATION=always. None (answer unknown) keeps the window."""
-    if answer is None or os.getenv("ARIA_CONVERSATION", "1").strip().lower() == "always":
+    """Should the mic re-open after this answer? After every answer (user 2026-10-25: "when a
+    response ends make sure mic is on") — ARIA_CONVERSATION=question keeps it to answers that
+    asked something. None (answer unknown) keeps the window."""
+    if answer is None or os.getenv("ARIA_CONVERSATION", "1").strip().lower() != "question":
         return True
     return "?" in (answer or "").strip()[-160:]
 
@@ -92,17 +93,17 @@ def is_end_phrase(text: str) -> bool:
 
 
 def _play_cue() -> None:
-    """Soft pop so the user knows the mic is open. Non-blocking, best-effort."""
+    """Soft pop so the user knows the mic is open. Blocks until it has played: the mic opens
+    only after it (2026-10-25: started in a thread, the pop reached the mic at RMS 450–2000
+    ~0.26 s after the mic opened → "already playing" or a fake 0.1 s utterance → every
+    follow-up window died). -t plays just the audible pop, not the file's 1.6 s tail."""
     if not os.path.exists(_CUE_SOUND):
         return
-    threading.Thread(
-        target=lambda: subprocess.run(
-            ["afplay", _CUE_SOUND],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ),
-        daemon=True,
-    ).start()
+    try:
+        subprocess.run(["afplay", "-t", _CUE_SECS, _CUE_SOUND], timeout=2,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
 
 def _listen_followup() -> Optional[np.ndarray]:
@@ -120,6 +121,9 @@ def _listen_followup() -> Optional[np.ndarray]:
     pre_speech_elapsed = 0.0
     total_elapsed = 0.0
     chunk_secs = _CHUNK / SAMPLE_RATE
+    # a speech model, not loudness, decides what is talking (fans, music, the cue aren't);
+    # no model → the RMS gate
+    detector = vad.detector()
 
     try:
         stream = sd.InputStream(
@@ -143,11 +147,12 @@ def _listen_followup() -> Optional[np.ndarray]:
             audio_np = np.asarray(data).reshape(-1)
             rms = float(np.sqrt(np.mean(audio_np.astype(np.float32) ** 2)))
             total_elapsed += chunk_secs
+            speech = detector.is_speech(audio_np) if detector is not None else rms >= _SPEECH_RMS
 
-            if rms >= _SPEECH_RMS and not speech_started and total_elapsed <= _BACKGROUND_SECS:
-                print("[Aria] Sound was already playing when the mic opened — not a follow-up.")
+            if speech and not speech_started and total_elapsed <= _BACKGROUND_SECS:
+                print("[Aria] Someone was already talking when the mic opened — not a follow-up.")
                 return None
-            if rms >= _SPEECH_RMS:
+            if speech:
                 speech_started = True
                 silence_duration = 0.0
                 speech_duration += chunk_secs

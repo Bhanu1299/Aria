@@ -7,6 +7,9 @@ Top to bottom:
                      keeps an answer to that job. Unlabeled fields show only when Aria captured
                      their nearby text and a screenshot crop — otherwise there's nothing to go on.
   Check these        the LLM's guesses in your reviews (not from your bank): Keep / Change
+  Your history       work experience, education, projects, certifications, languages — one
+                     set of fields per entry, "Add …" opens a new blank set, Remove drops one,
+                     Save writes the list. Until saved, the entries come from your resume.
   Your info          grouped, read-only; Edit per group (inputs + "always ask me"). Unset
                      fields first, in red.
   History            collapsed
@@ -211,6 +214,9 @@ def act(body: dict) -> dict:
             if "salary_floor" in body:
                 ids.append(ab.set_salary_floor(int(body["salary_floor"] or 0)))
             return {"ok": True, "changes": ids}
+        if op == "set_list":
+            cid = ab.set_list(str(body.get("section") or ""), body.get("entries"))
+            return {"ok": True, "change": cid}
         if op == "set_learned":
             cid = ab.set_learned(str(body.get("question") or ""), body.get("value"))
         elif op == "set_job":
@@ -284,6 +290,45 @@ def _group_html(g: dict, floor: Optional[int], ask_salary: bool) -> str:
             ' <span class="result small"></span></div><!--/edit--></section>')
 
 
+_SINGULAR = {"experience": "job", "education": "school", "projects": "project",
+             "certifications": "certification", "languages": "language"}
+
+
+def _entry_html(section: str, entry: dict) -> str:
+    cells = []
+    for key, label, kind in ab.LIST_FIELDS[section]:
+        v = e(entry.get(key, ""))
+        box = (f'<textarea data-f="{key}" rows="4" spellcheck="false">{v}</textarea>' if kind == "text"
+               else f'<input data-f="{key}" value="{v}" spellcheck="false">')
+        cells.append(f'<label class="lf{" wide" if kind == "text" else ""}"><span>{e(label)}</span>{box}</label>')
+    return (f'<div class="entry"><div class="ehead"><span class="enum"></span>'
+            f'<a href="#" class="rmentry small">Remove</a></div><div class="egrid">{"".join(cells)}</div></div>')
+
+
+def _lists_html() -> str:
+    out = []
+    for section in ab.LIST_FIELDS:
+        try:
+            entries, saved = ab.list_state(section)
+        except Exception as exc:
+            out.append(f'<p class="warn">{e(section)}: {e(str(exc))}</p>')
+            continue
+        title, one = ab.LIST_TITLES[section], _SINGULAR[section]
+        badge = ("" if saved or not entries else
+                 '<span class="pill warn">from your resume — not saved yet</span>')
+        out.append(
+            f'<section class="listcard" data-section="{e(section)}"><div class="ghead"><h4>{e(title)} '
+            f'<span class="count">{len(entries)}</span></h4>{badge}</div>'
+            f'<div class="entries">{"".join(_entry_html(section, en) for en in entries)}</div>'
+            f'<template>{_entry_html(section, {})}</template>'
+            f'<div class="lactions"><button class="addentry">+ Add {e(one)}</button>'
+            f'<button class="savelist primary">Save {e(title.lower())}</button> <span class="result small"></span></div></section>')
+    return ('<h3 class="sub3">Your history</h3><p class="muted small">What forms get for their repeating blocks '
+            '(Workday’s Work Experience 1, 2 …, Education 1, 2 …): entry 1 goes in block 1. Projects never go into '
+            'work experience. Dates like “Jan 2025”; “Present” for now.</p>'
+            f'<div class="lists">{"".join(out)}</div>')
+
+
 def render(reviews_src) -> str:
     try:
         bank = ab.load()
@@ -314,6 +359,8 @@ def render(reviews_src) -> str:
         out.append(f'<h3 class="sub3">Check these <span class="count">{len(guesses)}</span></h3>'
                    '<p class="muted small">The LLM filled these, not your answers. Keep one to make it yours.</p>'
                    f'<div class="card"><div class="tablewrap"><table class="answers"><tbody>{trs}</tbody></table></div></div>')
+
+    out.append(_lists_html())
 
     floor = int(bank.get("salary_rule", {}).get("floor") or ab.DEFAULT_SALARY_FLOOR)
     ask_salary = "salary_rule" in (bank.get("always_ask") or [])
@@ -358,7 +405,7 @@ CSS = r"""
 .yn button.on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .scope a{color:var(--muted);margin-right:8px}.scope a.on{color:var(--accent);font-weight:600}
 .saveall{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 22px}
-.infogroups{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin:0 0 22px}
+.infogroups{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:12px;margin:0 0 22px}
 .infogroup{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;min-width:0}
 .ghead{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.ghead button{padding:4px 10px;font-size:12px}
 .kv{display:grid;grid-template-columns:minmax(110px,40%) minmax(0,1fr) auto;gap:12px;padding:7px 0;font-size:13px;
@@ -366,6 +413,17 @@ border-top:1px solid var(--line);overflow-wrap:anywhere}.view .kv:first-child{bo
 .kv .k{color:var(--muted)}.kv.unset .k,.kv.unset .v{color:var(--bad);font-weight:600}
 .infogroup.editing{grid-column:1/-1}.infogroup .edit label{white-space:nowrap}.infogroup .edit td:first-child{width:30%}
 .infogroup .edit button{margin-top:10px}
+.lists{display:grid;gap:12px;margin:0 0 22px}.listcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;min-width:0}
+.entries{counter-reset:entry}.entry{border-top:1px solid var(--line);padding:12px 0;counter-increment:entry}
+.entries .entry:first-child{border-top:none}.ehead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.enum:before{content:"#" counter(entry);font:600 11px/1 var(--mono);color:var(--accent)}.rmentry{color:var(--bad)}
+.egrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(220px,100%),1fr));gap:10px}
+.lf{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);min-width:0}.lf.wide{grid-column:1/-1}
+.lf input,.lf textarea{width:100%;box-sizing:border-box;color:var(--ink)}
+.lf textarea{font:inherit;font-size:13px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--input);resize:vertical}
+.lf textarea:focus{outline:none;border-color:var(--accent)}
+.lactions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.listcard .ghead{flex-wrap:wrap;gap:6px 10px}.listcard .ghead .pill{margin-left:auto;white-space:normal}
 details.history{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px}
 details.history>summary{font:500 11px/1.5 var(--mono);text-transform:uppercase;letter-spacing:.09em}
 """
@@ -398,5 +456,15 @@ if(t.classList.contains('changeguess')){row.querySelector('.guess').hidden=true;
 row.querySelector('.keepguess').textContent='Save';return}
 if(t.matches('a.forget')){ev.preventDefault();var k=t.closest('.kv');post({op:'set_learned',question:k.dataset.learned,value:''}).then(function(d){if(d._ok)k.remove()});return}
 if(t.matches('a.forgetjob')){ev.preventDefault();var k2=t.closest('.kv');post({op:'set_job',job:k2.dataset.job,question:k2.dataset.jobq,value:''}).then(function(d){if(d._ok)k2.remove()});return}
+var lc=t.closest('.listcard');
+if(lc&&t.classList.contains('addentry')){var tpl=lc.querySelector('template');var box=lc.querySelector('.entries');
+box.appendChild(tpl.content.cloneNode(true));var last=box.lastElementChild;var f=last&&last.querySelector('input,textarea');if(f)f.focus();return}
+if(lc&&t.classList.contains('rmentry')){ev.preventDefault();t.closest('.entry').remove();
+msg(lc.querySelector('.result'),'Removed — Save to keep it that way.',true);return}
+if(lc&&t.classList.contains('savelist')){var entries=[];lc.querySelectorAll('.entries .entry').forEach(function(en){var o={};
+en.querySelectorAll('[data-f]').forEach(function(i){o[i.dataset.f]=i.value});entries.push(o)});
+post({op:'set_list',section:lc.dataset.section,entries:entries}).then(function(d){
+msg(lc.querySelector('.result'),d._ok?('Saved '+entries.length+' — the next fill uses it.'):(d.error||'failed'),d._ok);
+if(d._ok){var b=lc.querySelector('.ghead .pill');if(b)b.remove();var c=lc.querySelector('.ghead .count');if(c)c.textContent=String(entries.length)}});return}
 if(t.classList.contains('undo')){post({op:'undo',id:parseInt(t.dataset.id,10)}).then(function(d){if(d._ok)t.replaceWith(document.createTextNode('undone — reload to see'))})}})})();
 """

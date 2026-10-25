@@ -128,6 +128,16 @@ def by_company(text: str) -> list:
     return [e for e in live() if _starts(e.get("company", ""), want)]
 
 
+def open_for(job: dict) -> Optional[dict]:
+    """The live tab already holding this job (same sheet row, ID or URL), newest first, or None."""
+    row, jid, url = job.get("row"), job.get("job_id"), (job.get("url") or "").strip()
+    for e in reversed(live()):
+        if (jid and e.get("job_id") == jid) or (row and e.get("row") == row) or \
+                (url and url in (e.get("url"), e.get("form_url"))):
+            return e
+    return None
+
+
 def is_open_for(job: dict) -> bool:
     row, url = job.get("row"), (job.get("url") or "").strip()
     return any((row and e.get("row") == row) or (url and url in (e.get("url"), e.get("form_url")))

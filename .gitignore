@@ -26,3 +26,6 @@ audit/
 
 # Retrained on every run from the user's voice samples: local only
 training/models/checkpoints/
+
+# Your own application printouts (address, phone, email): never tracked
+training/ATS/

@@ -265,7 +265,7 @@ def test_system_prompt_mentions_task_tracking():
     from aria.core.agent import _build_system_prompt
     p = _build_system_prompt()
     assert "update_tasks" in p
-    assert len(p.split()) < 600  # keep the per-utterance token cost bounded
+    assert len(p.split()) < 1300  # bounded: paid on every utterance (static prefix is cached)
 
 
 # ---------------------------------------------------------------------------

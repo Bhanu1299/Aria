@@ -3,8 +3,10 @@ with its own account, so each tenant host has its own Keychain entry.
 
 login — a state machine over Workday's data-automation-id markers (classify(), pure):
   posting         → click Apply (adventureButton)
-  start           → "Use My Last Application" if the tenant offers it, else "Apply Manually"
-                    (never "Autofill with Resume": its parse overwrites what the bank knows)
+  start           → "Autofill with Resume" when your resume file is set (user, 2026-10-24: Workday
+                    fills the experience / education sections from it; the bank's answers still
+                    overwrite every field it knows), else "Use My Last Application", else "Apply Manually"
+  upload          → the autofill step: your resume attached, its upload waited for, then Continue
   sign_in         → the tenant's Keychain login typed straight into the page; no saved login →
                     Create Account; a rejected login → handed to you (logged)
   create_account  → your application email + a generated password, saved to the Keychain
@@ -14,9 +16,10 @@ login — a state machine over Workday's data-automation-id markers (classify(),
                     (email_code); none after a few polls → handed to you
   signed_in       → the wizard
 fill — the form engine page by page with Workday's own field ids mapped to bank keys (FIELD_KEYS),
-  "Save and Continue" between pages, never Submit. A page Workday won't leave (its validation
-  errors) stops the run there, and every error it shows comes back as a field for you —
-  nothing is guessed to get past it.
+  "Save and Continue" between pages, never Submit. A page counts as left only when its step /
+  questions changed (Workday re-draws a page it refuses to leave). A page Workday won't leave
+  (its validation errors) stops the run there, and every error it shows comes back as a field
+  for you — nothing is guessed to get past it.
 
 Passwords: read from the Keychain inside the browser step that types them; never in a prompt,
 a log line, a progress message, a review row or a correction snapshot.
@@ -41,6 +44,7 @@ AFTER_CLICK_SECS = 2.5
 # isn't recognizable yet is polled this many times before it counts as unrecognized.
 LOAD_WAITS = 8
 LOAD_POLL_SECS = 1.5
+UPLOAD_WAIT_SECS = 45
 
 STATE_JS = r"""() => {
   const vis = e => { if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
@@ -48,10 +52,15 @@ STATE_JS = r"""() => {
   const box = document.querySelector('[data-automation-id="createAccountCheckbox"]');
   const code = document.querySelector('[data-automation-id="verificationCode"], input[name*="verification" i], input[autocomplete="one-time-code"]');
   const step = document.querySelector('[data-automation-id="progressBarActiveStep"]');   // the bar itself lists every step
+  const fileIn = document.querySelector('[data-automation-id="file-upload-input-ref"], input[type=file]');
+  const done = document.querySelector('[data-automation-id="file-upload-successful"], [data-automation-id="delete-file"]');
   return {
     posting: aid('adventureButton'),
     start: aid('applyManually') || aid('useMyLastApplication') || aid('autofillWithResume'),
     last_app: aid('useMyLastApplication'),
+    autofill: aid('autofillWithResume'),
+    file_input: !!fileIn,
+    uploaded: vis(done),
     sign_in: aid('signInSubmitButton') || aid('signInContent') || (aid('password') && !aid('verifyPassword')),
     create: aid('createAccountSubmitButton') || aid('verifyPassword'),
     create_link: aid('createAccountLink'),
@@ -71,14 +80,20 @@ STATE_JS = r"""() => {
 # Account/Sign In"): on that step the progress bar is not "signed in".
 _LOGIN_STEP = re.compile(r"sign ?in|create account|log ?in", re.I)
 _REVIEW_STEP = re.compile(r"\breview\b", re.I)
+_AUTOFILL_STEP = re.compile(r"autofill|upload (?:your )?(?:resume|cv)", re.I)
 _VERIFY_TEXT = re.compile(r"verify your (?:email|account)|verification (?:email|link|code)|"
                           r"check your (?:email|inbox)|we(?:'ve| have)? sent (?:you )?an? (?:email|code)", re.I)
 
 
 def classify(s: dict) -> str:
-    """posting | start | sign_in | create_account | verify_email | signed_in | loading | unknown.
-    loading = the wizard is on its sign-in step but hasn't drawn the sign-in box yet."""
+    """posting | start | upload | sign_in | create_account | verify_email | signed_in | loading | unknown.
+    loading = the wizard is on its sign-in step but hasn't drawn the sign-in box yet.
+    upload = the "Autofill with Resume" step (its file box; My Experience's resume box isn't it)."""
     login_step = bool(_LOGIN_STEP.search(s.get("step") or ""))
+    on_autofill = _AUTOFILL_STEP.search(s.get("step") or "") or (
+        not s.get("step") and re.search(r"autofill with resume", (s.get("text") or "")[:600], re.I))
+    if s.get("file_input") and on_autofill and not (s.get("sign_in") or s.get("create") or s.get("code_box")):
+        return "upload"
     if s.get("wizard") and not (s.get("sign_in") or s.get("create") or s.get("code_box") or login_step):
         return "signed_in"
     if s.get("create"):
@@ -115,6 +130,10 @@ def _click_aid(page, aid: str) -> bool:
     return True
 
 
+def _next_button(page) -> bool:
+    return _click_aid(page, "bottom-navigation-next-button") or _click_aid(page, "pageFooterNextButton")
+
+
 def _type_aid(page, aid: str, value: str) -> bool:
     loc = page.locator(f'input[data-automation-id="{aid}"], [data-automation-id="{aid}"] input').first
     if loc.count() == 0:
@@ -137,6 +156,13 @@ class WorkdayAdapter(Adapter):
         (r"linkedinQuestion|linkedIn(?:Url)?", "linkedin"),
     )
 
+    def field_key(self, raw: dict) -> str:
+        key = super().field_key(raw)
+        if key == "phone" and re.search(r"extension|\bext\b|country ?phone ?code|device type",
+                                        f"{raw.get('label') or ''} {raw.get('aid') or ''} {raw.get('name') or ''}", re.I):
+            return ""                 # the extension / dial code inside the phone section is not the number
+        return key
+
     # -- helpers ------------------------------------------------------------
     def _state(self, tab: Tab) -> dict:
         return tab.run(lambda page: page.evaluate(STATE_JS))
@@ -156,6 +182,26 @@ class WorkdayAdapter(Adapter):
             return True
         return False
 
+    def _upload_resume(self, tab: Tab, ctx: ApplyContext) -> bool:
+        """The autofill step: attach the resume, wait for Workday to take it, Continue."""
+        from aria.features.ats import planner
+        resume = planner.resume_path()
+        if not resume:
+            return False
+        ctx.progress_fn("Uploading your resume so Workday can autofill from it.")
+        tab.run(lambda page: page.locator('[data-automation-id="file-upload-input-ref"], input[type=file]')
+                .first.set_input_files(resume, timeout=10000))
+        name = resume.rsplit("/", 1)[-1].lower()
+        deadline = time.time() + UPLOAD_WAIT_SECS
+        while time.time() < deadline:
+            time.sleep(1.5)
+            st = self._state(tab)
+            if st.get("uploaded") or name in (st.get("text") or "").lower():
+                break
+        tab.run(_next_button)
+        self._after_click(tab)
+        return True
+
     @staticmethod
     def _email() -> str:
         import aria.features.answer_bank as answer_bank
@@ -167,7 +213,7 @@ class WorkdayAdapter(Adapter):
         host = tenant(ctx.target.url or ctx.job.get("url", ""))
         email = self._email()
         say = ctx.progress_fn
-        tried_sign_in = created = verified = email_form = False
+        tried_sign_in = created = verified = email_form = uploaded = False
         started = time.time()
         waits = 0
         for _ in range(MAX_STEPS + LOAD_WAITS):
@@ -184,10 +230,20 @@ class WorkdayAdapter(Adapter):
                 tab.run(lambda page: _click_aid(page, "adventureButton"))
                 self._after_click(tab)
             elif state == "start":
-                choice = "useMyLastApplication" if s.get("last_app") else "applyManually"
-                say("Using your last application on this Workday." if s.get("last_app") else "Choosing Apply Manually.")
+                from aria.features.ats import planner
+                if s.get("autofill") and planner.resume_path():
+                    choice, line = "autofillWithResume", "Choosing Autofill with Resume."
+                elif s.get("last_app"):
+                    choice, line = "useMyLastApplication", "Using your last application on this Workday."
+                else:
+                    choice, line = "applyManually", "Choosing Apply Manually."
+                say(line)
                 tab.run(lambda page, c=choice: _click_aid(page, c))
                 self._after_click(tab)
+            elif state == "upload":
+                if uploaded or not self._upload_resume(tab, ctx):
+                    return self._hand_off(tab, ctx, "login", "the resume upload for autofill didn't go through")
+                uploaded = True
             elif state == "sign_in":
                 if s.get("email_button") and not s.get("password_box"):
                     # Newer tenants: Google / LinkedIn / "Sign in with email" first; the email
@@ -269,6 +325,8 @@ class WorkdayAdapter(Adapter):
 
     def fill(self, tab: Tab, ctx: ApplyContext) -> FillReport:
         s = self._state(tab)
+        if classify(s) == "upload" and self._upload_resume(tab, ctx):     # picked up on the autofill step
+            s = self._state(tab)
         if classify(s) != "signed_in":
             report = FillReport(pages=0, stopped_at=f"Workday {s.get('step') or 'sign-in'} step",
                                 form_url=tab.run(lambda page: page.url),

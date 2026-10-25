@@ -95,8 +95,28 @@ def test_summary_puts_needs_me_first_and_quotes_drafts():
 def test_spoken_result():
     result = FillResult(ats="greenhouse", review=REVIEW)
     s = applicator.spoken_result(result, "Acme", "ML Engineer")
-    assert s.startswith("Greenhouse form filled for ML Engineer at Acme. 1 fact is missing from your answer bank.")
+    assert s.startswith("Greenhouse form filled for ML Engineer at Acme. 1 question is yours: Do you require sponsorship.")
     assert "wrote 1 answer from your resume" in s and "submit it" in s
+
+
+def test_spoken_result_names_up_to_four_open_questions():
+    review = [{"name": f"q{i}", "label": label, "source": "needs_me"} for i, label in enumerate([
+        "What is your age range? *", "I consent to receive text messages. Message and data rates may apply.",
+        "Have you previously been contracted with Meijer, Fresh Thyme, or Serv-u-Success?",
+        "Gender", "Veteran status"])]
+    s = applicator.spoken_result(FillResult(ats="workday", review=review), "Meijer", "SWE")
+    assert "5 questions are yours: What is your age range; I consent to receive text messages; " \
+           "Have you previously been contracted with Meijer, Fresh Thyme, or Serv-u-Success; Gender, and 1 more." in s
+
+
+def test_blank_page_keeps_the_sheet_status(monkeypatch, env):
+    def fill(job, progress_fn=None, tab=None):
+        return FillResult(ats="generic", form_url=FORM, error="The posting never loaded.",
+                          stopped_at=applicator.ats.BLANK_PAGE, tab=tab)
+    monkeypatch.setattr(applicator.ats, "fill_application", fill)
+    out = applicator.run_application(dict(JOB))
+    assert out.startswith("I couldn't open the application for ML Engineer at Acme.")
+    assert env["sheet"] == []                                           # not marked Needs human
 
 
 # ── run_application ─────────────────────────────────────────────────────────
@@ -105,7 +125,7 @@ def test_run_fills_into_its_own_tab_and_records(monkeypatch, env):
     seen_tabs = _fake_fill(monkeypatch)
     said = []
     out = applicator.run_application(dict(JOB), progress_fn=said.append)
-    assert out.startswith("Greenhouse form filled for ML Engineer at Acme. 1 fact is missing from your answer bank.")
+    assert out.startswith("Greenhouse form filled for ML Engineer at Acme. 1 question is yours: Do you require sponsorship.")
 
     [entry] = tabs.live()
     assert seen_tabs == [entry["id"]]                                  # filled in the job's own tab

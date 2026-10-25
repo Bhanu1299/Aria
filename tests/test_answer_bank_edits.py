@@ -54,7 +54,7 @@ def test_learned_set_forget_and_undo(bank):
     ab.set_learned("How did you hear about us?", "LinkedIn")
     assert ab.lookup("How did you hear about us").value == "LinkedIn"
     cid = ab.set_learned("How did you hear about us?", "")
-    assert ab.lookup("How did you hear about us") is None
+    assert ab.lookup("How did you hear about us").value == "Recruiter"      # back to the default
     ab.undo(cid)
     assert ab.lookup("How did you hear about us").value == "LinkedIn"
 

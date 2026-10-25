@@ -50,6 +50,8 @@ def _user_stores_in_tmp(tmp_path, monkeypatch):
     (tests that need their own path still patch it themselves)."""
     monkeypatch.setattr("aria.features.answer_bank.BANK_PATH", tmp_path / "answer_bank.json")
     monkeypatch.setattr("aria.state.db.DB_PATH", str(tmp_path / "aria.db"))
+    # the lists (jobs / schools) fall back to the resume: never the real one (identity.json names it)
+    monkeypatch.setattr("aria.features.answer_bank._resume_lists", lambda: {})
 
 
 @pytest.fixture(autouse=True)

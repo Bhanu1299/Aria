@@ -13,8 +13,9 @@ Per page:
   4. re-scan   fields revealed by an answer are planned and filled, up to MAX_ROUNDS
   5. verify    read every value back + validation errors; refill a wrong one up to
                MAX_RETRIES times, then failed
-  6. next      only when verify passed and nothing required is left: click a visible
-               Next / Continue (never Submit / Apply / Send) and repeat on the new page
+  6. next      click a visible Next / Continue (never Submit / Apply / Send) and repeat on the
+               new page — also with a field left open (it stays on the review list); only a
+               page that refuses to move stops the run there
   7. stop      no Next button (the final page) → stop; the user approves the submit
   Walls (CAPTCHA / login / email code / a privacy notice to accept) are checked before
   every scan: wait_fn(kind) — the session says which tab needs you and waits — then go on.
@@ -32,7 +33,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import aria.features.answer_bank as answer_bank
-from aria.features.ats import planner
+from aria.features.ats import blocks, planner
 from aria.features.ats.planner import FILLED_SOURCES, FormField, ParsedForm, Planned
 
 logger = logging.getLogger(__name__)
@@ -118,13 +119,20 @@ SCAN_JS = r"""
   const strip = t => clean((t || '').replace(/[*✱]+/g, ' ').replace(/\((required|optional)\)/ig, ' '));
   // Workday-style stable ids on the control or its wrapper — adapters map them to bank keys
   const aidOf = el => { const n = el.closest('[data-automation-id]'); return n ? n.getAttribute('data-automation-id') : ''; };
+  // Workday's repeating blocks (workExperience-22--jobTitle, education-40--degree, webAddress-19--url)
+  const fkitOf = el => { const n = el.closest('[data-fkit-id]'); return n ? n.getAttribute('data-fkit-id') : ''; };
+  const sectionOf = el => fkitOf(el).split('-')[0];
+  // a picker's own option list (Workday prompts draw every option as a radio) is not a question
+  const PICKER = '[data-automation-id="activeListContainer"], [data-automation-id="promptOption"], [data-automation-id="promptLeafNode"], [data-automation-id="selectedItemList"]';
   const out = [];
   const groups = {};
 
-  for (const el of document.querySelectorAll('input, textarea, select, [role=combobox]')) {
+  for (const el of document.querySelectorAll('input, textarea, select, [role=combobox], button[aria-haspopup="listbox"]')) {
     const tag = el.tagName.toLowerCase();
-    const type = (el.getAttribute('type') || (tag === 'input' ? 'text' : tag)).toLowerCase();
+    const listButton = tag === 'button';                        // Workday's single-select ("Degree: Select One")
+    const type = listButton ? 'text' : (el.getAttribute('type') || (tag === 'input' ? 'text' : tag)).toLowerCase();
     if (['hidden', 'submit', 'button', 'image', 'reset', 'password'].includes(type)) continue;
+    if (el.closest(PICKER)) continue;
     if (el.disabled || el.readOnly && type !== 'file' && el.getAttribute('role') !== 'combobox') continue;
     if (el.closest('[aria-hidden="true"]') && type !== 'file') continue;
     if (el.closest('[class*="autofill" i]')) continue;      // "autofill from resume" drop zones aren't questions
@@ -133,7 +141,10 @@ SCAN_JS = r"""
       if (el.parentElement && el.parentElement.querySelectorAll('button[aria-pressed], button[data-option]').length >= 2) continue;
       // checkboxes named q-1, q-2 … (or q[1], q[2]) are one question
       const stem = type === 'checkbox' ? (el.name || '').replace(/(?:[-_]\d+|\[\d*\])$/, '') : el.name;
-      const key = type + ':' + (stem || fid(el));
+      // …but never across Workday's repeating blocks: every job's "I currently work here" box is
+      // named currentlyWorkHere (2026-10-25: Meijer's 4 jobs became one 4-box question)
+      const block = fkitOf(el).split('--')[0];
+      const key = type + ':' + (stem || fid(el)) + (block ? '@' + block : '');
       (groups[key] = groups[key] || []).push(el);
       continue;
     }
@@ -157,14 +168,15 @@ SCAN_JS = r"""
     let kind = tag === 'textarea' ? 'textarea' : tag === 'select' ? 'select' : type === 'file' ? 'file'
       : type === 'date' ? 'date' : 'text';
     const combo = el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete') === 'list' ||
-      el.getAttribute('aria-haspopup') === 'listbox';
-    if (combo && tag !== 'select') kind = 'combobox';
+      el.getAttribute('aria-haspopup') === 'listbox' || el.getAttribute('data-automation-id') === 'searchBox' ||
+      !!el.closest('[data-automation-id="multiselectInputContainer"], [data-uxi-widget-type="multiselect"], [data-uxi-widget-type="selectinput"]');
+    if ((combo || listButton) && tag !== 'select') kind = 'combobox';
     let options = [];
     if (tag === 'select') options = Array.from(el.options).filter(o => o.value !== '' && clean(o.text) && !GENERIC.test(clean(o.text)))
       .map(o => clean(o.text)).filter(Boolean);
     out.push({fid: fid(el), kind: kind, label: strip(raw), required: req(el, raw), options: options,
               max_chars: el.maxLength > 0 && el.maxLength < 100000 ? el.maxLength : 0,
-              accept: el.getAttribute('accept') || '', name: el.name || el.id || '', aid: aidOf(el)});
+              accept: el.getAttribute('accept') || '', name: el.name || el.id || '', aid: aidOf(el), section: sectionOf(el), fkit: fkitOf(el)});
   }
   // Choices drawn as buttons (Ashby's Yes / No): one field, each button an option.
   const bgroups = new Map();
@@ -196,18 +208,19 @@ SCAN_JS = r"""
     let raw = legend ? clean(legend.innerText) : '';
     const group = first.closest('[role=radiogroup], [role=group]');
     if (!raw && group) raw = ownLabel(group);
+    if (!raw && fs) raw = ownLabel(fs);                       // <fieldset aria-label="…"> (RippleMatch)
     if (!raw) raw = nearLabel(first);
     if (type === 'checkbox' && shown.length === 1) {
       const own = optionText(first);
       raw = own && own.length > 12 ? own : clean((raw ? raw + ' ' : '') + own);
       out.push({fid: fid(first), kind: 'checkbox', label: strip(raw), required: req(first, raw) || req(first, own),
-                options: [], max_chars: 0, accept: '', name: first.name || '', aid: aidOf(first)});
+                options: [], max_chars: 0, accept: '', name: first.name || '', aid: aidOf(first), section: sectionOf(first), fkit: fkitOf(first)});
       continue;
     }
     shown.forEach(e => fid(e));
     out.push({fid: fid(first), kind: type === 'radio' ? 'radio' : 'checkgroup', label: strip(raw),
               required: shown.some(e => req(e, raw)), options: shown.map(optionText), max_chars: 0, accept: '',
-              name: first.name || '', aid: aidOf(first), members: shown.map(e => e.dataset.ariaFid)});
+              name: first.name || '', aid: aidOf(first), section: sectionOf(first), fkit: fkitOf(first), members: shown.map(e => e.dataset.ariaFid)});
   }
   return out;
 }
@@ -246,6 +259,12 @@ READ_JS = r"""
       value = name || ((box.innerText || '').match(/[\w.() -]+\.(pdf|docx?|txt|rtf)/i) || [''])[0];
     } else if (el.tagName === 'SELECT') {
       const o = el.options[el.selectedIndex]; value = o && el.value ? clean(o.text) : '';
+    } else if (f.kind === 'combobox' && el.closest('[data-automation-id="multiSelectContainer"]')) {
+      value = Array.from(el.closest('[data-automation-id="multiSelectContainer"]').querySelectorAll('[data-automation-id="selectedItem"]'))
+        .map(e => clean((e.getAttribute('aria-label') || e.innerText || '').replace(/, press delete to clear value\.?$/i, ''))).join('; ');
+    } else if (f.kind === 'combobox' && el.tagName === 'BUTTON') {
+      const t = clean(el.innerText);
+      value = /^select one$|^select$|^choose/i.test(t) ? '' : t;
     } else if (f.kind === 'combobox') {
       const box = el.closest('[class*="control" i], [class*="select" i], [class*="combobox" i], [class*="dropdown" i]') || el.parentElement;
       const shown = box ? clean(box.innerText) : '';
@@ -263,6 +282,16 @@ _NEXT_TEXT = re.compile(r"^\s*(?:next|continue|save (?:and|&) continue|next (?:s
 _SUBMIT_TEXT = re.compile(r"\b(?:submit|send|apply|finish|complete)\b", re.I)
 _OPTION_SEL = ('[role="option"], [role="listbox"] li, [class*="option" i]:not(select):not(option), '
                '[class*="dropdown-results" i] > *, [class*="suggestion" i], [class*="autocomplete" i] li, .pac-item')
+# Buttons drawn as custom elements (UKG / UltiPro's <ukg-button>, data-tag-name="button"):
+# marked so a plain locator can find them.
+MARK_CUSTOM_BUTTONS_JS = """() => { let n = 0; document.querySelectorAll('*').forEach(e => {
+  if (/-BUTTON$/.test(e.tagName) || e.getAttribute('data-tag-name') === 'button') { e.setAttribute('data-aria-btn', '1'); n++; } });
+  return n; }"""
+_PROMPT_JS = """e => !e.form && (e.getAttribute('data-automation-id') === 'searchBox' ||
+  !!e.closest('[data-automation-id="multiselectInputContainer"], [data-uxi-widget-type="multiselect"], [data-uxi-widget-type="selectinput"]'))"""
+_STEP_JS = """() => { const s = document.querySelector('[data-automation-id="progressBarActiveStep"], [aria-current="step"]');
+  return s ? (s.innerText || '').trim().slice(0, 120) : ''; }"""
+_PLAIN_OPTION_SEL = 'li, [role="menuitem"], [role="menuitemradio"]'
 _MARK_PRE_JS = """(sel) => document.querySelectorAll(sel).forEach(e => {
   const r = e.getBoundingClientRect(); if (r.width > 0 && r.height > 0) e.setAttribute('data-aria-pre', '1'); })"""
 # One-line inputs that are typeaheads on many forms: type, then click the suggestion.
@@ -319,17 +348,67 @@ def _choose(value: str, options: list) -> Optional[str]:
     return answer_bank.choose_option(value, options)
 
 
-def _pick_combobox(page, fid: str, value: str, wait_ms: int = 4000) -> Optional[str]:
-    """Custom dropdown / typeahead: click, type, wait for options, click the match.
+def _open(page, el) -> None:
+    """Open a custom dropdown. React-select draws its placeholder over the input (it takes the
+    click) and keeps a 1px "dummy input" for unsearchable ones (outside the viewport to
+    Playwright): then focus it and open it from the keyboard."""
+    try:
+        el.click(timeout=2000)
+        return
+    except Exception:
+        pass
+    try:
+        box = el.locator("xpath=ancestor::*[contains(@class, 'control')][1]")
+        if box.count():
+            box.first.click(timeout=2000)
+            return
+    except Exception:
+        pass
+    el.focus(timeout=2000)
+    page.keyboard.press("ArrowDown")
+
+
+def _shown_options(page, opts) -> list:
+    """Indexes of the options that are visible now and weren't before the dropdown opened."""
+    try:
+        return [i for i in range(opts.count())
+                if opts.nth(i).is_visible() and opts.nth(i).get_attribute("data-aria-pre") is None]
+    except Exception:
+        return []
+
+
+def _wait_options(page, opts, wait_ms: int) -> list:
+    deadline = time.time() + wait_ms / 1000.0
+    while True:
+        shown = _shown_options(page, opts)
+        if shown or time.time() >= deadline:
+            break
+        time.sleep(0.2)
+    time.sleep(0.3)
+    return _shown_options(page, opts)
+
+
+def _pick_combobox(page, fid: str, value: str, wait_ms: int = 4000,
+                   chooser: Optional[Callable[[str, list], Optional[str]]] = None) -> Optional[str]:
+    """Custom dropdown / typeahead: open, type, wait for options, click the match. A search
+    box that lists nothing until Enter (Workday's prompts) gets Enter; nothing matching the
+    typed text → the whole list, unfiltered; a category that opens a second list (Workday:
+    "Recruiter" → "Recruiter contacted me") → the match in that list too.
     Returns the option clicked, or None."""
+    choose = chooser or _choose
     el = _loc(page, fid)
     # Only this dropdown's options: the listbox it controls, else options that appeared on
     # opening it (anything already visible belongs to another question).
-    page.evaluate(_MARK_PRE_JS, _OPTION_SEL)
-    el.click(timeout=4000)
+    page.evaluate(_MARK_PRE_JS, _OPTION_SEL + ", " + _PLAIN_OPTION_SEL)
+    _open(page, el)
     typed = re.split(r"[,(]", value)[0].strip()[:40]
+    searchable = prompt = False
     try:
-        if el.evaluate("e => e.tagName === 'INPUT'"):
+        searchable = bool(el.evaluate("e => e.tagName === 'INPUT' && !e.readOnly && e.getAttribute('inputmode') !== 'none'"))
+        # Enter only ever goes to a search box outside any <form> (Workday's prompts): in a form
+        # field, Enter SUBMITS the form
+        prompt = searchable and bool(el.evaluate(_PROMPT_JS))
+        if searchable:
             el.fill("")
             el.press_sequentially(typed, delay=30)
     except Exception:
@@ -340,34 +419,82 @@ def _pick_combobox(page, fid: str, value: str, wait_ms: int = 4000) -> Optional[
         opts = page.locator(f'[id="{owned}"]').locator('[role="option"], li')
     else:
         opts = page.locator(_OPTION_SEL)
-    try:
-        opts.first.wait_for(state="visible", timeout=wait_ms)
-    except Exception:
-        try:
-            deadline = time.time() + wait_ms / 1000.0
-            while time.time() < deadline and not any(
-                    opts.nth(i).is_visible() and opts.nth(i).get_attribute("data-aria-pre") is None
-                    for i in range(opts.count())):
-                time.sleep(0.2)
-        except Exception:
-            pass
-    time.sleep(0.3)
-    visible = [i for i in range(opts.count())
-               if opts.nth(i).is_visible() and opts.nth(i).get_attribute("data-aria-pre") is None]
-    page.evaluate("() => document.querySelectorAll('[data-aria-pre]').forEach(e => e.removeAttribute('data-aria-pre'))")
-    if not visible:
-        page.keyboard.press("Escape")
-        return None
+    visible = _wait_options(page, opts, wait_ms if not prompt else min(wait_ms, 1500))
+    if not visible and prompt:
+        el.press("Enter")
+        visible = _wait_options(page, opts, wait_ms)
+    if not visible and not owned:          # options drawn as plain list items next to the box
+        opts = page.locator(_PLAIN_OPTION_SEL)
+        visible = _wait_options(page, opts, 1000)
     texts = [opts.nth(i).inner_text().strip() for i in visible]
-    target = _choose(value, texts)
-    if target is None:
+    target = choose(value, texts) if texts else None
+    if target is None and texts:
         from aria.features.ats.greenhouse import match_location
         target = match_location(value, texts)
+    if target is None and prompt and typed:
+        # the typed words matched nothing useful: the full list, unfiltered
+        try:
+            el.fill("")
+            el.press("Enter")
+        except Exception:
+            pass
+        visible = _wait_options(page, opts, 1500)
+        texts = [opts.nth(i).inner_text().strip() for i in visible]
+        target = choose(value, texts) if texts else None
     if target is None:
+        page.evaluate("() => document.querySelectorAll('[data-aria-pre]').forEach(e => e.removeAttribute('data-aria-pre'))")
         page.keyboard.press("Escape")
         return None
     opts.nth(visible[texts.index(target)]).click(timeout=3000)
+    # a category that opened its own list: options now shown that weren't there before the click
+    time.sleep(0.6)
+    before = set(texts)
+    again = _shown_options(page, opts)
+    sub = [opts.nth(i).inner_text().strip() for i in again]
+    if sub and not (set(sub) & before):
+        inner = choose(value, sub) or (sub[0] if len(sub) == 1 else None)
+        if inner is not None:
+            opts.nth(again[sub.index(inner)]).click(timeout=3000)
+            target = inner
+    page.evaluate("() => document.querySelectorAll('[data-aria-pre]').forEach(e => e.removeAttribute('data-aria-pre'))")
     return target
+
+
+_DEGREE_LABEL = re.compile(r"\bdegree\b|\blevel of education\b|\bhighest education\b", re.I)
+
+
+def _chooser(f: FormField) -> Optional[Callable[[str, list], Optional[str]]]:
+    """Options seen only once the dropdown is open get the bank's own matching rules."""
+    if answer_bank.is_referral_label(f.label):
+        return answer_bank.choose_referral
+    if _DEGREE_LABEL.search(f.label or ""):           # "Master of Science, CS" → "Master's Degree"
+        # never a fuzzy pick: "Master of Science" fuzzy-matched Meijer's "MA" (2026-10-25)
+        return lambda value, options: answer_bank.choose_degree(value, options) or (value if value in options else None)
+    return None
+
+
+def _tick(page, box, on: bool = True) -> None:
+    """Check / uncheck a radio or checkbox. Visually-hidden inputs (RippleMatch's 1px radios
+    "outside of the viewport") get their label clicked, else a JS click — the page's own handlers run."""
+    try:
+        box.check(force=True, timeout=3000) if on else box.uncheck(force=True, timeout=3000)
+        return
+    except Exception:
+        pass
+    if box.is_checked() == on:
+        return
+    label = box.locator("xpath=ancestor::label[1]")
+    if not label.count():
+        bid = box.get_attribute("id") or ""
+        label = page.locator(f'label[for="{bid}"]') if bid else label
+    try:
+        if label.count():
+            label.first.click(timeout=3000)
+            if box.is_checked() == on:
+                return
+    except Exception:
+        pass
+    box.evaluate("e => e.click()")
 
 
 def fill_one(page, p: Planned, members: Optional[list] = None) -> bool:
@@ -384,6 +511,14 @@ def fill_one(page, p: Planned, members: Optional[list] = None) -> bool:
         if picked:
             p.value = picked
             return True
+    if f.kind == "text" and el.get_attribute("role") == "spinbutton":
+        # Workday's date boxes (Month / Year): React ignores .fill(); typed digits are what it reads
+        el.click(timeout=3000)
+        el.press("Backspace")
+        el.press("Backspace")
+        el.press_sequentially(value, delay=40)
+        el.evaluate("e => e.dispatchEvent(new Event('blur', {bubbles: true}))")
+        return True
     if f.kind in ("text", "textarea"):
         el.fill(value, timeout=5000)
         el.evaluate("e => e.dispatchEvent(new Event('blur', {bubbles: true}))")
@@ -392,15 +527,16 @@ def fill_one(page, p: Planned, members: Optional[list] = None) -> bool:
         el.fill(_iso_date(value), timeout=5000)
         return True
     if f.kind == "select":
-        target = _choose(value, f.options)
+        target = (_chooser(f) or _choose)(value, f.options)
         if target is None:
             return False
         el.select_option(label=target, timeout=5000)
+        p.value = target                   # verify against the option actually chosen
         return True
     if f.kind == "checkbox":
         want = str(value).strip().lower() in ("yes", "true", "checked", "y", "1")
         if want != el.is_checked():
-            el.check(force=True, timeout=3000) if want else el.uncheck(force=True, timeout=3000)
+            _tick(page, el, want)
         return True
     if f.kind == "buttons":
         target = _choose(value, f.options)
@@ -415,12 +551,11 @@ def fill_one(page, p: Planned, members: Optional[list] = None) -> bool:
             target = _choose(v, f.options)
             if target is None or not members:
                 continue
-            box = _loc(page, members[f.options.index(target)])
-            box.check(force=True, timeout=3000)
+            _tick(page, _loc(page, members[f.options.index(target)]))
             ok = True
         return ok
     if f.kind == "combobox":
-        picked = _pick_combobox(page, f.name, value)
+        picked = _pick_combobox(page, f.name, value, chooser=_chooser(f))
         if picked:
             p.value = picked           # verify against the option actually chosen
         return bool(picked)
@@ -437,12 +572,14 @@ def matches(p: Planned, got: dict) -> bool:
     actual = str((got or {}).get("value") or "").strip()
     if (got or {}).get("error"):
         return False
-    if not actual:
-        return False
     f, want = p.field, str(p.value).strip()
-    if f.kind == "checkbox":
+    if f.kind == "checkbox":                 # unticked is an answer too ("I currently work here": No)
         yes = want.lower() in ("yes", "true", "checked", "y", "1")
         return (actual == "checked") == yes
+    if not actual:
+        return False
+    if re.fullmatch(r"\d{1,4}", actual) and re.fullmatch(r"\d{1,4}", want):
+        return int(actual) == int(want)       # Workday's month box reads back "1" for "01"
     if f.kind == "file":
         return Path(planner.upload_path(p)).name in actual or actual.lower().endswith((".pdf", ".doc", ".docx", ".txt"))
     if f.kind in ("text", "textarea", "date"):
@@ -456,12 +593,22 @@ def matches(p: Planned, got: dict) -> bool:
         got = {norm(x) for x in actual.split(";")} if f.kind in ("checkgroup", "multiselect") else {norm(actual)}
         return all(t in got for t in targets)
     a = norm(actual)                 # custom dropdowns read back their box text: the option as a whole phrase
-    return all(re.search(r"(?<!\w)" + re.escape(t) + r"(?![\w,])", a) for t in targets)
+    if all(re.search(r"(?<!\w)" + re.escape(t) + r"(?![\w,])", a) for t in targets):
+        return True
+    # an answer with punctuation in it reads back with other punctuation ("University at Buffalo,
+    # SUNY" → "University at Buffalo - SUNY"); a bare "No" never matches "No, I do not …"
+    loose = lambda t: re.sub(r"\s+", " ", answer_bank.normalize(t)).strip()
+    return all(loose(t) != t and re.search(r"(?<!\w)" + re.escape(loose(t)) + r"(?!\w)", loose(actual)) for t in targets)
 
 
 def find_next(page):
     """A visible Next / Continue control that isn't a submit, or None."""
-    for loc in page.locator("button, a[role=button], input[type=submit], input[type=button], [role=button]").all():
+    try:
+        page.evaluate(MARK_CUSTOM_BUTTONS_JS)
+    except Exception:
+        pass
+    for loc in page.locator("button, a[role=button], input[type=submit], input[type=button], [role=button], "
+                            "[data-aria-btn]").all():
         try:
             if not loc.is_visible():
                 continue
@@ -477,8 +624,64 @@ def find_next(page):
 # Orchestration (agent_browser worker thread)
 # ---------------------------------------------------------------------------
 
+# Repeating blocks the answer bank knows nothing about: one per job / website on your resume.
+# What the page holds there (Workday's autofill from your resume) stays; the bank never
+# overwrites it (2026-10-24: Meijer's work dates got your graduation year).
+PAGE_OWNED = {"workExperience", "webAddress", "language", "certification", "award"}
+# ...and inside education blocks, the dates are the block's own (the bank's grad year isn't "From").
+_EDU_DATE = re.compile(r"^(?:month|year|from|to|start|end)\b", re.I)
+_PLACEHOLDER = re.compile(r"^(?:n/?a|none|null|-+|select(?: one)?|choose(?: one)?|please select|expanded|collapsed)$", re.I)
+
+
+def keep_page_values(plans: list, raw_by_fid: dict, current: dict) -> None:
+    """A field that already holds an answer — from an ATS's resume autofill or your saved profile
+    there — keeps it when the bank has none (never asked again, never re-typed), and keeps it
+    always inside the repeating blocks above. Consent boxes and files are never kept this way."""
+    for p in plans:
+        raw = raw_by_fid.get(p.field.name) or {}
+        if p.category in ("consent", "upload") or p.field.kind in ("file", "checkbox"):
+            continue
+        value = str((current.get(p.field.name) or {}).get("value") or "").strip()
+        has = bool(value) and not _PLACEHOLDER.match(value)
+        section = raw.get("section") or ""
+        owned = section in PAGE_OWNED or (section == "education" and _EDU_DATE.match(p.field.label or ""))
+        if owned and p.source in FILLED_SOURCES:
+            if has:
+                p.value, p.source, p.note = value, "page", "from the page (your resume's autofill) — the bank doesn't overwrite it"
+            elif p.field.required:
+                p.value, p.source, p.note = "", "needs_me", "empty in this block — yours to fill"
+            else:
+                p.value, p.source, p.note = "", "skipped", ""
+        elif has and p.source in ("needs_me", "skipped"):
+            p.value, p.source, p.note = value, "page", "already on the page"
+
+
 def _status(source: str) -> str:
     return {"needs_me": "unknown", "consent": "consent", "failed": "failed", "skipped": "skipped"}.get(source, "filled")
+
+
+def signature(page) -> tuple:
+    """What page of the form this is: URL, the wizard's current step, the field labels. A Next
+    that leaves all three the same didn't move (Workday re-draws the same page — new elements,
+    same questions — when it refuses to go on)."""
+    try:
+        step = page.evaluate(_STEP_JS)
+    except Exception:
+        step = ""
+    return page.url, step, tuple(sorted(r.get("label") or "" for r in scan(page)))
+
+
+def _settled_signature(run: Callable, max_secs: float = 10.0) -> tuple:
+    """The page's signature once it has fields and stopped changing (a wizard's spinner between steps)."""
+    deadline = time.time() + max_secs
+    last = run(signature)
+    while time.time() < deadline:
+        time.sleep(0.8)
+        now = run(signature)
+        if now == last and now[2]:
+            return now
+        last = now
+    return last
 
 
 def wall(page) -> Optional[str]:
@@ -504,13 +707,20 @@ def fill(job: dict, description: str = "", progress_fn: Optional[Callable[[str],
     profile = planner.build_profile(job, resume)
     company, role = job.get("company", ""), job.get("role", "")
     kw = {k: v for k, v in (("guess_fn", guess_fn), ("draft_fn", draft_fn)) if v is not None}
+    lists = {name: answer_bank.get_list(name) for name in set(blocks.SECTION_LIST.values())}
     all_plans: list = []
     try:
         for page_no in range(1, MAX_PAGES + 1):
             result.pages = page_no
             raw_by_fid: dict = {}
+            before: dict = {}             # what each field held when first seen
             plans_here: list = []
             blocked = ""
+            # repeating blocks (Workday's jobs / schools): exactly as many as your lists have
+            synced = [run(lambda page, n=name, k=len(entries): blocks.sync(page, n, k))
+                      for name, entries in lists.items() if entries]
+            if any(c is not None for c in synced):
+                time.sleep(0.8)
             for _round in range(MAX_ROUNDS + 2):
                 kind = run(wall)
                 if kind:
@@ -530,9 +740,15 @@ def fill(job: dict, description: str = "", progress_fn: Optional[Callable[[str],
                 form = ParsedForm(fields, title=role, company=company, description=description)
                 plans = planner.plan(form, job, profile, resume=resume, progress_fn=progress_fn,
                                      llm_available=llm_available, **kw)
+                current = run(lambda page, new=new: read(page, new))
+                before.update(current)
+                keep_page_values(plans, raw_by_fid, current)
+                blocks.assign(plans, raw_by_fid, lists)
                 plans_here.extend(plans)
                 for p in plans:
                     if p.value and p.source in FILLED_SOURCES:
+                        if matches(p, current.get(p.field.name)):
+                            continue           # already says it (an autofill, a saved profile): never re-typed
                         members = raw_by_fid[p.field.name].get("members")
                         try:
                             ok = run(lambda page, p=p, m=members: fill_one(page, p, m))
@@ -568,31 +784,35 @@ def fill(job: dict, description: str = "", progress_fn: Optional[Callable[[str],
                 got = run(lambda page: read(page, raws))
             for p in todo:
                 g = got.get(p.field.name) or {}
+                shown = str(g.get("value") or "").strip()
                 if g.get("value") is None:          # the page re-rendered without it (a gate, a reload)
                     p.source, p.note = "skipped", "no longer on the page"
+                elif not matches(p, g) and shown and not g.get("error") and not _PLACEHOLDER.match(shown) \
+                        and p.field.kind in ("combobox", "select") and (before.get(p.field.name) or {}).get("value"):
+                    # couldn't pick the bank's option, but the page already had an answer there: keep it
+                    p.value, p.source, p.note = shown, "page", f"kept what the page had (couldn't pick “{p.value}”)"
                 elif not matches(p, g):
                     p.note = g.get("error") or p.note or "didn't stick after 2 retries"
                     p.source = "failed" if p.field.required else "skipped"
             all_plans.extend((page_no, p, (got.get(p.field.name) or {}).get("value")) for p in plans_here)
 
             failed = [p for p in plans_here if p.source == "failed"]
-            unknown = [p for p in plans_here if p.source == "needs_me"]
+            unknown = [p for p in plans_here if p.source == "needs_me" and p.field.required]
             if blocked:
-                break
-            if failed or unknown:
-                result.stopped_at = "failed fields" if failed else "needs you"
                 break
             nxt = run(lambda page: find_next(page) is not None)
             if not nxt:
                 result.stopped_at = "final page"
                 break
-            say(f"Page {page_no} verified. Going to the next page.")
-            before = run(lambda page: page.url)
+            # A field left open never stops the run by itself (user 2026-10-25: go all the way to
+            # the last Submit): Next is tried anyway — only a page that refuses to move stops it.
+            say(f"Page {page_no} done. Going to the next page.")
+            before = run(signature)
             run(lambda page: find_next(page).click(timeout=5000))
-            time.sleep(2.0)
-            after_raw = run(scan)
-            if run(lambda page: page.url) == before and all(r["fid"] in raw_by_fid for r in after_raw):
-                result.stopped_at = "next did nothing (a validation message is likely showing)"
+            time.sleep(1.5)
+            if _settled_signature(run) == before:
+                result.stopped_at = ("failed fields" if failed else "needs you") if failed or unknown \
+                    else "next did nothing (a validation message is likely showing)"
                 break
         else:
             result.stopped_at = "page limit"
@@ -603,7 +823,7 @@ def fill(job: dict, description: str = "", progress_fn: Optional[Callable[[str],
 
     for page_no, p, actual in all_plans:
         f = p.field
-        value = actual if actual else (p.value if p.source in FILLED_SOURCES else "")
+        value = actual if actual else (p.value if p.source in FILLED_SOURCES or p.source == "page" else "")
         if f.kind == "file" and p.value and p.source in FILLED_SOURCES:
             value = Path(planner.upload_path(p)).name
         result.review.append({"name": f.name, "label": f.label, "kind": f.kind, "category": p.category,

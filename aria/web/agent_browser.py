@@ -237,6 +237,13 @@ def run(fn, tab=None):
     return _submit(_do)
 
 
+def _safe_url(page) -> str:
+    try:
+        return page.url
+    except Exception:
+        return "a closed tab"
+
+
 def navigate(url: str, settle_secs: float = 3.0, wait_until: str = "domcontentloaded", tab=None) -> None:
     """
     Navigate the visible browser (or a named tab) to url. Blocks until the page
@@ -247,10 +254,29 @@ def navigate(url: str, settle_secs: float = 3.0, wait_until: str = "domcontentlo
 
     def _do():
         page = _get_page(name)
-        try:
-            page.goto(url, wait_until=wait_until, timeout=30_000)
-        except Exception as exc:
-            logger.warning("Navigation to %s raised: %s (continuing)", url, exc)
+        for attempt in (1, 2):
+            try:
+                page.goto(url, wait_until=wait_until, timeout=30_000)
+            except Exception as exc:
+                logger.warning("Navigation to %s raised: %s (continuing)", url, exc)
+            # A re-attached tab can swallow the goto and stay on about:blank (2026-10-25 Meijer:
+            # the fill then saw an empty page) — try once more, on a fresh tab if it's gone.
+            try:
+                landed = page.url.startswith("http") or not url.startswith("http")
+            except Exception:
+                landed = False
+            if landed or attempt == 2:
+                return
+            logger.warning("Navigation to %s left the tab on %s; retrying", url, _safe_url(page))
+            try:
+                if page.is_closed():
+                    raise RuntimeError("closed")
+            except Exception:
+                if name is None:
+                    page = _open_browser()
+                else:
+                    _tabs.pop(name, None)
+                    page = _get_page(name)
 
     _submit(_do)
     if settle_secs:

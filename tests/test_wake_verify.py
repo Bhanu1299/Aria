@@ -80,6 +80,7 @@ def test_verify_can_be_turned_off(monkeypatch):
 
 def test_recording_starts_with_the_audio_read_during_the_check(monkeypatch, tmp_path):
     monkeypatch.setattr(wake_word, "_WAV_PATH", str(tmp_path / "w.wav"))
+    monkeypatch.setattr(wake_word.vad, "detector", lambda: None)          # the loudness gate
     loud = (np.ones(512, dtype=np.int16) * 4000).tobytes()
 
     class Quiet(Stream):
@@ -97,3 +98,55 @@ def test_a_primed_aria_over_noise_is_rejected():
     assert heard is False
     heard, _ = _listener(Transcriber("Aria", no_speech=0.40))._verify(Stream(), np.zeros(32000, dtype=np.int16), 512)
     assert heard is True
+
+
+def test_check_hears_the_end_of_the_word():
+    # 2026-10-25: the score crosses 0.7 before "Aria" is finished — checked at the crossing,
+    # Whisper heard it in 13/37 replayed user clips, 0.5 s later in 33/37
+    class Late(Stream):
+        def read(self, n, exception_on_overflow=False):
+            self.reads += 1
+            return (np.ones(n, dtype=np.int16) * 7).tobytes()
+
+    class Seen(Transcriber):
+        def check_wake(self, audio, timeout=5.0):
+            self.audio = audio
+            return super().check_wake(audio, timeout)
+    t = Seen("Aria")
+    stream = Late()
+    heard, chunks = _listener(t)._verify(stream, np.zeros(32000, dtype=np.int16), 512)
+    settled = wake_word._VERIFY_SETTLE_CHUNKS * 512
+    assert len(t.audio) == 32000
+    assert np.all(t.audio[-settled:] > 0) and np.all(t.audio[:-settled] == 0)
+    assert heard is True and len(chunks) >= wake_word._VERIFY_SETTLE_CHUNKS   # still handed to the recording
+
+
+def test_a_rejected_check_is_logged_with_what_whisper_heard(tmp_path, monkeypatch):
+    from aria.observability import wake_stats
+    lines = []
+    monkeypatch.setattr(wake_stats, "_append", lines.append)
+    wake_stats.log_event("verify_reject", "custom_onnx", 0.72, heard=("I", 0.51))
+    assert lines[0]["heard"] == "I" and lines[0]["no_speech"] == 0.51
+
+
+def test_recording_ends_when_the_speech_model_says_you_stopped(monkeypatch, tmp_path):
+    # a fan / TV hum stays loud after you stop talking: the speech model, not loudness, ends it
+    monkeypatch.setattr(wake_word, "_WAV_PATH", str(tmp_path / "w.wav"))
+    hum = (np.ones(512, dtype=np.int16) * 3000).tobytes()
+
+    class Detector:
+        def __init__(self):
+            self.n = 0
+
+        def is_speech(self, chunk):
+            self.n += 1
+            return self.n <= 20                                   # 0.64 s of you, then only the hum
+    monkeypatch.setattr(wake_word.vad, "detector", Detector)
+
+    class Hum(Stream):
+        def read(self, n, exception_on_overflow=False):
+            self.reads += 1
+            return hum
+    stream = Hum()
+    path = _listener(None)._record_until_silence(stream, 16000, 512)
+    assert path is not None and stream.reads < 20 + int(wake_word._VAD_SILENCE_SECS / 0.032) + 3

@@ -173,12 +173,29 @@ def test_multipage_clicks_next_only_after_verify_and_stops_before_submit(page):
     assert not page.evaluate("window.submitted === true")
 
 
-def test_unknown_required_fact_stops_on_that_page(page):
+def test_unknown_required_fact_tries_next_and_stops_only_when_the_page_refuses(page):
     page.set_content("""<label for="ws">Work authorization number *</label><input id="ws" required>
       <button type="button" onclick="window.next=true">Continue</button>""")
     res = form_engine.fill({"company": "Acme"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
-    assert res.stopped_at == "needs you" and not page.evaluate("window.next === true")
+    assert page.evaluate("window.next === true")                      # tried, didn't move
+    assert res.stopped_at == "needs you" and res.pages == 1
     assert res.review[0]["source"] == "needs_me"
+
+
+def test_a_field_left_open_never_stops_the_run_short_of_the_last_page(page):
+    # 2026-10-25: Meijer's State failed on page 1 and the run stopped there; the user wants every
+    # page filled up to the Submit
+    page.set_content("""<div id="p1"><label for="ws">Work authorization number *</label><input id="ws">
+      <label for="fn">First name *</label><input id="fn" required>
+      <button type="button" onclick="document.getElementById('p1').remove();document.getElementById('p2').style.display='block'">Next</button></div>
+      <div id="p2" style="display:none"><label for="em">Email *</label><input id="em" type="email" required>
+      <button type="button" onclick="window.submitted=true">Submit</button></div>""")
+    res = form_engine.fill({"company": "Acme"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
+    assert res.pages == 2 and res.stopped_at == "final page"
+    rows = {r["label"]: r for r in res.review}
+    assert rows["Work authorization number"]["source"] == "needs_me"      # still listed for you
+    assert page.input_value("#em")                                         # page 2 got filled
+    assert not page.evaluate("window.submitted === true")
 
 
 def test_generated_answer_is_reused_for_the_same_generic_question(page):
@@ -352,3 +369,280 @@ def test_ashby_like_form_fills_buttons_links_and_optional_essays(page, bank):
     assert rows["Will you now or in the future require visa sponsorship?"]["source"] == "needs_me"
     assert rows["What makes you excited about the Acme mission?"]["source"] == "llm_draft"
     assert rows["If other, please specify below"]["source"] == "skipped"
+
+
+# ── live run 2026-10-24: Workday re-draws a page it won't leave; dropdowns that hide their input ──
+
+REDRAWN = """<div id="wrap"></div>
+<script>
+function draw() { document.getElementById('wrap').innerHTML = `
+  <label for="fn">First name *</label><input id="fn" required>
+  <button type="button" onclick="draw()">Save and Continue</button>`; }
+draw();
+</script>"""
+
+
+def test_a_next_that_redraws_the_same_page_did_nothing(page, monkeypatch):
+    """Meijer: Workday re-drew My Information 8 times (new elements, same questions) and every
+    one counted as a new page."""
+    monkeypatch.setattr(form_engine, "_settled_signature", lambda run, max_secs=10.0: run(form_engine.signature))
+    page.set_content(REDRAWN)
+    res = form_engine.fill({"company": "Acme"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
+    assert res.pages == 1 and res.stopped_at.startswith("next did nothing")
+
+
+def test_an_optional_question_left_for_you_does_not_stop_the_next_page(page, monkeypatch):
+    monkeypatch.setattr(form_engine, "_settled_signature", lambda run, max_secs=10.0: run(form_engine.signature))
+    page.set_content("""<div id="p1"><label for="fn">First name *</label><input id="fn" required>
+      <label for="sp">Will you require visa sponsorship?</label><input id="sp">
+      <button type="button" onclick="document.getElementById('p1').remove();document.getElementById('p2').style.display='block'">Next</button></div>
+      <div id="p2" style="display:none"><label for="em">Email *</label><input id="em" type="email" required></div>""")
+    res = form_engine.fill({"company": "Acme"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
+    rows = {r["label"]: r for r in res.review}
+    assert rows["Will you require visa sponsorship?"]["source"] == "needs_me"     # still asked at review
+    assert res.pages == 2 and page.input_value("#em") == "me@example.com"
+
+
+def test_react_select_with_its_placeholder_over_the_input_still_opens(page):
+    """Nodal Exchange: the placeholder div took every click on the input (4 s timeouts × 3)."""
+    page.set_content("""<form><label for="ed">What is your highest level of education? *</label>
+      <div class="select__control" style="position:relative;width:300px;height:30px"
+           onclick="document.getElementById('lb').style.display='block'">
+        <div style="position:absolute;inset:0;z-index:2">Select...</div>
+        <input id="ed" role="combobox" aria-autocomplete="list" style="width:280px">
+      </div>
+      <ul role="listbox" id="lb" style="display:none">
+        <li role="option" onclick="document.getElementById('ed').value='Master\\'s Degree'">Master's Degree</li>
+        <li role="option" onclick="document.getElementById('ed').value='Bachelor\\'s Degree'">Bachelor's Degree</li>
+      </ul>
+      <button type="submit" onclick="window.submitted=true;return false">Submit</button></form>""")
+    f = planner.FormField(form_engine.scan(page)[0]["fid"], "What is your highest level of education?", "combobox", True)
+    assert form_engine.fill_one(page, planner.Planned(f, "Master's Degree", "bank"))
+    assert page.input_value("#ed") == "Master's Degree"
+    assert not page.evaluate("window.submitted === true")          # no Enter inside a form
+
+
+WORKDAY_PROMPT = """<div data-automation-id="formField-source"><label for="s">How Did You Hear About Us?*</label>
+  <div data-automation-id="multiselectInputContainer">
+    <input id="s" data-automation-id="searchBox" placeholder="Search" onkeydown="if (event.key === 'Enter') top_level()">
+  </div>
+  <div id="sel"></div>
+  <div role="listbox" id="lb"></div></div>
+<script>
+const lb = () => document.getElementById('lb');
+function top_level() { lb().innerHTML = ['Job Board', 'Recruiter', 'Social Media'].map(t =>
+  `<div role="option" onclick="pick('${t}')">${t}</div>`).join(''); }
+function pick(t) {
+  if (t === 'Recruiter') { lb().innerHTML = ['Recruiter Contacted Me', 'Agency Recruiter'].map(x =>
+      `<div role="option" onclick="done('${x}')">${x}</div>`).join(''); return; }
+  done(t); }
+function done(t) { document.getElementById('sel').innerText = t; lb().innerHTML = ''; window.picked = t; }
+</script>"""
+
+
+def test_workday_prompt_lists_on_enter_and_opens_the_recruiter_category(page):
+    """GlobalFoundries: "How Did You Hear About Us?" was typed into the search box as text."""
+    page.set_content(WORKDAY_PROMPT)
+    raw = form_engine.scan(page)
+    assert raw[0]["kind"] == "combobox"
+    f = planner.FormField(raw[0]["fid"], "How Did You Hear About Us?", "combobox", True)
+    assert form_engine.fill_one(page, planner.Planned(f, "Recruiter", "bank"))
+    assert page.evaluate("window.picked") == "Recruiter Contacted Me"
+
+
+def test_custom_element_buttons_count_as_next(page):
+    page.set_content('<ukg-button onclick="window.next=true">Continue</ukg-button>')
+    form_engine.find_next(page).click()
+    assert page.evaluate("window.next === true")
+
+
+# ── live run 2026-10-24 (2): Workday's autofilled My Experience, RippleMatch (eBay) ──
+
+WORKDAY_MY_EXPERIENCE = """
+<div data-fkit-id="workExperience-22--null">
+  <div data-automation-id="formField-jobTitle" data-fkit-id="workExperience-22--jobTitle">
+    <label for="w-title"><span>Job Title<abbr aria-hidden="true">*</abbr></span></label>
+    <input type="text" id="w-title" name="jobTitle" aria-required="true" value="Software Engineer Intern"></div>
+  <div data-automation-id="formField-companyName" data-fkit-id="workExperience-22--companyName">
+    <label for="w-co"><span>Company<abbr aria-hidden="true">*</abbr></span></label>
+    <input type="text" id="w-co" name="companyName" aria-required="true" value="N/A"></div>
+  <div data-automation-id="formField-endDate" data-fkit-id="workExperience-22--endDate">
+    <input role="spinbutton" aria-label="Year" aria-required="true" id="w-year" data-automation-id="dateSectionYear-input" value=""></div>
+</div>
+<div data-fkit-id="education-40--null">
+  <div data-automation-id="formField-degree" data-fkit-id="education-40--degree">
+    <label for="e-deg"><span>Degree<abbr aria-hidden="true">*</abbr></span></label>
+    <button aria-haspopup="listbox" type="button" value="" aria-label="Degree Select One Required" name="degree" id="e-deg"
+      onclick="document.getElementById('deg-lb').style.display='block'">Select One</button>
+    <ul role="listbox" id="deg-lb" style="display:none">
+      <li role="option" onclick="pick(this)">Bachelor's Degree</li><li role="option" onclick="pick(this)">Master's Degree</li></ul></div>
+  <div data-automation-id="formField-fieldOfStudy" data-fkit-id="education-40--fieldOfStudy">
+    <label for="e-fos">Field of Study</label>
+    <div data-automation-id="multiSelectContainer">
+      <div data-automation-id="multiselectInputContainer">
+        <ul role="listbox" data-automation-id="selectedItemList"><li><div role="option" data-automation-id="selectedItem"
+          aria-label="Computer and Information Science, press delete to clear value.">Computer and Information Science</div></li></ul>
+        <input id="e-fos" data-automation-id="searchBox" placeholder="Search"></div></div>
+    <div data-automation-id="activeListContainer"><div data-automation-id="promptOption">
+      <input type="radio" data-automation-id="radioBtn" id="o1"><label for="o1">Accounting</label></div></div></div>
+</div>
+<div data-fkit-id="webAddress-19--null"><div data-automation-id="formField-url" data-fkit-id="webAddress-19--url">
+  <label for="u1"><span>URL<abbr aria-hidden="true">*</abbr></span></label>
+  <input type="text" id="u1" name="url" aria-required="true" value="https://www.linkedin.com/in/me"></div></div>
+<script>function pick(li) { const b = document.getElementById('e-deg'); b.innerText = li.innerText; li.parentElement.style.display = 'none'; }</script>
+"""
+
+
+def test_workdays_autofilled_experience_is_kept_and_never_overwritten(page, bank):
+    data = json.loads(bank.read_text())
+    data["answers"].update({"degree": "Master of Science, Computer Science", "grad_date": "05/18/2026"})
+    bank.write_text(json.dumps(data))
+    page.set_content(WORKDAY_MY_EXPERIENCE)
+    labels = [r["label"] for r in form_engine.scan(page)]
+    assert "Accounting" not in labels                       # a picker's options aren't questions
+    assert "Degree" in labels
+    res = form_engine.fill({"company": "Meijer"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
+    rows = {r["label"]: r for r in res.review}
+    assert rows["Job Title"]["source"] == "page" and rows["Job Title"]["value"] == "Software Engineer Intern"
+    assert rows["Company"]["source"] == "needs_me"           # "N/A" is no answer: yours to fix
+    assert rows["Year"]["source"] == "needs_me" and page.input_value("#w-year") == ""   # never the grad year
+    assert rows["URL"]["source"] == "page"
+    assert rows["Field of Study"]["source"] == "page" and "Computer and Information Science" in rows["Field of Study"]["value"]
+    assert rows["Degree"]["source"] == "bank" and page.inner_text("#e-deg") == "Master's Degree"
+
+
+RIPPLEMATCH = """<form>
+<style>._visuallyHidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); left: -9999px; }</style>
+<label for="school">University<span class="_required"> * </span></label>
+<div aria-expanded="false"><input id="school" name="school" placeholder="Type in university" role="combobox"
+  aria-required="true" value="University at Buffalo - SUNY"></div>
+<label for="gm">Graduation month<span class="_required"> * </span></label>
+<div><input id="gm" name="graduationMonth" readonly placeholder="Select month" role="combobox" aria-required="true"
+  onclick="document.getElementById('months').style.display='block'"></div>
+<ul id="months" style="display:none"><li onclick="document.getElementById('gm').value='April';this.parentElement.style.display='none'">April</li>
+  <li onclick="document.getElementById('gm').value='May';this.parentElement.style.display='none'">May</li></ul>
+<label for="q1">Are you authorized to work lawfully in the United States?<span class="_required"> * </span></label>
+<fieldset id="q1" role="listbox" aria-label="Are you authorized to work lawfully in the United States?">
+  <legend class="_visuallyHidden">Are you authorized to work lawfully in the United States?</legend>
+  <label for="r-yes"><div></div>Yes, I am<input id="r-yes" class="_visuallyHidden" type="radio" name="q-569352" value="Yes, I am" aria-required="true"></label>
+  <label for="r-no"><div></div>No, I am not<input id="r-no" class="_visuallyHidden" type="radio" name="q-569352" value="No, I am not" aria-required="true"></label>
+</fieldset>
+<button type="submit" onclick="window.submitted=true;return false">Submit application</button></form>"""
+
+
+def test_ripplematch_hidden_radios_plain_list_dropdowns_and_a_prefilled_school(page, bank):
+    data = json.loads(bank.read_text())
+    data["answers"].update({"school": "University at Buffalo, SUNY", "work_authorization": "Yes", "grad_date": "05/18/2026"})
+    bank.write_text(json.dumps(data))
+    page.set_content(RIPPLEMATCH)
+    res = form_engine.fill({"company": "eBay"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
+    rows = {r["label"]: r for r in res.review}
+    assert page.is_checked("#r-yes") and not page.is_checked("#r-no")
+    assert rows["Are you authorized to work lawfully in the United States?"]["status"] == "filled"
+    assert rows["University"]["status"] == "filled"             # " - " vs ", " is the same school
+    assert page.input_value("#gm") == "May"
+    assert not page.evaluate("window.submitted === true")
+
+
+def test_the_banks_answer_replaces_a_wrong_prefilled_one(page, bank):
+    """User, 2026-10-24: Aria refills every field it knows. RippleMatch's profile had 'No, I am
+    not' preselected; the bank says Yes — the page ends up saying Yes."""
+    data = json.loads(bank.read_text())
+    data["answers"].update({"work_authorization": "Yes"})
+    bank.write_text(json.dumps(data))
+    page.set_content(RIPPLEMATCH.replace('value="No, I am not" aria-required="true">',
+                                         'value="No, I am not" aria-required="true" checked>'))
+    assert page.is_checked("#r-no")
+    form_engine.fill({"company": "eBay"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
+    assert page.is_checked("#r-yes") and not page.is_checked("#r-no")
+
+
+# ── 2026-10-25: Workday's resume parse made jobs of the PROJECTS section; the bank had one school ──
+
+WORKDAY_BLOCKS = r"""
+<div id="root"></div>
+<script>
+let seq = 10;
+function panel(kind, n, id, vals) {
+  const prefix = kind === 'w' ? 'Work-Experience' : 'Education';
+  const sec = kind === 'w' ? 'workExperience' : 'education';
+  const fk = sec + '-' + id;
+  const f = (sub, inner) => `<div data-fkit-id="${fk}--${sub}">${inner}</div>`;
+  const body = kind === 'w'
+    ? f('jobTitle', `<label for="${fk}-t">Job Title *</label><input id="${fk}-t" required value="${vals[0] || ''}">`) +
+      f('companyName', `<label for="${fk}-c">Company *</label><input id="${fk}-c" required value="${vals[1] || ''}">`) +
+      f('currentlyWorkHere', `<label for="${fk}-cur">I currently work here</label><input type="checkbox" name="currentlyWorkHere" id="${fk}-cur" ${vals[2] ? 'checked' : ''}>`) +
+      f('startDate', `<fieldset><legend><label>From *</label></legend><input role="spinbutton" aria-label="Month" id="${fk}-sm" value="${vals[3] || ''}"><input role="spinbutton" aria-label="Year" id="${fk}-sy" value="${vals[4] || ''}"></fieldset>`) +
+      f('roleDescription', `<label for="${fk}-d">Role Description</label><textarea id="${fk}-d"></textarea>`)
+    : f('schoolName', `<label for="${fk}-s">School or University *</label><input id="${fk}-s" required value="${vals[0] || ''}">`) +
+      f('degree', `<label for="${fk}-g">Degree *</label><select id="${fk}-g" required><option value="">Select One</option><option>MA</option><option>MS</option><option>BA</option><option>BS</option></select>`);
+  return `<div role="group" aria-labelledby="${prefix}-${n}-panel"><h5 id="${prefix}-${n}-panel">${prefix} ${n}</h5>
+    <button type="button" onclick="this.closest('[role=group]').remove(); renumber()"><svg class="wd-icon-trash"></svg></button>${body}</div>`;
+}
+function renumber() {}
+function section(kind, title, panels) {
+  return `<div role="group" aria-labelledby="${title}-section"><h4 id="${title}-section">${title}</h4><div class="panels">${panels}</div>
+    <button type="button" data-automation-id="add-button" onclick="add('${kind}', this)">Add Another</button></div>`;
+}
+function add(kind, btn) {
+  const box = btn.parentElement.querySelector('.panels');
+  const n = box.children.length + 1;
+  box.insertAdjacentHTML('beforeend', panel(kind, n, ++seq, []));
+}
+document.getElementById('root').innerHTML =
+  section('w', 'Work-Experience', panel('w', 1, 12, ['Software Engineer Intern', 'Northwind', true, '1', '2025']) +
+    panel('w', 2, 13, ['Software Engineer Intern', 'AppsTek Corp', false, '9', '2023']) +
+    panel('w', 3, 14, ['PROJECTS', 'LLM Gateway - Cost', false, '9', '2026']) +
+    panel('w', 4, 15, ['', 'Draw.AI', false, '8', '2026'])) +
+  section('e', 'Education', panel('e', 1, 30, ['University at Buffalo, SUNY']));
+</script>
+<button type="button" onclick="window.submitted=true">Submit</button>
+"""
+
+
+def test_workday_blocks_are_replaced_with_your_lists(page, monkeypatch):
+    lists = {
+        "experience": [
+            {"title": "Software Engineer Intern", "company": "Globex", "location": "", "start": "Jan 2025",
+             "end": "May 2025", "description": "• Built billing"},
+            {"title": "Data Engineer", "company": "Initech", "location": "", "start": "Sep 2023",
+             "end": "Present", "description": "• Spark pipelines"}],
+        "education": [
+            {"school": "State University of Somewhere", "degree": "M.S.", "field": "Computer Science",
+             "start": "Aug 2024", "end": "May 2026", "gpa": ""},
+            {"school": "Some Institute of Technology", "degree": "B.Tech.", "field": "EE",
+             "start": "Sep 2020", "end": "May 2024", "gpa": ""}],
+    }
+    monkeypatch.setattr(form_engine.answer_bank, "get_list", lambda name: lists.get(name, []))
+    page.set_content(WORKDAY_BLOCKS)
+    res = form_engine.fill({"company": "Acme", "role": "SWE"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
+    work = page.locator('[aria-labelledby="Work-Experience-section"] [role=group]')
+    edu = page.locator('[aria-labelledby="Education-section"] [role=group]')
+    assert work.count() == 2 and edu.count() == 2                 # the projects deleted, the B.Tech added
+    assert page.input_value("#workExperience-12-c") == "Globex"   # Workday's parse overwritten
+    assert page.input_value("#workExperience-13-t") == "Data Engineer"
+    assert not page.is_checked("#workExperience-12-cur")           # Jan–May 2025 is not current
+    assert page.is_checked("#workExperience-13-cur")               # "Present"
+    assert page.input_value("#workExperience-12-sm") in ("01", "1") and page.input_value("#workExperience-12-sy") == "2025"
+    assert page.input_value("#workExperience-13-d") == "• Spark pipelines"
+    new_school = page.locator('[aria-labelledby="Education-section"] [role=group]').nth(1).locator("input").first
+    assert new_school.input_value() == "Some Institute of Technology"
+    degrees = page.locator('[aria-labelledby="Education-section"] select')
+    assert [degrees.nth(i).input_value() for i in range(2)] == ["MS", "BS"]   # never "MA" for an M.S.
+    assert "PROJECTS" not in [page.locator("input").nth(i).input_value() for i in range(page.locator("input").count())]
+    assert not any(r["source"] == "failed" for r in res.review), [r for r in res.review if r["source"] == "failed"]
+    assert not page.evaluate("window.submitted === true")
+
+
+def test_no_list_leaves_the_blocks_as_the_page_has_them(page, monkeypatch):
+    monkeypatch.setattr(form_engine.answer_bank, "get_list", lambda name: [])
+    page.set_content(WORKDAY_BLOCKS)
+    form_engine.fill({"company": "Acme"}, run=_run(page), guess_fn=Spy().guess, draft_fn=Spy().draft)
+    assert page.locator('[aria-labelledby="Work-Experience-section"] [role=group]').count() == 4
+    assert page.input_value("#workExperience-12-c") == "Northwind"
+
+
+def test_each_jobs_current_box_is_its_own_question(page):
+    page.set_content(WORKDAY_BLOCKS)
+    rows = [r for r in form_engine.scan(page) if r["kind"] in ("checkbox", "checkgroup")]
+    assert len(rows) == 4 and all(r["kind"] == "checkbox" for r in rows)

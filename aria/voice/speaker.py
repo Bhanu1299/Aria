@@ -13,6 +13,8 @@ import re
 import subprocess
 import threading
 
+from aria.voice import speech_text
+
 _ACK_DELAY_SECS = 3.5
 _ACK_LINES = ("One moment.", "Working on it.", "Just a second.")
 # On speakers the mic hears Aria's own voice: while it says its own name, the wake word must
@@ -38,7 +40,7 @@ class Speaker:
         print(f"[SPEAKER] Speaking: {text[:60]}...")
 
         try:
-            proc = subprocess.Popen(["say", text])
+            proc = subprocess.Popen(speech_text.say_args(text))
         except FileNotFoundError:
             print("[SPEAKER] Error: 'say' command not found — macOS only.")
             return
@@ -98,6 +100,7 @@ class ThinkingAck:
     def __init__(self, speaker: Speaker, delay: float = _ACK_DELAY_SECS) -> None:
         self._speaker = speaker
         self._done = False
+        self._spoke = False
         self._lock = threading.Lock()
         self._timer = threading.Timer(delay, self._fire)
         self._timer.daemon = True
@@ -110,12 +113,29 @@ class ThinkingAck:
 
     def _fire(self) -> None:
         with self._lock:
-            if self._done:
+            if self._done or self._spoke:
                 return
+            self._spoke = True
             try:
                 self._speaker.say(random.choice(_ACK_LINES))
             except Exception as exc:
                 print(f"[SPEAKER] ThinkingAck speak failed: {exc}")
+
+    def say_now(self, text: str) -> None:
+        """The agent's own short ack ("On it.") before a slow tool: spoken at once, in the
+        background, instead of the timed one — once per run. cancel() still waits for it."""
+        self._timer.cancel()
+
+        def run() -> None:
+            with self._lock:
+                if self._done or self._spoke:
+                    return
+                self._spoke = True
+                try:
+                    self._speaker.say(text)
+                except Exception as exc:
+                    print(f"[SPEAKER] ack speak failed: {exc}")
+        threading.Thread(target=run, daemon=True, name="aria-ack").start()
 
     def cancel(self) -> None:
         self._timer.cancel()

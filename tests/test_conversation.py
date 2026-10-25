@@ -196,37 +196,56 @@ def test_thinking_ack_cancel_blocks_until_ack_finishes():
 
 # ── 2026-10-23: a video's dialogue was taken as follow-ups ──────────────────
 
+@pytest.mark.parametrize("answer", [
+    "On it — I'm working through 10 jobs now, best fit first.",
+    "Timer set for 10 minutes.",
+    "Which one did you mean, the RTX or the eBay job?",
+    None,
+])
+def test_window_opens_after_every_answer(monkeypatch, answer):
+    # 2026-10-25, user: "when a response ends make sure mic is on to listen to my response"
+    monkeypatch.delenv("ARIA_CONVERSATION", raising=False)
+    assert conversation.invites_reply(answer) is True
+
+
 @pytest.mark.parametrize("answer,opens", [
     ("On it — I'm working through 10 jobs now, best fit first.", False),
     ("Timer set for 10 minutes.", False),
     ("Which one did you mean, the RTX or the eBay job?", True),
     ("I found two. Want me to fill the first one? I can also skip it.", True),
-    (None, True),                                   # unknown: keep the old behaviour
+    (None, True),
 ])
-def test_window_opens_only_after_a_question(monkeypatch, answer, opens):
-    monkeypatch.delenv("ARIA_CONVERSATION", raising=False)
+def test_question_mode_opens_only_after_a_question(monkeypatch, answer, opens):
+    monkeypatch.setenv("ARIA_CONVERSATION", "question")
     assert conversation.invites_reply(answer) is opens
 
 
-def test_always_mode_keeps_the_old_behaviour(monkeypatch):
-    monkeypatch.setenv("ARIA_CONVERSATION", "always")
-    assert conversation.invites_reply("Timer set for 10 minutes.") is True
-
-
-def test_no_window_after_a_plain_answer(monkeypatch):
-    monkeypatch.delenv("ARIA_CONVERSATION", raising=False)
+def test_question_mode_no_window_after_a_plain_answer(monkeypatch):
+    monkeypatch.setenv("ARIA_CONVERSATION", "question")
     monkeypatch.setattr(conversation, "_listen_followup", lambda: pytest.fail("mic opened after a plain answer"))
     conversation.hold(_FakeSpeaker(), _FakeTranscriber([]), _FakeMenubar(), "", lambda t: "x",
                       answer="On it — working through 10 jobs.")
 
 
-def test_a_followup_answer_without_a_question_ends_the_conversation(monkeypatch):
+def test_followups_continue_after_plain_answers(monkeypatch):
     monkeypatch.delenv("ARIA_CONVERSATION", raising=False)
+    monkeypatch.setattr(conversation, "_play_cue", lambda: None)
     monkeypatch.setattr(conversation, "_listen_followup", lambda: _fake_audio())
     turns = []
-    conversation.hold(_FakeSpeaker(), _FakeTranscriber(["the RTX one", "and another", "more"]), _FakeMenubar(), "",
+    conversation.hold(_FakeSpeaker(), _FakeTranscriber(["the RTX one", "and another", "thanks"]), _FakeMenubar(), "",
                       lambda t: turns.append(t) or "Filling the RTX one now.", answer="Which job did you mean?")
-    assert turns == ["the RTX one"]                 # one follow-up, then the mic stays shut
+    assert turns == ["the RTX one", "and another"]
+
+
+def test_cue_finishes_before_the_mic_opens(monkeypatch):
+    # 2026-10-25: the pop played in a thread reached the open mic and killed every window
+    order = []
+    monkeypatch.setattr(conversation.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(conversation.subprocess, "run", lambda cmd, **kw: order.append(("cue", cmd)))
+    monkeypatch.setattr(conversation, "_listen_followup", lambda: order.append(("mic",)) or None)
+    conversation.hold(_FakeSpeaker(), _FakeTranscriber([]), _FakeMenubar(), "", lambda t: "x", answer="Done.")
+    assert [o[0] for o in order] == ["cue", "mic"]
+    assert "-t" in order[0][1]
 
 
 def test_sound_already_playing_when_the_mic_opens_is_ignored(monkeypatch):
@@ -246,4 +265,5 @@ def test_sound_already_playing_when_the_mic_opens_is_ignored(monkeypatch):
         def close(self):
             pass
     monkeypatch.setattr(conversation.sd, "InputStream", Stream)
+    monkeypatch.setattr(conversation.vad, "detector", lambda: None)          # the loudness gate
     assert conversation._listen_followup() is None

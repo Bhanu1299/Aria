@@ -126,7 +126,27 @@ def test_referral_source_comes_from_the_job(bank_file):
     assert look("How did you find out about this position?", bank_file, job=job).value == "Instagram"
     opts = ["Facebook", "Friend/Referral", "Instagram", "LinkedIn", "Other"]
     assert look("How did you hear about this opportunity?", bank_file, job=job, options=opts).value == "Instagram"
-    assert look("How did you hear about this opportunity?", bank_file, job={"company": "Z"}) is None
+    # nothing in the sheet or the bank: a recruiter (user, 2026-10-24)
+    assert look("How did you hear about this opportunity?", bank_file, job={"company": "Z"}).value == "Recruiter"
+
+
+def test_referral_default_picks_the_closest_option(bank_file):
+    z = {"company": "Z"}
+    assert look("How did you hear about us?", bank_file, job=z,
+                options=["LinkedIn", "Recruiter contacted me", "Recruiter (agency)", "Other"]).value == "Recruiter contacted me"
+    assert look("How did you hear about us?", bank_file, job=z,
+                options=["Employee referral", "Agency Recruiter", "Other"]).value == "Agency Recruiter"
+    assert look("How did you hear about us?", bank_file, job=z,
+                options=["Indeed", "LinkedIn", "Other"]).value == "LinkedIn"
+    assert look("How did you hear about us?", bank_file, job=z, options=["Friend", "Other"]).value == "Other"
+    assert ab.lookup_key("referral_source", path=bank_file).value == "Recruiter"
+
+
+def test_a_phone_extension_is_never_the_phone_number(bank_file):
+    bank = ab.load(bank_file)
+    for label in ("Phone Extension", "Ext.", "Country Phone Code", "Phone Device Type"):
+        assert ab.match_field(bank, ab.normalize(label)).key != "phone", label
+    assert ab.match_field(bank, ab.normalize("Phone Number")).key == "phone"
 
 
 # ── match steps, logged ─────────────────────────────────────────────────────
@@ -215,3 +235,12 @@ def test_pronounce_is_not_pronouns_and_high_school_is_not_your_university():
     assert ab.match_field(bank, ab.normalize("High School Name")).key is None
     assert ab.match_field(bank, ab.normalize("Year of High School Graduation")).key is None
     assert ab.match_field(bank, ab.normalize("Where did you attend university?")).key == "school"
+
+
+def test_state_abbreviation_picks_the_full_name_and_back():
+    # 2026-10-25: the bank says "NY", Meijer's Workday State list says "New York" → State failed
+    states = ["Alabama", "New Jersey", "New York", "North Carolina", "Michigan", "Oregon"]
+    assert ab.choose_option("NY", states) == "New York"
+    assert ab.choose_option("mi", states) == "Michigan"
+    assert ab.choose_option("New York", ["NJ", "NY", "NC"]) == "NY"
+    assert ab.choose_option("OR", ["Yes", "No"]) is None       # never an unrelated option

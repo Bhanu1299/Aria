@@ -102,7 +102,16 @@ function go() {
   if (document.querySelector('[data-automation-id=password]').value === window.atob('%s')) location.href = '/en-US/External/wizard1';
 }</script>"""
 
+UPLOAD = """<div data-automation-id="progressBar"><div data-automation-id="progressBarActiveStep">current step 1 of 6
+Autofill with Resume</div></div><h2>Autofill with Resume</h2>
+<input type="file" data-automation-id="file-upload-input-ref" style="display:none" onchange="window.uploaded = this.files[0].name;
+  document.getElementById('ok').innerHTML = '<div data-automation-id=&quot;file-upload-successful&quot;>Successfully Uploaded</div>'">
+<button data-automation-id="select-files">Select file</button><div id="ok"></div>
+<button data-automation-id="bottom-navigation-next-button" onclick="if (window.uploaded) location.href='/en-US/External/wizard1'">Continue</button>"""
 PAGES = {
+    f"{BASE}/job/R4": (POSTING % "").replace('href="#" onclick="window.autofill = true"',
+                                              'href="/en-US/External/job/R4/apply/autofillWithResume"'),
+    f"{BASE}/job/R4/apply/autofillWithResume": UPLOAD,
     f"{BASE}/job/R1": POSTING % "",
     f"{BASE}/job/R2": POSTING % LAST_APP,
     f"{BASE}/job/R1/apply/applyManually": None,          # SIGN_IN, filled in per test (needs the saved password)
@@ -224,6 +233,9 @@ def no_secret_anywhere(secret, caplog, said, tmp_dir):
     ({"wizard": True, "code_box": True}, "verify_email"),
     ({"wizard": True, "text": "We've sent an email about your application"}, "signed_in"),
     ({}, "unknown"),
+    # the Autofill with Resume step; My Experience's resume box is not it
+    ({"wizard": True, "file_input": True, "step": "current step 1 of 6\nAutofill with Resume"}, "upload"),
+    ({"wizard": True, "file_input": True, "step": "current step 3 of 6\nMy Experience"}, "signed_in"),
 ])
 def test_classify(state, want):
     assert classify(state) == want
@@ -385,3 +397,22 @@ def test_fill_on_the_sign_in_step_reports_an_error_never_an_empty_success(contex
     holder["page"].wait_for_selector('[data-automation-id="SignInWithEmailButton"]')
     report = WorkdayAdapter().fill(tab, ctx_for(f"{BASE}/job/R3/apply/useMyLastApplication"))
     assert report.error and "sign-in" in report.error and not report.rows and not report.filled
+
+
+def test_autofill_with_resume_is_chosen_and_the_resume_uploaded(context, env, tmp_path):
+    """User, 2026-10-24: pick "Autofill with Resume" on Workday, not Apply Manually."""
+    cv = tmp_path / "Alex_Resume.pdf"
+    cv.write_bytes(b"%PDF-1.4 resume")
+    ab.set_answer("resume_path", str(cv))
+    said = []
+    tab, holder = open_tab(context, f"{BASE}/job/R4")
+    ctx = ctx_for(f"{BASE}/job/R4", lambda kind, cleared=None: pytest.fail(f"asked the user: {kind}"), said)
+    assert WorkdayAdapter().login(tab, ctx) is True
+    assert any("Autofill with Resume" in m for m in said)
+    assert holder["page"].url.endswith("/wizard1")
+
+
+def test_the_phone_extension_is_not_the_phone_number():
+    a = WorkdayAdapter()
+    assert a.field_key({"aid": "phone-number", "label": "Phone Number"}) == "phone"
+    assert a.field_key({"aid": "phone-number", "label": "Phone Extension"}) == ""

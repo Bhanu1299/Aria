@@ -283,11 +283,16 @@ class TestSystemPrompt:
         import aria.core.agent as agent
         return agent._build_system_prompt(memory_context)
 
-    def test_contains_identity_and_date(self):
-        from datetime import date
+    def test_contains_identity_date_time_and_place_last(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
         p = self._prompt()
         assert "Aria" in p
-        assert date.today().isoformat() in p
+        now = datetime.now(ZoneInfo("America/New_York"))
+        assert f"{now:%B} {now.day}, {now.year}" in p
+        assert "Timezone: America/New_York" in p and "City: Buffalo, NY" in p
+        # everything that changes per request comes last, so the static rules stay a cacheable prefix
+        assert p.index("# Right now") > p.index("# Examples") > p.index("# Personality")
 
     def test_contains_voice_formatting_rules(self):
         p = self._prompt()
@@ -315,8 +320,18 @@ class TestSystemPrompt:
         assert "user prefers dark mode" in p
 
     def test_prompt_stays_lean(self):
-        # every token here is paid on EVERY utterance — keep it under ~600 words
-        assert len(self._prompt().split()) < 600
+        # every token here is paid on EVERY utterance; 2026-10-25 the user chose the fuller prompt
+        # (personality, examples, job rules) — static first so providers cache that prefix
+        assert len(self._prompt().split()) < 1300
+
+    def test_only_the_tail_changes_between_requests(self):
+        from aria.core.agent import _build_system_prompt
+        a, b = _build_system_prompt(), _build_system_prompt("Related memories: likes tea")
+        head = a.split("# Right now")[0].rstrip()
+        assert b.startswith(head) and b.index("likes tea") < b.index("# Right now")
+
+    def test_no_memory_claim_without_a_memory_tool(self):
+        assert "remember details" not in self._prompt().lower()
 
 
 class TestToolTracking:
@@ -361,3 +376,40 @@ class TestToolTracking:
             agent.run("search")
             agent.run("hello")
         assert agent.last_run_tools == []
+
+
+class TestInterimAck:
+    """2026-10-25: the prompt asks for a 2-4 word ack before slow tools — it's spoken at once,
+    and never becomes the final answer."""
+
+    def _agent(self, responses):
+        from unittest.mock import patch
+        from aria.core.agent import Agent
+        from aria.core.tool import ToolRegistry
+        reg = ToolRegistry()
+        agent = Agent(reg, enable_subagent=False)
+        return agent, patch("aria.core.agent.llm_client.complete", side_effect=responses)
+
+    def test_short_text_with_a_tool_call_is_spoken_and_not_the_answer(self):
+        from types import SimpleNamespace as NS
+        call = NS(id="t1", name="update_tasks", input={"tasks": []})
+        agent, p = self._agent([NS(text="On it.", stop_reason="tool_use", tool_calls=[call]),
+                                NS(text="", stop_reason="end_turn", tool_calls=[])])
+        said = []
+        agent.on_interim = said.append
+        with p:
+            answer = agent.run("plan my week")
+        assert said == ["On it."]
+        assert answer != "On it."                                  # not the result
+
+    def test_a_real_answer_next_to_a_tool_call_is_kept(self):
+        from types import SimpleNamespace as NS
+        call = NS(id="t1", name="update_tasks", input={"tasks": []})
+        long = "Your dentist appointment is on Thursday at two in the afternoon, I've noted it."
+        agent, p = self._agent([NS(text=long, stop_reason="tool_use", tool_calls=[call]),
+                                NS(text="", stop_reason="end_turn", tool_calls=[])])
+        said = []
+        agent.on_interim = said.append
+        with p:
+            assert agent.run("when's the dentist") == long
+        assert said == []

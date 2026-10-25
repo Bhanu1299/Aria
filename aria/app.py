@@ -183,10 +183,14 @@ def _run_turn(transcript: str) -> str:
     _t0 = time.time()
     ack = ThinkingAck(speaker)
     ack.start()
+    if _agent is not None:
+        _agent.on_interim = ack.say_now          # the agent's "On it." before a slow tool
     try:
         result = _dispatcher.handle(transcript)
     finally:
         ack.cancel()
+        if _agent is not None:
+            _agent.on_interim = None
     print(f"[Aria] Route: {result.route}"
           + (f" (escalated from {result.escalated_from})" if result.escalated_from else ""))
     flight_recorder.record(

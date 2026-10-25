@@ -42,6 +42,7 @@ import numpy as np
 
 import aria.ui.listening_indicator as listening_indicator
 from aria.voice.wake_features import N_FEATURES, wake_features
+from aria.voice import vad
 import aria.observability.wake_stats as wake_stats
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,13 @@ _BARGE_HITS = 3
 # write "Aria" over noise / room sound too, but those all had no_speech_prob ≥ 0.45 → rejected.
 # ARIA_WAKE_VERIFY=0 turns the check off.
 _VERIFY_MAX_SECS = 3.0
+_VERIFY_SETTLE_CHUNKS = 16    # 0.51 s of audio read after the crossing, before the check
+# Second chance (Apple's "Hey Siri" does the same): a near-miss or a rejected check means you may
+# have just said it — for a few seconds a lower score is enough, so saying it again wakes Aria
+# at once. The Whisper check still guards every wake.
+_SECOND_CHANCE_FLOOR = 0.55
+_SECOND_CHANCE_THRESHOLD = 0.6
+_SECOND_CHANCE_SECS = 4.0
 _MAX_NO_SPEECH = 0.45
 _WAKE_WORDS = re.compile(r"\b(?:aria|arya|ariya|ariah|aryah|aarya|arria|aria's|arya's)\b")
 _WAKE_FIRST = re.compile(r"^(?:hey |hi |ok |okay |yo )?(?:area|maria|ariel|arian|aaria|orya|oria)\b")
@@ -468,6 +476,7 @@ class WakeWordListener:
             self._backend_name = "custom_onnx"
             last_near_miss = 0.0
             barge_hits = 0
+            sensitive_until = 0.0
 
             while not self._stop_event.is_set():
                 wake_stats.heartbeat("custom_onnx")
@@ -513,22 +522,29 @@ class WakeWordListener:
                     logger.debug("Custom model inference error: %s", exc)
                     continue
 
-                if score >= _CUSTOM_THRESHOLD:
+                threshold = _SECOND_CHANCE_THRESHOLD if now < sensitive_until else _CUSTOM_THRESHOLD
+                if score >= threshold:
                     heard, prefix = self._verify(stream, buffer, _CHUNK_SIZE)
                     if not heard:
                         print(f"[Aria] Wake model fired (score={score:.2f}) but Whisper didn't hear "
                               "\"Aria\" — ignored.")
-                        wake_stats.log_event("verify_reject", "custom_onnx", score)
+                        wake_stats.log_event("verify_reject", "custom_onnx", score,
+                                             heard=getattr(self, "_last_reject", None))
                         last_triggered = time.time() - _COOLDOWN_SECS + 1.0     # listen again in 1 s
+                        sensitive_until = time.time() + _SECOND_CHANCE_SECS
                         continue
                     print(f"[Aria] Wake word detected (custom model, score={score:.2f})")
-                    wake_stats.log_event("detection", "custom_onnx", score)
+                    wake_stats.log_event("detection" if threshold == _CUSTOM_THRESHOLD else "detection_second_chance",
+                                         "custom_onnx", score)
+                    sensitive_until = 0.0
                     if self._can_barge_in():          # e.g. the welcome-back line: stop it, listen
                         self._barge_in()
                     self._on_wake(stream, _SAMPLE_RATE, _CHUNK_SIZE, prefix)
                     last_triggered = time.time()
                 elif score >= _NEAR_MISS_FLOOR and now - last_near_miss > 3.0:
                     last_near_miss = now
+                    if score >= _SECOND_CHANCE_FLOOR:
+                        sensitive_until = now + _SECOND_CHANCE_SECS
                     wake_stats.log_event("near_miss", "custom_onnx", score)
 
         except Exception as exc:
@@ -555,6 +571,18 @@ class WakeWordListener:
         the mic keeps being read, so nothing said after the wake word is dropped."""
         if self._transcriber is None or not _verify_enabled():
             return True, []
+        # The score crosses the threshold before "Aria" has been said in full: checked right at
+        # the crossing, Whisper heard the name in 13/37 of the user's clips (replayed over room
+        # noise, 2026-10-25), checked 0.5 s later in 33/37. So listen on before checking.
+        chunks: list = []
+        for _ in range(_VERIFY_SETTLE_CHUNKS):
+            try:
+                chunks.append(stream.read(chunk_size, exception_on_overflow=False))
+            except OSError:
+                break
+        if chunks:
+            tail = np.frombuffer(b"".join(chunks), dtype=np.int16)
+            window = np.concatenate([window, tail])[-len(window):]
         out: dict = {}
         audio = window.astype(np.float32) / 32768.0
 
@@ -565,7 +593,6 @@ class WakeWordListener:
                 logger.warning("wake verify failed: %s", exc)
         t = threading.Thread(target=run, daemon=True, name="aria-wake-verify")
         t.start()
-        chunks: list = []
         deadline = time.time() + _VERIFY_MAX_SECS
         while t.is_alive() and time.time() < deadline:
             try:
@@ -578,6 +605,7 @@ class WakeWordListener:
         heard = heard_wake_word(out["text"]) and out.get("no_speech", 1.0) < _MAX_NO_SPEECH
         if not heard:
             logger.info("wake verify: rejected (no_speech=%.2f)", out.get("no_speech", 1.0))
+            self._last_reject = (out["text"], out.get("no_speech", 1.0))
         return heard, chunks
 
     def _can_barge_in(self) -> bool:
@@ -664,6 +692,7 @@ class WakeWordListener:
         Returns WAV path or None."""
         pending = list(prefix or [])
         chunks: list[bytes] = []
+        detector = vad.detector()          # speech, not loudness, decides when you've stopped
         speech_started = False
         speech_duration = 0.0
         silence_duration = 0.0
@@ -680,8 +709,9 @@ class WakeWordListener:
             audio_np = np.frombuffer(chunk, dtype=np.int16)
             rms = self._rms(audio_np)
             total_elapsed += chunk_secs
+            speech = detector.is_speech(audio_np) if detector is not None else rms >= _VAD_SPEECH_RMS
 
-            if rms >= _VAD_SPEECH_RMS:
+            if speech:
                 speech_started = True
                 silence_duration = 0.0
                 speech_duration += chunk_secs

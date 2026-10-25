@@ -54,12 +54,17 @@ def _rotate_if_needed() -> None:
         pass
 
 
-def log_event(kind: str, backend: str, score: Optional[float] = None) -> None:
-    """Append one wake event. Never raises."""
+def log_event(kind: str, backend: str, score: Optional[float] = None,
+              heard: Optional[tuple] = None) -> None:
+    """Append one wake event. Never raises. heard = (Whisper text, no_speech_prob) of a
+    rejected second check."""
     try:
         entry = {"ts": time.time(), "kind": kind, "backend": backend}
         if score is not None:
             entry["score"] = round(float(score), 3)
+        if heard:
+            entry["heard"] = str(heard[0])[:80]
+            entry["no_speech"] = round(float(heard[1]), 2)
         _append(entry)
     except Exception as exc:
         logger.debug("wake_stats.log_event failed: %s", exc)

@@ -387,7 +387,7 @@ def test_answers_tab_writes_only_through_answer_bank():
     text = (ARIA / "dashboard" / "answers.py").read_text()
     assert not re.search(r"sqlite3|\.execute\(|write_text\(|open\(|_write_file|_apply\(", text)
     calls = set(re.findall(r"\bab\.(set_\w+|undo)\(", text))
-    assert calls <= {"set_answer", "set_learned", "set_job_answer", "set_always_ask", "set_salary_floor", "undo"}
+    assert calls <= {"set_answer", "set_learned", "set_job_answer", "set_always_ask", "set_salary_floor", "set_list", "undo"}
 
 
 def test_settings_writes_only_through_atomic_write():

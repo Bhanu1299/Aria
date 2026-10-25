@@ -258,7 +258,8 @@ def test_plan_required_essay_is_drafted_and_optional_extra_info_skipped():
 def test_plan_optional_unknowns_are_skipped_without_llm():
     spy = Spy()
     plans = _plan("discord_jobboards", spy)
-    assert plans["How did you hear about this job?"].source == "skipped"
+    # how-heard is never an unknown: Recruiter by default (user, 2026-10-24), from the bank, not the LLM
+    assert plans["How did you hear about this job?"].source == "bank"
     asked = [q["label"] for call in spy.guess_calls for q in call]
     assert "How did you hear about this job?" not in asked
 
@@ -581,3 +582,30 @@ def test_required_plain_checkbox_is_never_ticked_by_the_llm():
     form = gh.ParsedForm(fields=[gh.FormField("sms", "Text me about my application", "checkbox", True)])
     [p] = gh.plan(form, {}, "profile", spy.guess, spy.draft_fn)
     assert p.source == "needs_me" and spy.guess_calls == []
+
+
+# ── training/ATS (the user's own Workday applications, 2026-10-24) ──────────
+
+@pytest.mark.parametrize("label,company,want", [
+    ('Have you previously worked for Salesforce as an employee or contractor, or are you a current Salesforce '
+     'contractor? If "Yes" please provide at least one piece of information below, as accurately as possible.',
+     "Salesforce", "No"),
+    ("Have you previously worked for this organization? If Yes, please answer the questions below. If No, "
+     "please continue to the next page.", "M&T Bank", "No"),
+    ("Have you previously worked as Employee or Intern for GlobalFoundries? If Yes, provide additional "
+     "information; if No, please continue.", "GlobalFoundries", "No"),
+    ("Have you previously been contracted with Meijer, Fresh Thyme, or Serv-u-Success?", "Meijer", "No"),
+    ("Have you previously worked for Northwind?", "Northwind", "ask"),          # on the resume: only you know
+    ("Have you previously worked in a regulated industry?", "Salesforce", None),
+    ("How did you hear about us?", "Salesforce", None),
+])
+def test_worked_here_before_comes_from_the_resume(label, company, want):
+    from aria.features.ats.planner import worked_here
+    assert worked_here(label, company, "Software Engineer, Northwind, Springfield IL, 01/2025 - 05/2025") == want
+
+
+def test_workdays_own_referral_options_are_chosen():
+    # option names seen on the user's Salesforce / M&T applications
+    opts = ["Job Board", "LinkedIn Connection Post", "URL LinkedIn Ad", "Employee Referral", "Other"]
+    assert ab.choose_referral("Recruiter", opts) == "LinkedIn Connection Post"
+    assert ab.choose_referral("Recruiter", opts + ["Recruiter Outreach"]) == "Recruiter Outreach"
