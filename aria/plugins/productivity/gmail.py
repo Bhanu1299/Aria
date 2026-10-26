@@ -180,11 +180,17 @@ class GmailClient:
 
     def create_draft(self, to: str, subject: str, body: str, cc: str = "", reply_to_id: str = "") -> str:
         """Save a draft in Gmail. Never sends. reply_to_id threads it as a reply to that email."""
+        return self.save_draft(to, subject, body, cc, reply_to_id)["message"]
+
+    def save_draft(self, to: str, subject: str, body: str, cc: str = "", reply_to_id: str = "") -> dict:
+        """create_draft with the result: {"ok", "message", "draft_id", "message_id", "link"}. Never sends.
+        link opens the draft in Gmail's web UI, in this account (u/<address>)."""
+        out = {"ok": False, "message": "", "draft_id": "", "message_id": "", "link": ""}
         if not self.is_configured():
-            return self._not_setup_msg
+            return {**out, "message": self._not_setup_msg}
         svc = self._get_service()
         if svc is None:
-            return self._auth_expired_msg
+            return {**out, "message": self._auth_expired_msg}
         try:
             msg = MIMEText(body)
             message: dict = {}
@@ -206,11 +212,16 @@ class GmailClient:
             if cc:
                 msg["cc"] = cc
             message["raw"] = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-            svc.users().drafts().create(userId="me", body={"message": message}).execute()
-            where = google_auth.account_email(self.account) or f"your {self.account} Gmail"
-            return f"Draft saved for {to}: {subject}. It's in the drafts of {where}; nothing was sent."
+            resp = svc.users().drafts().create(userId="me", body={"message": message}).execute()
+            addr = google_auth.account_email(self.account)
+            where = addr or f"your {self.account} Gmail"
+            resp = resp if isinstance(resp, dict) else {}
+            msg_id = str((resp.get("message") or {}).get("id") or "")
+            link = f"https://mail.google.com/mail/u/{addr or 0}/#drafts?compose={msg_id}" if msg_id else ""
+            return {"ok": True, "draft_id": str(resp.get("id") or ""), "message_id": msg_id, "link": link,
+                    "message": f"Draft saved for {to}: {subject}. It's in the drafts of {where}; nothing was sent."}
         except Exception as exc:
-            return _handle_api_error(exc, self._auth_expired_msg)
+            return {**out, "message": _handle_api_error(exc, self._auth_expired_msg)}
 
     def reply_message(self, email_id: str, body: str) -> str:
         if not self.is_configured():
