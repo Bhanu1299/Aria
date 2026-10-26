@@ -10,6 +10,10 @@ skill counts as that skill ("k8s" = "Kubernetes", "Postgres" = "PostgreSQL").
     present(skill, text)        → bool     the skill under any of its aliases
     canonical(term)             → Skill | None
     category_of(name)           → "Cloud & DevOps" | ...
+    close(skill, have)          → bool     shares a skill family with one of `have` (names)
+    mentions(skill, text)       → int      how many times the text names it
+    core(skill, jd_text, title) → bool     the job can't do without it: in the title, or named
+                                           2+ times with one in the required part of the JD
 
 Never raises on bad input; a missing lexicon file is a packaging error and does raise.
 """
@@ -154,3 +158,63 @@ def all_categories() -> list:
         if skill.category not in seen:
             seen.append(skill.category)
     return seen
+
+
+@lru_cache(maxsize=1)
+def _families() -> tuple:
+    """((family, frozenset(names)), ...) from the lexicon's "_families"; "*" = close for anyone."""
+    data = json.loads(LEXICON_PATH.read_text()).get("_families", {})
+    return tuple((k, frozenset(v)) for k, v in data.items() if not k.startswith("_"))
+
+
+def close(skill, have) -> bool:
+    """`skill` is the same as, or shares a family with, one of `have` (skill names)."""
+    name = skill.name if isinstance(skill, Skill) else str(skill)
+    have = set(have)
+    if name in have:
+        return True
+    for fam, names in _families():
+        if name in names and (fam == "*" or names & have):
+            return True
+    return False
+
+
+def mentions(skill, text: str) -> int:
+    if not text:
+        return 0
+    name = skill.name if isinstance(skill, Skill) else str(skill)
+    for s, regexes in _lexicon():
+        if s.name == name:
+            spans = {m.span() for rx in regexes for m in rx.finditer(text)}
+            return len(spans)
+    wording = skill.text if isinstance(skill, Skill) else name
+    return len(_alias_regex(wording).findall(text))
+
+
+_OPTIONAL_HEAD = re.compile(r"(?i)\b(?:nice[- ]to[- ]haves?|preferred|bonus|pluses|a plus|good to have|"
+                            r"extra credit|not required)\b")
+_REQUIRED_HEAD = re.compile(r"(?i)\b(?:requirements?|qualifications|must[- ]haves?|what you(?:'|’)?ll (?:need|bring|do)|"
+                            r"you (?:have|bring|will)|responsibilities|about you|who you are|the role)\b")
+
+
+def required_text(jd_text: str) -> str:
+    """The JD without its nice-to-have / preferred parts (a heading line switches parts;
+    a line that says "a plus" / "preferred" is optional on its own)."""
+    keep, optional = [], False
+    for line in (jd_text or "").splitlines():
+        short = len(line.strip()) <= 60
+        if short and _OPTIONAL_HEAD.search(line):
+            optional = True
+            continue
+        if short and _REQUIRED_HEAD.search(line):
+            optional = False
+            continue
+        if not optional and not _OPTIONAL_HEAD.search(line):
+            keep.append(line)
+    return "\n".join(keep)
+
+
+def core(skill, jd_text: str, title: str = "") -> bool:
+    if title and present(skill, title):
+        return True
+    return mentions(skill, jd_text) >= 2 and mentions(skill, required_text(jd_text)) >= 1

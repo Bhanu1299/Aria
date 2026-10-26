@@ -3,6 +3,7 @@ folder and cover letters. LLM calls are mocked on aria.llm.llm_client."""
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,10 +98,14 @@ def test_numbers_are_read_as_written():
 def test_layout_positions_match_the_base_resume(base):
     lay = render.layout(base)
     name, contact, headline = lay.lines[:3]
-    assert (name.y, contact.y, headline.y) == (40.0, 58.0, 70.0)
+    # baselines = measured text tops (40 / 58 / 70) + 0.8 × font size
+    assert (name.y, contact.y, headline.y) == pytest.approx((53.6, 65.6, 77.6))
     assert name.runs[0][1].font == ("Times-Bold", 17.0)
     section = next(ln for ln in lay.lines if ln.rule)
     assert section.runs[0][0] == 42.0 and section.runs[0][1].font == ("Times-Bold", 11.5)
+    assert section.y == pytest.approx(86 + 9.2) and section.y + section.rule == pytest.approx(99.0)
+    first = lay.lines[lay.lines.index(section) + 1]
+    assert first.y == pytest.approx(102 + 7.6)
     bullet = next(ln for ln in lay.lines if ln.glyph and ln.runs[0][1].font == render.BODY)
     assert bullet.runs[0][0] == 56.0
     assert lay.one_page
@@ -131,6 +136,24 @@ def test_build_from_text_round_trips_the_rendered_pdf(tmp_path, monkeypatch):
     want = model.normalize(json.loads((DATA / "resume_fixture_dense.json").read_text()))
     render.render(want, tmp_path / "r.pdf")
     assert model.build_from_text(resume_text.text(str(tmp_path / "r.pdf"))) == want
+
+
+def test_skill_commas_inside_parentheses_and_wrapped_lines_stay_one_item():
+    text = ("TECHNICAL SKILLS\n"
+            "• AI & LLMs: RAG, Vector DBs (FAISS, ChromaDB), LLM evals, OpenAI /\n"
+            "Anthropic / Groq APIs, Whisper\n"
+            "EXPERIENCE\n")
+    assert model._skills(text) == [{"label": "AI & LLMs", "items": [
+        "RAG", "Vector DBs (FAISS, ChromaDB)", "LLM evals", "OpenAI / Anthropic / Groq APIs", "Whisper"]}]
+
+
+def test_a_word_link_in_the_contact_line_keeps_the_pdf_link(tmp_path):
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF-1.4 /URI (https://github.com/jr) /URI (https://jr.dev/folio/) /URI (mailto:a@b.co)")
+    d = {"contact": [{"text": "+1-555-010-2000", "url": ""}, {"text": "github.com/jr", "url": "https://github.com/jr"},
+                     {"text": "Portfolio", "url": ""}]}
+    model._attach_pdf_links(d, str(pdf))
+    assert [c["url"] for c in d["contact"]] == ["", "https://github.com/jr", "https://jr.dev/folio/"]
 
 
 # ---------------------------------------------------------------------------
@@ -177,18 +200,32 @@ def test_score_without_pdf_never_raises(base, tmp_path):
 # tailoring
 # ---------------------------------------------------------------------------
 
-JD = ("We build in Go and Python on Kubernetes with Kafka, gRPC and Terraform on AWS. You know distributed "
-      "systems and CI/CD. 5+ years. BS in CS. US citizenship required.")
+JD = ("Requirements\n"
+      "We build in Go and Python on Kubernetes with Kafka, gRPC and Terraform on AWS. Our Go services stream "
+      "through Kafka. You know distributed systems and CI/CD. 5+ years. BS in CS. US citizenship required.\n"
+      "Nice to have\n"
+      "Rust.")
 
 
-def test_every_jd_skill_lands_in_the_skills_section_and_a_bullet(base):
+def test_close_or_core_jd_skills_land_in_the_skills_section(base):
     t = tailor.tailor(base, JD, "Senior Backend Engineer (Remote)", use_llm=False)
     section = "\n".join(", ".join(s["items"]) for s in t.resume["skills"])
-    bullets = model.bullet_text(t.resume)
     for s in skills.extract(JD):
-        assert skills.present(s, section), s.name
-        assert skills.present(s, bullets), s.name
-    assert "Kafka" in t.added_skills and "Python" not in t.added_skills
+        if s.name != "Rust":
+            assert skills.present(s, section), s.name
+    assert "Kafka" in t.added_skills and "Go" in t.added_skills and "Python" not in t.added_skills
+    assert [s.name for s in t.skipped] == ["Rust"] and not skills.present("Rust", section)
+
+
+def test_a_skill_is_added_when_close_to_the_base_or_core_to_the_job(base):
+    jd = ("Requirements\nKubernetes and Terraform on AWS. Some Rust.\nNice to have\nHaskell, Haskell, Haskell.\n"
+          "Responsibilities\nShip Elixir services. Elixir on-call.")
+    kept, skipped = tailor.select(skills.extract(jd), base, jd, "Platform Engineer")
+    assert {"Kubernetes", "Terraform", "AWS"} <= {s.name for s in kept}     # close: Docker / AWS on the base
+    assert "Elixir" in {s.name for s in kept}                               # core: named twice, required part
+    assert {"Rust", "Haskell"} <= {s.name for s in skipped}                 # once / only as a nice-to-have
+    kept, _ = tailor.select(skills.extract("Rust once."), base, "Rust once.", "Rust Engineer")
+    assert [s.name for s in kept] == ["Rust"]                               # core: in the title
 
 
 def test_skills_go_on_the_matching_line(base):
@@ -229,7 +266,7 @@ def test_llm_rewrite_is_used_when_it_keeps_the_facts(base, fake_llm):
     fake_llm.answers["resume_tailor"] = json.dumps({
         "e1.1": "Migrated nightly batch jobs to a Kafka event pipeline on AWS, reducing data delay from 24 hours "
                 "to 15 minutes"})
-    t = tailor.tailor(base, "Kafka and AWS", "Data Engineer", use_llm=True)
+    t = tailor.tailor(base, "Kafka and AWS. Kafka everywhere.", "Data Engineer", use_llm=True)
     assert any(c["id"] == "e1.1" and c["how"] == "llm" for c in t.changes)
     assert "Kafka event pipeline" in model.bullet_text(t.resume)
     sys_prompt = next(s for task, _m, s in fake_llm.calls if task == "resume_tailor")
@@ -240,17 +277,40 @@ def test_llm_rewrite_that_changes_numbers_is_rejected(base, fake_llm):
     fake_llm.answers["resume_skills_extract"] = "[]"
     fake_llm.answers["resume_tailor"] = json.dumps({
         "e1.1": "Migrated batch jobs to Kafka on AWS, reducing data delay from 48 hours to 5 minutes"})
-    t = tailor.tailor(base, "Kafka and AWS", "Data Engineer", use_llm=True)
+    t = tailor.tailor(base, "Kafka and AWS. Kafka everywhere.", "Data Engineer", use_llm=True)
     assert not any(c["how"] == "llm" for c in t.changes)
     assert any("numbers changed" in n for n in t.notes)
     assert "48 hours" not in model.bullet_text(t.resume)
-    assert skills.present("Kafka", model.bullet_text(t.resume))          # the code weave still placed it
+    assert "Kafka" in t.added_skills                                       # still on a skill line
+
+
+def test_skills_are_never_glued_onto_a_bullet_by_code(base):
+    t = tailor.tailor(base, JD, "Backend Engineer", use_llm=False)
+    assert model.bullets(t.resume).items() <= model.bullets(model.with_ids(base)).items()
+    assert not re.search(r"\b(?:using|applying) [A-Z]", model.bullet_text(t.resume).replace(
+        model.bullet_text(base), ""))
+
+
+def test_a_rewrite_that_only_adds_a_tail_is_refused():
+    old = "Designed the loyalty data model with ACID transactions across services"
+    assert tailor.bullet_ok(old, old + " using Helm and Argo CD", []) == "appended to, not rewritten"
+    assert tailor.bullet_ok(old, "Designed the loyalty data model in PostgreSQL with ACID transactions across "
+                                 "services", []) is None
+
+
+def test_numbers_inside_an_added_skill_name_are_not_new_numbers():
+    old = "Rebuilt the admin portal in React with keyboard navigation"
+    new = "Rebuilt the admin portal in React to WCAG 2.1 AA with keyboard navigation"
+    assert tailor.bullet_ok(old, new, [], ("WCAG 2.1 AA",)) is None
+    assert tailor.bullet_ok(old, new.replace("navigation", "navigation for 40 pages"), [], ("WCAG 2.1 AA",)) \
+        == "numbers changed"
 
 
 def test_llm_extra_skills_must_appear_in_the_jd(base, fake_llm):
     fake_llm.answers["resume_skills_extract"] = json.dumps(["Temporal", "Snowpark", "5 years", "Teamwork"])
     fake_llm.answers["resume_tailor"] = "{}"
-    t = tailor.tailor(base, "We use Temporal workflows and Python.", "Backend Engineer", use_llm=True)
+    t = tailor.tailor(base, "We use Temporal workflows and Python. Temporal runs every job.", "Backend Engineer",
+                      use_llm=True)
     assert "Temporal" in t.added_skills
     assert "Snowpark" not in t.added_skills and "5 years" not in t.added_skills
 
@@ -293,7 +353,7 @@ def test_prepare_writes_the_job_folder(base):
     for name in ("resume.pdf", "resume.json", "changes.md", "posting.txt", "checks.json"):
         assert (folder / name).is_file(), name
     assert p.ok and p.resume_pdf == str(folder / "resume.pdf")
-    assert p.score_after >= 95 > p.score_before
+    assert p.score_after >= 80 and p.score_after > p.score_before          # offline: no LLM rewrite
     checks = json.loads((folder / "checks.json").read_text())
     assert checks["after"]["parts"]["hard_skills"]["max"] == 40 and checks["fact_check"] == []
     md = (folder / "changes.md").read_text()

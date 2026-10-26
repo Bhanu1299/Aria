@@ -87,6 +87,9 @@ def _changes_md(job: dict, t: Optional[tailor.Tailored], before: Optional[int], 
         return "\n".join(out) + "\n"
     out.append("## Skills added (brush up on these)")
     out += [f"- {s}" for s in t.added_skills] or ["- none"]
+    if t.skipped:
+        out += ["", "## In the posting but not added (not close to your skills, not core to the job)"]
+        out += [f"- {s.label}" for s in t.skipped]
     out += ["", "## Headline", f"- old: {t.headline_before}", f"- new: {t.resume['headline']}", "",
             "## Reworded bullets"]
     for c in t.changes:

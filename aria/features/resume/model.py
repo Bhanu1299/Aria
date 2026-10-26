@@ -167,7 +167,7 @@ def ensure_base(pdf_path: Optional[str]) -> Optional[dict]:
         return d
     try:
         from aria.features.ats import resume_text
-        built = build_from_text(resume_text.text(pdf_path))
+        built = _attach_pdf_links(build_from_text(resume_text.text(pdf_path)), pdf_path)
         if built["experience"] or built["projects"]:
             if d is not None:
                 BASE_PATH.with_name("resume_base.prev.json").write_text(json.dumps(d, indent=2, ensure_ascii=False))
@@ -184,6 +184,37 @@ def ensure_base(pdf_path: Optional[str]) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # PDF text → resume dict
 # ---------------------------------------------------------------------------
+
+def _pdf_uris(pdf_path: str) -> list:
+    """Link targets stored in the PDF's annotations, in file order."""
+    try:
+        raw = Path(pdf_path).expanduser().read_bytes()
+    except OSError:
+        return []
+    out: list = []
+    for m in re.finditer(rb"/URI\s*\(([^)]*)\)", raw):
+        u = m.group(1).decode("latin-1").strip()
+        if u and u not in out:
+            out.append(u)
+    return out
+
+
+def _attach_pdf_links(d: dict, pdf_path: str) -> dict:
+    """A contact item shown as a word ('Portfolio') keeps the link the PDF gives it: the
+    annotation URLs not already shown as text go to the text-only items, in order."""
+    def key(u: str) -> str:
+        return re.sub(r"^(?:https?://)?(?:www\.)?|/+$", "", u.lower())
+    shown = {key(c["url"]) for c in d.get("contact", []) if c.get("url")}
+    shown |= {key(p["link"]) for p in d.get("projects", []) if p.get("link")}
+    spare = [u for u in _pdf_uris(pdf_path) if not u.lower().startswith("mailto:") and key(u) not in shown]
+    for c in d.get("contact", []):
+        if not spare:
+            break
+        text = c.get("text", "").strip()
+        if not c.get("url") and re.fullmatch(r"[A-Za-z][A-Za-z .'&-]{1,30}", text):   # a word, never a phone/place
+            c["url"] = spare.pop(0)
+    return d
+
 
 def _contact_item(text: str) -> dict:
     t = text.strip()
@@ -208,17 +239,30 @@ def _section_lines(text: str, heading: str) -> list:
     return out
 
 
+def _split_items(s: str) -> list:
+    """Comma-separated skills; commas inside parentheses stay ('Vector DBs (FAISS, ChromaDB)')."""
+    items, cur, depth = [], "", 0
+    for ch in s:
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth <= 0:
+            items.append(cur)
+            cur, depth = "", 0
+        else:
+            cur += ch
+    items.append(cur)
+    return [i.strip() for i in items if i.strip()]
+
+
 def _skills(text: str) -> list:
     rows: list = []
     for line in _section_lines(text, r"(?:technical )?skills(?: (?:and|&) tools)?"):
         s = re.sub(r"^[•●▪◦\-*]\s*", "", line)
         m = re.match(r"^([^:]{2,40}):\s*(.+)$", s)
         if m:
-            rows.append({"label": m.group(1).strip(), "items": [i.strip() for i in re.split(r",\s*", m.group(2))
-                                                                   if i.strip()]})
+            rows.append({"label": m.group(1).strip(), "raw": m.group(2).strip()})
         elif rows:                                  # a skill line wrapped onto the next line
-            rows[-1]["items"] += [i.strip() for i in re.split(r",\s*", s) if i.strip()]
-    return rows
+            rows[-1]["raw"] += " " + s
+    return [{"label": r["label"], "items": _split_items(r["raw"])} for r in rows]
 
 
 def _split_link(head: str) -> tuple:

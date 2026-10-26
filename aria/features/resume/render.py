@@ -42,11 +42,15 @@ ITALIC = ("Times-Italic", 9.5)
 NAME = ("Times-Bold", 17.0)
 SECTION = ("Times-Bold", 11.5)
 BULLET_GLYPH = ("Helvetica", 10.0)
-NAME_Y, CONTACT_Y, HEADLINE_Y = 40.0, 58.0, 70.0
-SECTION_GAP = 7.0                            # space above a section title
-RULE_DROP = 2.6                              # rule below the section title's baseline
-AFTER_RULE = 11.0                            # first line baseline below the title baseline
-ENTRY_GAP = 2.4                              # extra space between entries
+# Vertical positions are measured as the TOP of a line's text (as in the base resume's own
+# generator); a line's baseline = top + 0.8 × font size.
+NAME_TOP, CONTACT_TOP, HEADLINE_TOP = 40.0, 58.0, 70.0
+HEADER_END = 81.0                            # top of the first section's space
+SECTION_GAP = 5.0                            # space above a section title
+RULE_BELOW = 13.0                            # rule this far below the section title's top
+AFTER_RULE = 3.0                             # first line's top this far below the rule
+ENTRY_GAP = 2.0                              # space above every entry header
+GLYPH_DROP = 0.4                             # "•" baseline sits this much below the text baseline
 
 
 @dataclass
@@ -62,7 +66,7 @@ class Line:
     runs: list                               # [(x, Run)]
     right: str = ""                          # right-aligned text at x=570 (dates)
     center: bool = False
-    rule: bool = False
+    rule: float = 0.0                        # >0: a rule this many points below the baseline
     glyph: bool = False                      # a "•" at BULLET_X
 
 
@@ -120,43 +124,49 @@ def _center_runs(runs: list) -> list:
     return out
 
 
+def _base(top: float, font: tuple) -> float:
+    return top + font[1] * 0.8
+
+
 def layout(d: dict) -> Layout:
     d = model.with_ids(d)
     out = Layout()
     put = out.lines.append
-    put(Line(NAME_Y, _center_runs([Run(d["name"], NAME)]), center=True))
+    put(Line(_base(NAME_TOP, NAME), _center_runs([Run(d["name"], NAME)]), center=True))
     contact: list = []
     for i, c in enumerate(d["contact"]):
         if i:
             contact.append(Run(" | ", BODY))
         contact.append(Run(c["text"], BODY, c["url"]))
-    y = NAME_Y
     if contact:
-        y = CONTACT_Y
-        put(Line(y, _center_runs(contact), center=True))
+        put(Line(_base(CONTACT_TOP, BODY), _center_runs(contact), center=True))
     if d["headline"]:
-        y = HEADLINE_Y
-        put(Line(y, _center_runs([Run(d["headline"], BOLD)]), center=True))
+        put(Line(_base(HEADLINE_TOP, BOLD), _center_runs([Run(d["headline"], BOLD)]), center=True))
+    t = HEADER_END                                    # top of the next line
 
     def section(title: str) -> None:
-        nonlocal y
-        y += SECTION_GAP + 11.5
-        put(Line(y, [(LEFT, Run(title, SECTION))], rule=True))
-        y += AFTER_RULE - LEADING
+        nonlocal t
+        t += SECTION_GAP
+        put(Line(_base(t, SECTION), [(LEFT, Run(title, SECTION))],
+                 rule=t + RULE_BELOW - _base(t, SECTION)))
+        t += RULE_BELOW + AFTER_RULE
+
+    def text_line(runs: list, right: str = "", glyph: bool = False) -> None:
+        nonlocal t
+        put(Line(_base(t, BODY), runs, right=right, glyph=glyph))
+        t += LEADING
 
     def bullet(runs: list, bid: str = "") -> None:
-        nonlocal y
         wrapped = _wrap(runs, TEXT_X, RIGHT)
         for k, ln in enumerate(wrapped):
-            y += LEADING
-            put(Line(y, ln, glyph=(k == 0)))
+            text_line(ln, glyph=(k == 0))
         if bid:
             out.bullet_lines[bid] = len(wrapped)
 
     def header(runs: list, right: str) -> None:
-        nonlocal y
-        y += LEADING
-        put(Line(y, [(LEFT, r) for r in runs] if len(runs) == 1 else _place(runs, LEFT), right=right))
+        nonlocal t
+        t += ENTRY_GAP
+        text_line([(LEFT, r) for r in runs] if len(runs) == 1 else _place(runs, LEFT), right=right)
 
     if d["skills"]:
         section("TECHNICAL SKILLS")
@@ -164,21 +174,16 @@ def layout(d: dict) -> Layout:
             bullet([Run(f"{s['label']}: ", BOLD), Run(", ".join(s["items"]), BODY)])
     if d["experience"]:
         section("EXPERIENCE")
-        for n, e in enumerate(d["experience"]):
-            if n:
-                y += ENTRY_GAP
+        for e in d["experience"]:
             head = e["company"] + (f", {e['location']}" if e["location"] else "")
             header([Run(head, BOLD)], e["dates"])
             if e["role"]:
-                y += LEADING
-                put(Line(y, [(LEFT, Run(e["role"], ITALIC))]))
+                text_line([(LEFT, Run(e["role"], ITALIC))])
             for bid, b in zip(e["_ids"], e["bullets"]):
                 bullet([Run(b, BODY)], bid)
     if d["projects"]:
         section("PROJECTS")
-        for n, p in enumerate(d["projects"]):
-            if n:
-                y += ENTRY_GAP
+        for p in d["projects"]:
             runs = [Run(p["title"], BOLD)]
             if p["link"]:
                 url = p["link"] if p["link"].startswith("http") else f"https://{p['link']}"
@@ -188,20 +193,17 @@ def layout(d: dict) -> Layout:
                 bullet([Run(b, BODY)], bid)
     if d["education"]:
         section("EDUCATION")
-        for n, e in enumerate(d["education"]):
-            if n:
-                y += ENTRY_GAP
-            head = e["school"] + (f", {e['location']}" if e["location"] else "")
-            header([Run(head, BOLD)], e["dates"])
-            line = e["degree"] + (f"; {e['detail']}" if e["detail"] else "")
-            if line:
-                y += LEADING
-                put(Line(y, [(LEFT, Run(line, ITALIC))]))
+        for e in d["education"]:                      # degree + dates in bold, school below
+            degree = e["degree"] + (f"; {e['detail']}" if e["detail"] else "")
+            school = e["school"] + (f", {e['location']}" if e["location"] else "")
+            header([Run(degree or school, BOLD)], e["dates"])
+            if degree and school:
+                text_line([(LEFT, Run(school, BODY))])
     if d["certifications"]:
         section("CERTIFICATIONS")
         for c in d["certifications"]:
             bullet([Run(c, BODY)])
-    out.bottom = y
+    out.bottom = t - LEADING + BODY[1] * 0.8 if out.lines else 0.0   # last baseline
     return out
 
 
@@ -222,7 +224,7 @@ def _draw(c, lay: Layout) -> None:
         base = PAGE_H - ln.y
         if ln.glyph:
             c.setFont(*BULLET_GLYPH)
-            c.drawString(BULLET_X, base, "•")
+            c.drawString(BULLET_X, base - GLYPH_DROP, "•")
         for x, r in ln.runs:
             c.setFont(*r.font)
             c.drawString(x, base, r.text)
@@ -236,7 +238,7 @@ def _draw(c, lay: Layout) -> None:
             c.drawRightString(RIGHT, base, ln.right)
         if ln.rule:
             c.setLineWidth(0.7)
-            c.line(LEFT, base - RULE_DROP, RIGHT, base - RULE_DROP)
+            c.line(LEFT, base - ln.rule, RIGHT, base - ln.rule)
 
 
 def render(d: dict, path) -> Layout:
@@ -260,15 +262,15 @@ def render_letter(d: dict, paragraphs: list, path, date_line: str = "", greeting
     d = model.normalize(d)
     lay = Layout()
     put = lay.lines.append
-    put(Line(NAME_Y, _center_runs([Run(d["name"], NAME)]), center=True))
+    put(Line(_base(NAME_TOP, NAME), _center_runs([Run(d["name"], NAME)]), center=True))
     contact: list = []
     for i, c in enumerate(d["contact"]):
         if i:
             contact.append(Run(" | ", BODY))
         contact.append(Run(c["text"], BODY, c["url"]))
     if contact:
-        put(Line(CONTACT_Y, _center_runs(contact), center=True))
-    y = HEADLINE_Y + 20
+        put(Line(_base(CONTACT_TOP, BODY), _center_runs(contact), center=True))
+    y = _base(HEADLINE_TOP, BODY) + 20
     left, right = 72.0, 540.0
     if date_line:
         put(Line(y, [(left, Run(date_line, BODY))]))

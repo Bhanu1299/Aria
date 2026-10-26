@@ -602,7 +602,7 @@ flowchart LR
     BASE["~/.aria/resume_base.json<br/>(built once from the PDF)"] --> PR
     PR --> SC0{"base ATS ≥ 95?"}
     SC0 -->|yes| USE["base, unchanged"]
-    SC0 -->|no| TL["tailor: skills merge · headline ·<br/>reorder · LLM rewrite (validated) ·<br/>code weave · one page"]
+    SC0 -->|no| TL["tailor: skills merge · headline ·<br/>close-or-core skills · reorder ·<br/>LLM rewrite (validated) · one page"]
     TL --> VF{"facts unchanged?<br/>score ≥ base?"}
     VF -->|no| USE
     VF -->|yes| PDF["resume.pdf (ReportLab,<br/>the base layout exactly)"]

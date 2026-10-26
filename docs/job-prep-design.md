@@ -43,9 +43,14 @@ time, answers that agree with that resume, and nothing wasted on dead/reposted/b
   roman, underlined, linked. Sections: TECHNICAL SKILLS, EXPERIENCE, PROJECTS, EDUCATION,
   CERTIFICATIONS. One page always: drop least-relevant bullets, then least-relevant project;
   never shrink fonts/margins.
-- **Tailoring rules (user's, not negotiable):** EVERY skill/tool/technology/methodology named
-  in the JD goes into that job's resume — merged into the matching skill line (new line if
-  none fits), and worked into bullets in the JD's wording where it fits. Headline = the
+- **Tailoring rules (user's; changed 2026-10-26 from "every JD skill"):** a JD skill goes into
+  that job's resume only when it is CLOSE to the base resume's skills (shares a family in
+  skills_lexicon.json "_families", e.g. Terraform ← AWS/GCP, Kubernetes ← Docker; "*" =
+  everyday practice) or CORE to the job (in the title, or named 2+ times with one mention
+  outside the nice-to-have part). The rest is listed in changes.md as "not added". Added
+  skills are merged into the matching skill line (new line if none fits) and the LLM
+  rewrites bullets to carry them in the JD's wording — whole-sentence rewrites only: code
+  never appends "using X" to a bullet (removed: read as nonsense). Headline = the
   job's title framing. Projects/bullets reordered by relevance. Employers, titles, dates,
   degrees, certifications and existing numbers are NEVER changed; no new numbers. Non-skill
   requirements (years, degrees, clearance, citizenship, certifications) are NOT added —
@@ -76,8 +81,12 @@ Pure code, 0–100, deterministic, modeled on Jobscan-style scoring:
 **Acceptance test (must pass before merge):** `scripts/manual_ats_test.py` + a pytest
 version on fixtures: 10+ real-style JDs (backend, ML/LLM, full-stack, data, infra; save
 fixtures under tests/data/jds/, public postings only) × the fictional fixture resume →
-tailor → render → score. Requirement: median ≥95, ≥80% of JDs ≥95, none <85, every PDF
-one page, every employer/date/degree/number unchanged. Report a table.
+tailor → render → score. Requirement (live LLM, `--llm`): median ≥95, ≥80% of JDs ≥95,
+none <85, every PDF one page, every employer/date/degree/number unchanged, every chosen
+skill on the page. The score counts every JD skill, so skills left out on purpose cost
+points. pytest (LLM blocked = GateLLM-down fallback): none <70 + the same structural checks.
+2026-10-26 on the user's real base, live: median 98, 10/12 ≥95, min 89 (Data Scientist).
+The renderer reproduces the user's base PDF exactly (re-render: 80/80 lines, 5/5 rules).
 
 ## 3. Answer check against the resume (ats/answer_check.py)
 After the LLM writes an open-text answer (planner open_text / generated_answers), code

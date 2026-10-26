@@ -1,9 +1,12 @@
 """features/resume/tailor.py — the base resume tailored to one job description. Code first.
 
-The user's rules (docs/job-prep-design.md §5, not negotiable):
-  * EVERY skill / tool / technology / methodology the JD names goes into this job's resume:
-    merged into the matching skill line (a new line when none fits), and worked into bullets
-    in the JD's wording where it fits.
+The user's rules (docs/job-prep-design.md §5; changed by the user 2026-10-26 from "every JD
+skill" to this):
+  * A JD skill goes into this job's resume when it is CLOSE to the base resume's skills (same
+    skill family — skills.close) or CORE to the job (in the title, or named 2+ times with one
+    in the required part — skills.core). Everything else is left out and listed in
+    changes.md. Added skills are merged into the matching skill line (a new line when none
+    fits) and worked into bullets in the JD's wording where they fit.
   * Headline = the job's title framing. Projects and bullets reordered by relevance.
   * Employers, titles, dates, degrees, certifications and existing numbers are NEVER changed;
     no new numbers. Non-skill requirements (years, degrees, clearance, citizenship) are not
@@ -13,16 +16,18 @@ The user's rules (docs/job-prep-design.md §5, not negotiable):
 
 Steps of tailor(base, jd_text, jd_title):
   1. jd skills    skills.extract (lexicon) + one small-tier LLM pass for terms the lexicon
-                  misses (task resume_skills_extract), each validated to appear in the JD
+                  misses (task resume_skills_extract), each validated to appear in the JD;
+                  then select(): close or core stays, the rest is skipped
   2. skill lines  merge every JD skill into the matching line
   3. headline     the JD title + the two JD skills the base already shows most
   4. reorder      bullets within each entry, and projects, by JD-skill relevance
                   (employers stay in date order)
   5. rewrite      one strong-tier LLM call (task resume_tailor) returning {bullet id: text},
-                  each rewrite validated in code: same numbers, same names, ≤ 2 lines
-  6. weave        skills still in no bullet are appended in code to the bullet that fits
-                  them best (" using Kafka and Airflow"), while it stays ≤ 2 lines
-  7. one page     drop least-relevant bullets, then projects, until it fits
+                  each rewrite validated in code: same numbers, same names, ≤ 2 lines, and
+                  a real rewrite (a tail glued onto the old bullet is refused). Skills that
+                  fit no bullet stay in the skill lines only — never appended by code
+                  ("…50K+ daily transactions using Helm" read as nonsense to a recruiter)
+  6. one page     drop least-relevant bullets, then projects, until it fits
 
     tailor(base, jd_text, jd_title, use_llm=True) → Tailored
     verify(base, tailored_resume) → [problem, ...]       [] = no fact changed
@@ -44,8 +49,8 @@ from aria.features.resume.skills import Skill
 
 logger = logging.getLogger(__name__)
 
-MAX_WOVEN_PER_BULLET = 3
 MAX_LLM_EXTRAS = 10
+REWRITE_PASSES = 2
 
 # Which existing skill-line label a lexicon category belongs on, by label words.
 _LINE_WORDS = {
@@ -67,7 +72,8 @@ _NOT_A_SKILL = re.compile(
 @dataclass
 class Tailored:
     resume: dict
-    jd_skills: list = field(default_factory=list)           # [Skill]
+    jd_skills: list = field(default_factory=list)           # [Skill] every skill the JD names
+    skipped: list = field(default_factory=list)             # [Skill] left out: not close, not core
     added_skills: list = field(default_factory=list)        # names added to skill lines
     changes: list = field(default_factory=list)             # [{"id", "old", "new", "how"}]
     dropped: list = field(default_factory=list)             # ["bullet e1.3: …", "project Shelfie"]
@@ -128,6 +134,22 @@ def jd_skills(jd_text: str, use_llm: bool = True) -> list:
     if use_llm:
         found += llm_extra_skills(jd_text, [s.name for s in found])
     return found
+
+
+def base_skill_names(base: dict) -> set:
+    d = model.normalize(base)
+    text = model.bullet_text(d) + "\n" + "\n".join(", ".join(line["items"]) for line in d["skills"])
+    return {s.name for s in skills.extract(text)}
+
+
+def select(found: list, base: dict, jd_text: str, jd_title: str = "") -> tuple:
+    """(kept, skipped): a JD skill is kept when it is close to the base resume's skills or
+    core to the job."""
+    have = base_skill_names(base)
+    kept, skipped = [], []
+    for s in found:
+        (kept if skills.close(s, have) or skills.core(s, jd_text, jd_title) else skipped).append(s)
+    return kept, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -226,24 +248,43 @@ def reorder(resume: dict, wanted: list) -> None:
 
 _TAILOR_SYSTEM = (
     "You tailor resume bullets to a job description. You get bullets as JSON {id: text} and a list of "
-    "skills the job names that no bullet mentions yet. Rewrite only bullets where one or more of those "
-    "skills honestly fits the work described, working the skill in using the job's exact wording. Rules: "
-    "keep every number, percentage, name and fact exactly as written; add no new numbers, employers, "
-    "products or claims; keep the bullet's meaning; start with a strong past-tense verb; at most 220 "
-    "characters per bullet. Reply with a JSON object {id: new text} containing only the bullets you "
-    "changed. No prose, no markdown. " + untrusted.RULE
+    "skills the job names that no bullet mentions yet. Place EVERY one of those skills in some bullet: put "
+    "each in the bullet whose work is closest to it, spread them out (up to 4 per bullet), use the job's "
+    "exact wording, and rewrite the whole sentence so it reads naturally as real work — never tack "
+    "\"using X and Y\" onto the end. Rules: keep every number, percentage, name and fact "
+    "exactly as written; add no new numbers, employers or products; start with a strong past-tense verb; "
+    "at most 210 characters per bullet. Reply with a JSON object {id: new text} containing only the "
+    "bullets you changed. No prose, no markdown. " + untrusted.RULE
 )
 
 
-def bullet_ok(old: str, new: str, protected: list) -> Optional[str]:
-    """None when `new` may replace `old`, else why not."""
+def _stem(text: str) -> str:
+    return re.sub(r"[\W_]+", " ", text).strip().lower()
+
+
+def same_numbers(old: str, new: str, skill_names=()) -> bool:
+    """`new` keeps exactly `old`'s numbers, apart from numbers inside a skill name it adds."""
+    kept = list(model.numbers(new))
+    for name in skill_names:
+        if name.lower() in new.lower() and name.lower() not in old.lower():
+            for n in model.numbers(name):
+                if n in kept:
+                    kept.remove(n)
+    return sorted(model.numbers(old)) == sorted(kept)
+
+
+def bullet_ok(old: str, new: str, protected: list, skill_names: tuple = ()) -> Optional[str]:
+    """None when `new` may replace `old`, else why not. Numbers that are part of a skill's name
+    ("WCAG 2.1", "Python 3") don't count as new numbers."""
     if not new or not new.strip():
         return "empty"
-    if sorted(model.numbers(old)) != sorted(model.numbers(new)):
+    if not same_numbers(old, new, skill_names):
         return "numbers changed"
     for name in protected:
         if name and name.lower() in old.lower() and name.lower() not in new.lower():
             return f"dropped {name}"
+    if _stem(new).startswith(_stem(old)):
+        return "appended to, not rewritten"
     if render.bullet_lines(new) > 2:
         return "over 2 lines"
     return None
@@ -277,7 +318,7 @@ def llm_rewrite(resume: dict, missing: list, jd_text: str, protected: list) -> t
         if bid not in current:
             continue
         new = " ".join(str(text).split())
-        why = bullet_ok(current[bid], new, protected)
+        why = bullet_ok(current[bid], new, protected, tuple(x.text for x in missing))
         if why:
             bad[bid] = why
         elif new != current[bid]:
@@ -292,72 +333,7 @@ def _apply(resume: dict, new: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. code weave
-# ---------------------------------------------------------------------------
-
-# Words that make a bullet a natural home for a category's skills (code weave only).
-_AFFINITY = {
-    "Languages": r"\b(?:built|wrote|scripts?|service|implemented|automated)\b",
-    "Frameworks": r"\b(?:api|service|front end|frontend|dashboard|ui|app|endpoint|server)\b",
-    "AI/ML": r"\b(?:model|llm|retrieval|evaluation|trained|accuracy|chatbot|categorizer|forecast|labeled)\b",
-    "Data": r"\b(?:pipeline|batch|event|data|records|ingest|etl|queries|analytics|dashboard)\b",
-    "Databases": r"\b(?:quer(?:y|ies)|database|data|cache|caching|storage|records|tables?)\b",
-    "Cloud & DevOps": r"\b(?:deploy\w*|pipeline|ci|container\w*|services?|aws|on-call|infrastructure|runbooks?|"
-                      r"latency|migrat\w+|provisioning)\b",
-    "Practices": r"\b(?:designed|cut|reduc\w+|improv\w+|shipped|mentored|reviews?|latency|tests?|on-call)\b",
-    "Tools": r"\b(?:tests?|pipeline|ci|reviews?|tracking|api)\b",
-}
-
-
-def _join(names: list) -> str:
-    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-
-
-def _woven(original: str, names: list, practice: bool) -> str:
-    base = original.rstrip(" .;")
-    if practice:
-        tail = "" if names[-1].lower().endswith(("practices", "principles")) else " practices"
-        return f"{base}, applying {_join(names)}{tail}"
-    word = "with" if re.search(r"\busing\b", base) else "using"
-    return f"{base} {word} {_join(names)}"
-
-
-def weave(resume: dict, missing: list, original: dict) -> dict:
-    """Appends each skill still in no bullet to the bullet it fits best, keeping ≤ 2 lines.
-    original: {id: text before weaving}. Returns {id: [names woven]}."""
-    plan: dict = {}                              # id → (names, practice-names)
-    texts = {bid: t for bid, t in model.bullets(resume).items()}
-    order = list(texts)                          # experience first, most recent first, then projects
-
-    def candidate(bid: str, s: Skill) -> tuple:
-        t = texts[bid]
-        same = sum(1 for it in skills.extract(t) if it.category == s.category) if s.category else 0
-        near = len(re.findall(_AFFINITY.get(s.category, r"(?!x)x"), t, re.I))
-        recency = -order.index(bid) / max(1, len(order))
-        return (same + near, bid.startswith("e"), recency)
-
-    for s in missing:
-        practice = s.category == "Practices"
-        for bid in sorted(texts, key=lambda b: candidate(b, s), reverse=True):
-            names, prac = plan.get(bid, ([], []))
-            if len(names) + len(prac) >= MAX_WOVEN_PER_BULLET:
-                continue
-            names2, prac2 = (names, prac + [s.text]) if practice else (names + [s.text], prac)
-            text = original[bid]
-            if names2:
-                text = _woven(text, names2, False)
-            if prac2:
-                text = _woven(text, prac2, True)
-            if render.bullet_lines(text) <= 2:
-                plan[bid] = (names2, prac2)
-                texts[bid] = text
-                break
-    _apply(resume, {bid: texts[bid] for bid in plan})
-    return {bid: n + p for bid, (n, p) in plan.items()}
-
-
-# ---------------------------------------------------------------------------
-# 7. one page
+# 6. one page
 # ---------------------------------------------------------------------------
 
 def fit_one_page(resume: dict, wanted: list, dropped: list) -> bool:
@@ -407,31 +383,29 @@ def tailor(base: dict, jd_text: str, jd_title: str = "", use_llm: bool = True) -
     resume = model.with_ids(copy.deepcopy(base))
     out = Tailored(resume=resume, headline_before=resume["headline"])
     try:
-        wanted = jd_skills(jd_text, use_llm=use_llm)
-        out.jd_skills = wanted
+        out.jd_skills = jd_skills(jd_text, use_llm=use_llm)
+        wanted, out.skipped = select(out.jd_skills, base, jd_text, jd_title)
         out.added_skills = merge_skills(resume, wanted)
         resume["headline"] = headline(model.normalize(base), jd_title, wanted)
         reorder(resume, wanted)
         original = model.bullets(resume)
-        missing = [s for s in wanted if not skills.present(s, model.bullet_text(resume))]
-        if use_llm and missing:
+        for _pass in range(REWRITE_PASSES if use_llm else 0):    # a second pass places what's left
+            missing = [s for s in wanted if not skills.present(s, model.bullet_text(resume))]
+            if not missing:
+                break
             new, rejected = llm_rewrite(resume, missing, jd_text, _protected(base))
-            if new:
-                out.llm_used = True
-                _apply(resume, new)
-                out.changes += [{"id": bid, "old": original[bid], "new": t, "how": "llm"} for bid, t in new.items()]
             out.notes += [f"rewrite of {bid} rejected: {why}" for bid, why in rejected.items()]
-        before_weave = model.bullets(resume)
-        missing = [s for s in wanted if not skills.present(s, model.bullet_text(resume))]
-        woven = weave(resume, missing, before_weave)
+            if not new:
+                break
+            out.llm_used = True
+            _apply(resume, new)
+            for bid, text in new.items():
+                prior = next((c for c in out.changes if c["id"] == bid), None)
+                if prior:
+                    prior["new"] = text
+                else:
+                    out.changes.append({"id": bid, "old": original[bid], "new": text, "how": "llm"})
         reorder(resume, wanted)
-        after = model.bullets(resume)
-        for bid in woven:
-            prior = next((c for c in out.changes if c["id"] == bid), None)
-            if prior:
-                prior["new"], prior["how"] = after[bid], "llm+code"
-            else:
-                out.changes.append({"id": bid, "old": original[bid], "new": after[bid], "how": "code"})
         if not fit_one_page(resume, wanted, out.dropped):
             out.notes.append("still over one page after dropping every optional bullet and project")
     except Exception as exc:                                # never raises: whatever was done stays
@@ -452,10 +426,11 @@ def verify(base: dict, tailored: dict) -> list:
     base_projects = set(fb["projects"])
     problems += [f"project changed: {p[0]}" for p in fn["projects"] if p not in base_projects]
     base_bullets = model.bullets(base)
+    names = tuple(i for line in new["skills"] for i in line["items"])
     for bid, text in model.bullets(tailored).items():
         old = base_bullets.get(bid)
         if old is None:
             problems.append(f"unknown bullet {bid}")
-        elif sorted(model.numbers(old)) != sorted(model.numbers(text)):
+        elif not same_numbers(old, text, names):
             problems.append(f"numbers changed in {bid}")
     return problems
