@@ -5,7 +5,8 @@
 
 Code owns the subject ("<Role> — <Name>", which the dashboard parses to link the thread
 to its job), greeting, sign-off and length limits; the LLM only writes the middle, from
-the outreach profile (education, experience, skills, the sheet's fit notes) and the
+the outreach profile (today's date, education, experience, the resume text, the sheet's fit
+notes) and the
 roles. The profile never includes legal or demographic facts. Output that fails
 validation (length, placeholders, a greeting or sign-off of its own) is dropped —
 never sent anywhere, and the caller records that nothing was drafted.
@@ -15,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Optional
 
 from aria.features import answer_bank
@@ -27,6 +29,7 @@ EMAIL_WORDS = (50, 180)
 _PROFILE_KEYS = ("preferred_name", "first_name", "last_name", "school", "degree", "grad_date",
                  "years_experience", "current_company", "location", "linkedin", "github")
 _IDENTITY_KEYS = ("summary", "skills", "experience", "education", "target_roles", "projects")
+RESUME_CHARS = 5000             # resume text the writer sees (the facts it may use)
 _PLACEHOLDER = re.compile(r"\[[^\]]*\]|\{[^}]*\}|<[^>]+>|\bTODO\b|lorem ipsum", re.I)
 _GREETING = re.compile(r"(?i)^\s*(hi|hello|hey|dear)\b")
 _SIGNOFF = re.compile(r"(?im)^\s*(best|thanks|thank you|regards|cheers|sincerely)[,!.]?\s*$")
@@ -34,10 +37,11 @@ _SIGNOFF = re.compile(r"(?im)^\s*(best|thanks|thank you|regards|cheers|sincerely
 _EMAIL_SYSTEM = (
     "You write the body of a short cold email from a job candidate to someone at a company "
     "they want to work at. Plain text, first person, 2 short paragraphs, 70-150 words. Say which "
-    "role(s), one or two concrete reasons the candidate fits drawn ONLY from the profile and fit "
-    "notes, and one easy ask (a 15-minute chat, or a pointer to the right person). Never invent "
+    "role(s), one or two concrete reasons the candidate fits drawn ONLY from the profile, resume "
+    "and fit notes (name a real project or job from them), and one easy ask (a 15-minute chat, or a pointer to the right person). Never invent "
     "projects, employers, numbers or credentials; never mention visa, sponsorship, age or other "
-    "personal facts. No greeting, no sign-off, no subject line, no placeholders — the greeting "
+    "personal facts. Use today's date for tense (a degree or job that already ended is past). "
+    "No greeting, no sign-off, no subject line, no placeholders — the greeting "
     "and signature are added for you."
 )
 _NOTE_SYSTEM = (
@@ -49,8 +53,18 @@ _NOTE_SYSTEM = (
 
 
 def _identity() -> dict:
-    from aria.features.ats.greenhouse import _identity as identity
+    from aria.features.ats.planner import _identity as identity
     return identity()
+
+
+def _resume() -> str:
+    """The resume's text (the same one form answers are written from), trimmed. '' if none."""
+    try:
+        from aria.features.ats import planner, resume_text
+        return resume_text.text(planner.resume_path())[:RESUME_CHARS]
+    except Exception as exc:
+        logger.info("outreach: no resume text: %s", exc)
+        return ""
 
 
 def sender_name(bank: Optional[dict] = None) -> str:
@@ -60,14 +74,19 @@ def sender_name(bank: Optional[dict] = None) -> str:
 
 
 def outreach_profile(target) -> str:
-    """Facts the LLM may use: education/experience basics, identity summary, fit notes."""
+    """Facts the LLM may use: today's date, education/experience basics, identity summary,
+    the resume, fit notes."""
     bank = answer_bank.load()
-    lines = [f"{k}: {bank['answers'][k]}" for k in _PROFILE_KEYS
+    lines = [f"today: {time.strftime('%Y-%m-%d')}"]
+    lines += [f"{k}: {bank['answers'][k]}" for k in _PROFILE_KEYS
              if bank["answers"].get(k) not in (None, "") and not str(bank["answers"][k]).startswith("<")]
     ident = _identity()
     for k in _IDENTITY_KEYS:
         if ident.get(k):
             lines.append(f"{k}: {ident[k] if isinstance(ident[k], str) else json.dumps(ident[k])}")
+    resume = _resume()
+    if resume:
+        lines.append(f"resume:\n{resume}")
     for j in target.jobs:
         fit = next((v for k, v in (j.get("fields") or {}).items() if k.lower().startswith("why it's a fit")), "")
         if fit:

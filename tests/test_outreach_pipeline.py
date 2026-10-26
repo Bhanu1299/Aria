@@ -37,6 +37,7 @@ def profile(monkeypatch):
                         "linkedin": "https://linkedin.com/in/me", "sponsorship": "Yes", "phone": "555"}}
     monkeypatch.setattr(writer.answer_bank, "load", lambda: bank)
     monkeypatch.setattr(writer, "_identity", lambda: {"summary": "Builds voice agents."})
+    monkeypatch.setattr(writer, "_resume", lambda: '')
 
 
 def _llm(monkeypatch, text):

@@ -122,6 +122,7 @@ def env(monkeypatch):
     bank = {"answers": {"first_name": "Bhanu", "last_name": "Teja", "linkedin": "https://linkedin.com/in/me"}}
     monkeypatch.setattr(writer.answer_bank, "load", lambda: bank)
     monkeypatch.setattr(writer, "_identity", lambda: {"summary": "Builds voice agents."})
+    monkeypatch.setattr(writer, "_resume", lambda: 'Voice agent with a tool-calling loop (Aria), 2025.')
     monkeypatch.setattr(ct.google_auth, "account_email", lambda account: "candidate@example.com")
     monkeypatch.setattr(ct.config, "OUTREACH_FROM", "candidate@example.com")
     monkeypatch.setattr(ct.config, "CONTACTS_PER_COMPANY", 3)
@@ -282,6 +283,7 @@ def test_thin_slice_one_contact_end_to_end(llm):
     d = gmail.drafts[0]
     assert d["to"] == "pat.lee@acme.com" and d["body"].startswith("Hi Pat,") and "Founding Engineer" in d["subject"]
     assert llm[0]["task"] == "outreach_email" and "Python, LLM agents" in llm[0]["content"]
+    assert "resume:\nVoice agent with a tool-calling loop" in llm[0]["content"] and "today: 20" in llm[0]["content"]
     assert [l.split(":")[0] for l in lines if l[:1].isdigit()] == ["1. read", "2. stop on reply", "3. pending",
                                                                   "4. find row 2", "5. draft"]
     assert out == "Contacts: 1 verified, 0 pattern, 0 not found; 1 draft in the jobs Gmail. Nothing was sent."
@@ -405,9 +407,24 @@ def test_background_run_reports_when_done(llm):
     assert done.wait(5) and "1 draft" in got[0]
 
 
-def test_a_person_listed_twice_gets_one_wave():
+def test_a_person_listed_twice_gets_one_wave_at_the_company_address():
     recs = _recs(r("Superset (YC P26)", "Kiet Ho", email="kiet@gmail.com", confidence="verified"),
                  r("Superset", "Kiet Ho", email="kiet@superset.sh", confidence="pattern"),
                  r("Superset", "Ana Diaz", email="ana@superset.sh", confidence="pattern"))
     queue, waves = ct.draft_queue(recs)
-    assert waves == {2: 1, 4: 2} and [x[ROW] for x in queue] == [2]
+    assert waves == {3: 1, 4: 2} and [x[ROW] for x in queue] == [3]
+
+
+def test_one_with_nothing_pending_drafts_the_next_ready_row(llm):
+    sheet, svc = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", find="done"),
+                          r("Beta", "Ana Diaz", email="ana@beta.com", confidence="verified", find="done"))
+    gmail = FakeGmail()
+    run(sheet, coldstart({})[0], gmail, limit=1)
+    assert [d["to"] for d in gmail.drafts] == ["pat@acme.com"]
+    assert svc.cell(2, "Draft status") == "drafted" and svc.cell(3, "Draft status") == ""
+
+
+def test_writer_reads_the_real_identity_and_resume_helpers(monkeypatch):
+    """The env fixture mocks writer._identity; this calls the real one (its import had gone stale)."""
+    monkeypatch.undo()
+    assert isinstance(writer._identity(), dict) and isinstance(writer._resume(), str)

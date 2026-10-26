@@ -21,7 +21,8 @@ One run, all code until the email body:
                "not found" is done with a Notes line; an error is "error" with a Notes
                line. Neither is retried — set Find status back to "pending" to retry.
   5. draft     rows with Confidence verified|pattern, at most CONTACTS_PER_COMPANY per
-               company, numbered by Wave in sheet order. A wave is drafted only once every
+               company, numbered by Wave in sheet order (a person listed twice: the
+               company address over a personal one). A wave is drafted only once every
                earlier wave at that company is sent. The LLM (gateway, task outreach_email)
                writes the body from Tracked role + the Job URL page; code does the rest.
                Gmail DRAFT in the jobs account, only if it is OUTREACH_FROM →
@@ -181,7 +182,7 @@ def draft_queue(records: list[dict], cap: Optional[int] = None) -> tuple[list[di
             have = next((x for x in ok if dedupe_key(x) == key), None)
             if have is None:
                 ok.append(r)
-            elif status(r, DRAFT_STATUS) in _IN_FLIGHT and status(have, DRAFT_STATUS) not in _IN_FLIGHT:
+            elif _better_row(r, have):
                 ok[ok.index(have)] = r
         wave_of = {r[ROW]: int(get(r, WAVE)) for r in ok if get(r, WAVE).strip().isdigit()}
         slotted = [r for r in ok if r[ROW] in wave_of or status(r, DRAFT_STATUS) in _IN_FLIGHT]
@@ -205,6 +206,14 @@ def draft_queue(records: list[dict], cap: Optional[int] = None) -> tuple[list[di
         queue += [r for r in slotted if wave_of[r[ROW]] == active and status(r, DRAFT_STATUS) in ("", NONE)]
     queue.sort(key=lambda r: r[ROW])
     return queue, waves
+
+
+def _better_row(new: dict, have: dict) -> bool:
+    """Which of one person's two rows to draft: the one in flight, else the company
+    address over a personal one (gmail.com etc.), else verified over pattern."""
+    rank = lambda r: (status(r, DRAFT_STATUS) in _IN_FLIGHT, is_company_address(first_email(r)),
+                      status(r, CONFIDENCE) == cs.VERIFIED)
+    return rank(new) > rank(have)
 
 
 def add_note(existing: str, line: str) -> str:
@@ -328,7 +337,8 @@ def compose(rec: dict, posting: str) -> Optional[dict]:
 @dataclass
 class Report:
     found: list = field(default_factory=list)       # (row, confidence, email)
-    errors: list = field(default_factory=list)      # (row, why)
+    errors: list = field(default_factory=list)      # (row, why) lookups
+    draft_errors: list = field(default_factory=list)  # (row, why)
     drafted: list = field(default_factory=list)     # (row, link)
     stopped: list = field(default_factory=list)     # rows set to "no reply"
     skipped: list = field(default_factory=list)     # (row, why)
@@ -340,6 +350,9 @@ class Report:
             parts.append(f"{n(cs.VERIFIED)} verified, {n(cs.PATTERN)} pattern, {n(cs.NOT_FOUND)} not found")
         if self.errors:
             parts.append(f"{len(self.errors)} lookup error{'s' if len(self.errors) != 1 else ''}")
+        if self.draft_errors:
+            k = len(self.draft_errors)
+            parts.append(f"{k} draft{'s' if k != 1 else ''} not created (see Notes)")
         if self.drafted:
             parts.append(f"{len(self.drafted)} draft{'s' if len(self.drafted) != 1 else ''} in the jobs Gmail")
         if self.stopped:
@@ -375,7 +388,8 @@ def run(
     step_fn: Optional[Callable[[str], None]] = None,
 ) -> str:
     """One pass over the Contacts tab. limit: look up at most this many pending rows, and
-    draft only rows looked up in this run (the thin slice: limit=1). Never raises."""
+    draft only rows looked up in this run — or, when none were pending, the first `limit`
+    rows ready to draft (the thin slice: limit=1). Never raises."""
     say = _safe(step_fn)
     sheet = sheet or HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_CONTACTS_TAB, writable=WRITABLE)
     client = client or cs.ColdstartClient()
@@ -436,9 +450,10 @@ def run(
             s.detail = f"{len(rep.found)} found, {len(rep.errors)} errors; {client.calls} Coldstart calls"
 
         if draft:
-            _draft_all(records, todo if limit is not None else None, gmail, posting_fn, write, rep, say, log)
+            _draft_all(records, todo if limit is not None else None, limit, gmail, posting_fn, write, rep, say, log)
         summary = rep.summary()
-        log.finish("ok" if rep.found or rep.drafted or rep.stopped else ("error" if rep.errors else "no change"), summary)
+        log.finish("ok" if rep.found or rep.drafted or rep.stopped
+                   else ("error" if rep.errors or rep.draft_errors else "no change"), summary)
         say(f"done: {summary}")
         return summary
     except SheetError as exc:
@@ -452,10 +467,10 @@ def run(
         return "The Contacts run failed; nothing was sent."
 
 
-def _draft_all(records, only, gmail, posting_fn, write, rep, say, log) -> None:
+def _draft_all(records, only, limit, gmail, posting_fn, write, rep, say, log) -> None:
     queue, waves = draft_queue(records)
     if only is not None:
-        rows = {r[ROW] for r in only}
+        rows = {r[ROW] for r in only} or {r[ROW] for r in queue[:limit]}     # nothing looked up: the next draft(s)
         queue = [r for r in queue if r[ROW] in rows]
         waves = {k: v for k, v in waves.items() if k in rows}
     for rec in records:
@@ -480,10 +495,10 @@ def _draft_all(records, only, gmail, posting_fn, write, rep, say, log) -> None:
                 f"posting {'read (' + str(len(posting)) + ' chars)' if posting else 'unavailable'}")
             msg = compose(rec, posting)
             if msg is None:
-                say("  LLM output failed checks; no draft")
+                say("  the LLM draft failed (error or checks; see the log); no draft")
                 write(rec, {WAVE: str(wave), UPDATED: _now(),
-                            NOTES: add_note(get(rec, NOTES), "draft failed checks; not created")})
-                rep.errors.append((rec[ROW], "draft failed checks"))
+                            NOTES: add_note(get(rec, NOTES), "LLM draft failed; not created")})
+                rep.draft_errors.append((rec[ROW], "LLM draft failed"))
                 continue
             say(f"  subject: {msg['subject']}")
             res = gmail.save_draft(msg["to"], msg["subject"], msg["body"])
@@ -491,7 +506,7 @@ def _draft_all(records, only, gmail, posting_fn, write, rep, say, log) -> None:
                 say(f"  gmail: {res.get('message')}")
                 write(rec, {WAVE: str(wave), UPDATED: _now(),
                             NOTES: add_note(get(rec, NOTES), f"draft not created: {res.get('message')}")})
-                rep.errors.append((rec[ROW], res.get("message", "")))
+                rep.draft_errors.append((rec[ROW], res.get("message", "")))
                 continue
             say(f"  gmail draft: {res.get('link') or res.get('draft_id')}")
             write(rec, {DRAFT_STATUS: DRAFTED, DRAFT_LINK: res.get("link", ""), WAVE: str(wave), UPDATED: _now()})
