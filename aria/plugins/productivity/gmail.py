@@ -203,10 +203,11 @@ class GmailClient:
         return self.save_draft(to, subject, body, cc, reply_to_id)["message"]
 
     def save_draft(self, to: str, subject: str, body: str, cc: str = "", reply_to_id: str = "",
-                   attachments: Sequence[str] = ()) -> dict:
+                   attachments: Sequence[str] = (), draft_id: str = "") -> dict:
         """create_draft with the result: {"ok", "message", "draft_id", "message_id", "link"}. Never sends.
         link opens the draft in Gmail's web UI, in this account (u/<address>).
-        attachments: file paths attached as-is (e.g. the resume PDF)."""
+        attachments: file paths attached as-is (e.g. the resume PDF).
+        draft_id: replace that draft's content instead of making a new one (still never sends)."""
         out = {"ok": False, "message": "", "draft_id": "", "message_id": "", "link": ""}
         if not self.is_configured():
             return {**out, "message": self._not_setup_msg}
@@ -242,7 +243,11 @@ class GmailClient:
             if cc:
                 msg["cc"] = cc
             message["raw"] = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-            resp = svc.users().drafts().create(userId="me", body={"message": message}).execute()
+            if draft_id:
+                resp = svc.users().drafts().update(userId="me", id=draft_id,
+                                                   body={"id": draft_id, "message": message}).execute()
+            else:
+                resp = svc.users().drafts().create(userId="me", body={"message": message}).execute()
             addr = google_auth.account_email(self.account)
             where = addr or f"your {self.account} Gmail"
             resp = resp if isinstance(resp, dict) else {}

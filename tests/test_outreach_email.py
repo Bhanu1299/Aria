@@ -251,7 +251,7 @@ CARMAX = dict(company="CarMax", role="Analyst Rotation Program",
               problem="Helps car buyers skip haggling by selling inspected used cars at fixed prices.",
               signal="August 2026: Announced Sierra AI voice agents for inbound sales calls.",
               angle="Aria: CarMax is scaling voice agents for inbound calls, which is Aria's territory.")
-ROCKET = dict(company="Rocket Lab", role="Flight Software Engineer I",
+ROCKET = dict(company="Rocket Lab", role="Backend Software Engineer, Launch Business Systems",
               problem="Helps customers get satellites into orbit by building rockets and spacecraft.",
               signal="August 2026: The U.S. Space Force awarded Rocket Lab a contract.",
               angle="Aria: Aria's plan-act-verify loop maps to flight software's core discipline.")
@@ -348,3 +348,29 @@ def test_lines_split_by_single_newlines_are_read():
 def test_plurals_count_as_the_same_word():
     assert writer.words("Dealerships and programs") == writer.words("a dealership program")
     assert "process" in writer.words("the sales process")
+
+
+def test_flight_software_is_arias_verify_step_even_on_an_analogy(monkeypatch):
+    _judge(monkeypatch, {"concrete": False})
+    p = writer.plan(brief(**dict(ROCKET, role="Flight Software Engineer I")))
+    assert p.work["label"].startswith("Aria") and not p.override
+
+
+def test_a_word_like_first_name_is_greeted_in_full():
+    assert writer.greeting(brief(person="You Wu", title="Founder & CEO")) == "Hi You Wu,"
+    assert writer.greeting(brief(person="Max Keenan", title="CEO")) == "Hi Max,"
+
+
+@pytest.mark.parametrize("line", [
+    "At AppsTek I built Spark/Kafka pipelines. It isn't composites work, and I know that.",
+    "None of it was optics, but the data-wrangling overlaps.",
+    "That's data throughput, not composites.",
+])
+def test_lines_that_undercut_the_candidate_are_refused(monkeypatch, line):
+    calls = _llm(monkeypatch, OUT.replace("Voice that has to be right the first time is the problem I keep coming back to.", line))
+    assert writer.email(brief(), "max@aurelian.io") is None
+
+
+def test_a_bare_release_number_is_refused(monkeypatch):
+    _llm(monkeypatch, OUT.replace("Dispatchers at places", "Version 29 means dispatchers at places"))
+    assert writer.email(brief(), "max@aurelian.io") is None

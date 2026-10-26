@@ -129,6 +129,18 @@ def test_save_draft_returns_a_link_to_the_draft_in_that_account():
     assert not svc.users().messages().send.called
 
 
+def test_save_draft_with_a_draft_id_replaces_that_draft():
+    svc = MagicMock()
+    svc.users().drafts().update().execute.return_value = {"id": "r-1", "message": {"id": "19aa"}}
+    client = _client(svc)
+    with patch.object(client, "is_configured", return_value=True):
+        out = client.save_draft("pat@acme.com", "new subject", "Hi Pat,", draft_id="r-1")
+    assert out["ok"] and out["draft_id"] == "r-1" and out["message_id"] == "19aa"
+    kw = svc.users().drafts().update.call_args.kwargs
+    assert kw["id"] == "r-1" and kw["body"]["id"] == "r-1"
+    assert not svc.users().drafts().create.called and not svc.users().messages().send.called
+
+
 def test_save_draft_attaches_files_as_they_are(tmp_path):
     pdf = tmp_path / "Resume.pdf"
     pdf.write_bytes(b"%PDF-1.4 resume bytes")

@@ -69,6 +69,14 @@ _BANNED = re.compile(
     r"(?i)hope this (?:email |message )?finds you|passion|excit|reaching out|strong fit|leverag"
     r"|innovat|revolutioni[sz]|great addition|amazing|impressive|impressed")
 # Subjects that read like a pitch (user, 2026-10-26: "feels like I'm selling something").
+# Lines that undercut the candidate ("It isn't composites work, and I know that.", "None of it was optics").
+_HEDGE = re.compile(
+    r"(?i)\bnone of (?:it|this|that|my work)\b|\b(?:it|this|that) (?:isn't|wasn't|is not|was not)\b|"
+    r"\bi know (?:that|it)\b|\bnot (?:exactly|quite|directly)\b|\badmittedly\b|\bdifferent (?:domain|field|world)\b|"
+    r"\b(?:i'm|i am) not (?:an?|from)\b|\bno (?:direct )?experience\b|"
+    r"\b(?:that's|that is|it's|it is|this is)\b[^.]{0,50}, not \w+")
+# A release number named bare ("Version 29 makes me think…") means nothing to the reader.
+_VERSION = re.compile(r"(?i)\bversion \d+|\bv\d+\.\d+\b")
 _SALESY_SUBJECT = re.compile(
     r"(?i)\b(?:solution|opportunit|proposal|partner|help(?:ing)? you|value|boost|streamlin|unlock|transform|"
     r"grow(?:th)?|scal(?:e|ing) your|improv\w* your|reduc\w+|optimi[sz]\w*|roi|synerg|offer|demo|"
@@ -115,7 +123,9 @@ _EMAIL_SYSTEM = (
     "Line 3 (one sentence, at most 12 words): one genuine sentence on why this problem pulls the candidate in, tied to the "
     "candidate's work given below, not passion.\n\n"
     "Lines 1-3 together are 30-55 words; drafts over the caps are thrown away, so stay short. The greeting, \"I applied for the role. Resume "
-    "attached.\", the ask and the signature are added for you: never write them. Never claim "
+    "attached.\", the ask and the signature are added for you: never write them. Never undercut "
+    "the candidate (no \"it isn't X work\", \"none of it was\", \"I know that\"): say what overlaps and stop. "
+    "Never name a release by its number (\"version 29\"); say what changed, or leave it out. Never claim "
     "experience beyond the Angle and the work given. Never bring up other projects. No numbers "
     "or metrics. Never: hope this finds you well, "
     "passionate, excited, reaching out, strong fit, leverage, innovative, revolutionize, great "
@@ -262,8 +272,15 @@ def _runs(text: str, n: int = 6) -> set:
     return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
 
 
+# A first name that reads like a word in "Hi {first}," ("Hi You," for You Wu): greet by full name.
+_WORDLIKE_FIRST = {"you", "me", "i", "we", "my", "it", "an", "a", "the", "to", "so", "do", "be", "no", "on", "in"}
+
+
 def greeting(brief: Brief) -> str:
-    return f"Hi {bare_company(brief.company)} team," if brief.kind == GENERIC else f"Hi {first_name(brief.person)},"
+    if brief.kind == GENERIC:
+        return f"Hi {bare_company(brief.company)} team,"
+    first = first_name(brief.person)
+    return f"Hi {brief.person.strip()}," if first.lower() in _WORDLIKE_FIRST else f"Hi {first},"
 
 
 def role_phrase(role: str) -> str:
@@ -283,6 +300,10 @@ def ask(brief: Brief) -> str:
 # role → which of the candidate's entries fits it (first rule that matches wins)
 _VOICE = re.compile(r"(?i)\bvoice|speech|audio|conversational|call.?cent|phone|dispatch|\b911\b")
 _WORK_RULES = (
+    # Systems that run steps on their own and check each one (user, 2026-10-26: Rocket Lab's flight
+    # software → "Aria's verify step", never loyalty tables).
+    ("role", re.compile(r"(?i)flight|avionics|embedded|firmware|autonom|robot|guidance|\bgnc\b|mission software"),
+     ("aria",)),
     ("role", re.compile(r"(?i)machine learning|\bml\b|\bdata\b|analytics|data scien"), ("appstek",)),
     ("role", re.compile(r"(?i)\bllm|\bai\b|\bagent|genai|gen ai|\bnlp\b|inference"), ("llm gateway",)),
     ("role", re.compile(r"(?i)front.?end|full.?stack|product engineer|\bui\b|design engineer|react|mobile"),
@@ -456,6 +477,10 @@ def _validator(brief: Brief, p: Plan):
             return no("greeting / sign-off / placeholder in the body")
         if _BANNED.search(prose + " " + subject) or re.search(r"(?i)\bresume attached|\bI applied\b", prose):
             return no("banned phrase")
+        if _HEDGE.search(prose):
+            return no(f"undercuts the candidate: {_HEDGE.search(prose).group(0)!r}")
+        if _VERSION.search(prose + " " + subject):
+            return no(f"names a bare release number: {_VERSION.search(prose + ' ' + subject).group(0)!r}")
         bad = [n for n in _numbers(prose + " " + subject) if n not in allowed]
         if bad:
             return no(f"numbers not in their problem/signal: {bad}")
