@@ -66,6 +66,10 @@ class HeaderSheet(JobSheet):
         self._write({f"{col_letter(index[_norm(k)])}{row}": str(v) for k, v in fields.items()})
         return row
 
+    def write_cell(self, row: int, column: str, value: str, match: Optional[dict] = None) -> int:
+        """One cell (the dashboard's only write here). Same checks as update()."""
+        return self.update(row, {column: value}, match=match)
+
     @staticmethod
     def _find(values: list[list[str]], index: dict, row: int, match: Optional[dict]) -> int:
         def holds(vals) -> bool:

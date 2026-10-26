@@ -209,7 +209,7 @@ def test_dashboard_edit_finds_the_row_by_id():
 
 def test_dashboard_page_shows_the_id_not_the_row():
     from aria.dashboard import sheet_tab
-    assert "th.textContent='ID'" in sheet_tab.JS and "n.textContent=r.id||''" in sheet_tab.JS
+    assert "th.textContent=cur.id_col||'ID'" in sheet_tab.JS and "n.textContent=r.id||''" in sheet_tab.JS
     assert "id:r.id||''" in sheet_tab.JS
 
 

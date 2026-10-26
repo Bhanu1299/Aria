@@ -109,12 +109,21 @@ def fetch_sheet(service=None) -> dict:
         raise RuntimeError("MUSE_SHEET_ID is not set")
     svc = service or google_auth.build_service("sheets", "v4", [google_auth.SPREADSHEETS],
                                                account=google_auth.JOBS)
-    tabs = {"current": config.MUSE_SHEET_TAB, "applied": config.MUSE_APPLIED_TAB}
-    ranges = ["'" + t.replace("'", "''") + "'" for t in tabs.values()]
-    resp = svc.spreadsheets().values().batchGet(spreadsheetId=config.MUSE_SHEET_ID, ranges=ranges).execute()
-    out = {"tabs": tabs}
-    for key, vr in zip(tabs, resp.get("valueRanges", [])):
-        out[key] = _sheet_rows(vr.get("values", []))
+    jobs = {"current": config.MUSE_SHEET_TAB, "applied": config.MUSE_APPLIED_TAB}
+    outreach = {"companies": config.MUSE_COMPANIES_TAB, "contacts": config.MUSE_CONTACTS_TAB}
+
+    def read(tabs: dict) -> dict:
+        ranges = ["'" + t.replace("'", "''") + "'" for t in tabs.values()]
+        resp = svc.spreadsheets().values().batchGet(spreadsheetId=config.MUSE_SHEET_ID, ranges=ranges).execute()
+        return {key: _sheet_rows(vr.get("values", [])) for key, vr in zip(tabs, resp.get("valueRanges", []))}
+
+    try:                                # Muse's outreach tabs (Companies + Contacts) ride along
+        out = read({**jobs, **outreach})
+        out["tabs"] = {**jobs, **outreach}
+    except Exception as exc:            # a sheet without them: the job tabs alone
+        logger.warning("dashboard: outreach tabs unreadable (%s); reading the job tabs only", type(exc).__name__)
+        out = read(jobs)
+        out["tabs"] = dict(jobs)
     return out
 
 

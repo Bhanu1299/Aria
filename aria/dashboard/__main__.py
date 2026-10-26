@@ -86,15 +86,16 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
 
 
 def badges(mdl: dict, questions: Optional[int]) -> dict:
-    """Sidebar counts: Today = what Today lists, Outreach = LinkedIn notes, My answers = open questions."""
-    from aria.dashboard import today
+    """Sidebar counts: Today = what Today lists, Outreach = LinkedIn notes + drafts to review,
+    My answers = open questions."""
+    from aria.dashboard import outreach, today
     try:
         d = today.build(mdl)
     except Exception:
         logger.exception("dashboard: badge counts failed")
         return {"answers": questions}
     return {"today": len(d["finish"]) + len(d["interviews"]) + len(d["deadlines"]) + (questions or 0),
-            "outreach": len(d["linkedin"]), "answers": questions}
+            "outreach": len(d["linkedin"]) + outreach.review_count(mdl), "answers": questions}
 
 
 def open_apps() -> list:

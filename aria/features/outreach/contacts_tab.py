@@ -10,18 +10,20 @@ row per job on Companies and one row per person on Contacts, joined by Job ID:
   Contacts (Muse's)    Job ID, Company, Person, Title, LinkedIn URL, Wave, Person type (optional)
   Contacts (Aria's)    Email, Source, Confidence, Find status, Draft status, Gmail draft link,
                        Wave, Updated, Notes
-Each Contacts row is read with its Companies row's cells (join). On Companies Aria writes only
-Domain and Email pattern, and only into blank cells. Source keeps Muse's text when it has
-some (Coldstart's source then goes to Notes). Only Outreach status "active" (or blank, with no
-Blocker) is looked up or drafted. Draft status "approved", "sent" and "replied" are the
-user's: Aria only ever writes none / drafted / no reply. A sheet without a Companies tab
-(every column on Contacts) works the same way.
+Each Contacts row is read with its Companies row's cells (join on Job ID; a row with a blank
+Job ID — one the user added — is matched by Company, else Notes "no Job ID" and skipped). On
+Companies Aria writes only Domain and Email pattern into blank cells, and Outreach status
+"replied". Source keeps Muse's text when it has some (Coldstart's source then goes to Notes).
+Only Outreach status "active" is looked up or drafted. Draft status "approved", "sent" and
+"replied" are the user's: Aria only ever writes none / drafted / no reply. A sheet without a
+Companies tab (every column on Contacts) works the same way, minus Outreach status.
 
 One run, all code until the email body:
   1. read      the tab
-  2. stop      a company with a "replied" row: every other row there → "no reply", no drafts
-  3. pending   Company + a real Person, Email blank, Find status blank/pending;
-               deduped by LinkedIn URL, else Company + Person (against every row)
+  2. stop      a job (Job ID, else company) with a "replied" row: Companies Outreach status
+               → replied, its other rows not yet sent → "no reply", no drafts
+  3. pending   Company + a real Person or "—" (a team inbox), Email blank, Find status
+               blank/pending; deduped by LinkedIn URL, else Company + Person (against every row)
   4. find      per pending row: Domain (cell → Job URL → the company's other rows → web
                search), then Coldstart (rate-limited, pattern cached per domain) →
                Email, Source, Confidence, Email pattern, Find status done|error, Updated.
@@ -29,9 +31,11 @@ One run, all code until the email body:
                line. Neither is retried — set Find status back to "pending" to retry.
   5. draft     rows with Confidence verified|pattern — a person, or a generic inbox
                (Person "—", one per company) — at most CONTACTS_PER_COMPANY per company,
-               numbered by Wave in sheet order (a person listed twice: the company address
-               over a personal one). A wave is drafted only once every earlier wave at that
-               company is sent; a row with a Gmail draft link is never drafted again.
+               numbered by Wave in sheet order unless Muse set it (a person listed twice: the
+               company address over a personal one). A wave is drafted only once every
+               earlier wave of that job was sent WAVE_WAIT_DAYS business days ago with no
+               reply (sent date from the jobs Gmail, else Updated) or is "no reply"; a row
+               with a Gmail draft link is never drafted again.
                Muse's research columns feed the email (writer.email, the user's spec v2):
                Company problem + Angle required, else Notes "needs research" and no draft;
                Signal optional; Person type (else from Person/Title). Which work the email
@@ -50,6 +54,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Callable, Optional
 from urllib.parse import urlparse
 
@@ -72,18 +77,20 @@ DRAFT_STATUS, DRAFT_LINK, WAVE, UPDATED, NOTES = "Draft status", "Gmail draft li
 PROBLEM, SIGNAL, SIGNAL_SOURCE, ANGLE, PERSON_TYPE = "Company problem", "Signal", "Signal source", "Angle", "Person type"
 BLOCKER, OUTREACH = "Blocker", "Outreach status"
 WRITABLE = (DOMAIN, EMAIL, SOURCE, CONFIDENCE, PATTERN, FIND_STATUS, DRAFT_STATUS, DRAFT_LINK, WAVE, UPDATED, NOTES)
-COMPANY_WRITABLE = (DOMAIN, PATTERN)                     # on Companies, blank cells only
+COMPANY_WRITABLE = (DOMAIN, PATTERN, OUTREACH)           # on Companies: Domain / pattern into blank cells only
 COMPANY_FIELDS = (ROLE, JOB_URL, DOMAIN, PATTERN, PROBLEM, SIGNAL, SIGNAL_SOURCE, ANGLE, BLOCKER, OUTREACH)
 COMPANY_ROW = "_company_row"                            # the joined Companies row, on a Contacts record
+UNJOINED = "_unjoined"                                  # why a Contacts record has no Companies row
+WAVE_WAIT_DAYS = 5                                      # business days a sent wave waits for a reply
 
 FIND_PENDING, FIND_DONE, FIND_ERROR = "pending", "done", "error"
 NONE, DRAFTED, APPROVED, SENT, REPLIED, NO_REPLY = "none", "drafted", "approved", "sent", "replied", "no reply"
 ARIA_DRAFT_STATUSES = {NONE, DRAFTED, NO_REPLY}          # everything else is the user's to set
 _IN_FLIGHT = {DRAFTED, APPROVED, SENT, REPLIED}          # counts toward the per-company cap
-_WAVE_CLEARED = {SENT, NO_REPLY}                        # a later wave may start after these
 _NOT_A_PERSON = {"", "—", "–", "-", "n/a", "na", "none", "?"}
 _GENERIC_INBOX = {"—", "–", "-"}
 NEEDS_RESEARCH, PATTERN_GUESS, ROLE_OVERRIDE = "needs research", "pattern guess", "angle: role override"
+ACTIVE, OUTREACH_REPLIED = "active", "replied"
 
 
 def _now() -> str:
@@ -135,16 +142,24 @@ def match_of(rec: dict) -> dict:
     return m
 
 
+def job_key(rec: dict) -> str:
+    """The job a Contacts row belongs to: its Job ID, else its company."""
+    return get(rec, JOB_ID).strip().upper() or company_key(get(rec, COMPANY))
+
+
 def join(contacts: list[dict], companies: list[dict]) -> list[dict]:
     """Each Contacts record gains its Companies row's cells (COMPANY_FIELDS, where its own
-    are blank) and COMPANY_ROW. Matched by Job ID, else by company name. In place."""
+    are blank) and COMPANY_ROW. Matched by Job ID; a blank Job ID by company name. A record
+    with no match gets UNJOINED (why). In place."""
     by_id = {get(c, JOB_ID).strip().upper(): c for c in companies if get(c, JOB_ID).strip()}
     by_name: dict = {}
     for c in companies:
         by_name.setdefault(company_key(get(c, COMPANY)), c)
     for r in contacts:
-        c = by_id.get(get(r, JOB_ID).strip().upper()) or by_name.get(company_key(get(r, COMPANY)))
+        jid = get(r, JOB_ID).strip().upper()
+        c = by_id.get(jid) if jid else by_name.get(company_key(get(r, COMPANY)))
         if c is None:
+            r[UNJOINED] = f"Job ID {jid} isn't on Companies" if jid else "no Job ID"
             continue
         r[COMPANY_ROW] = c[ROW]
         for name in COMPANY_FIELDS:
@@ -155,14 +170,17 @@ def join(contacts: list[dict], companies: list[dict]) -> list[dict]:
 
 def hold_reason(rec: dict) -> str:
     """'' when Muse's Companies row lets this contact be looked up and drafted, else why not.
-    Outreach status decides; with none, a Blocker holds the row."""
+    Only Outreach status "active" goes ahead. (One-tab sheets have no Outreach status: a
+    Blocker there holds the row.)"""
+    if rec.get(UNJOINED):
+        return rec[UNJOINED]
     st = status(rec, OUTREACH)
-    if st and st != "active":
-        blocker = get(rec, BLOCKER).strip()
-        return f"Outreach status {st}" + (f" ({blocker})" if blocker else "")
-    if not st and get(rec, BLOCKER).strip():
-        return f"Blocker: {get(rec, BLOCKER).strip()}"
-    return ""
+    blocker = get(rec, BLOCKER).strip()
+    if st == ACTIVE:
+        return ""
+    if st or rec.get(COMPANY_ROW) is not None:
+        return f"Outreach status {st or 'blank'}" + (f" ({blocker})" if blocker else "")
+    return f"Blocker: {blocker}" if blocker else ""
 
 
 # ---------------------------------------------------------------------------
@@ -170,14 +188,16 @@ def hold_reason(rec: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def is_pending(rec: dict) -> bool:
-    return (bool(get(rec, COMPANY).strip()) and is_person(get(rec, PERSON)) and not get(rec, EMAIL).strip()
-            and status(rec, FIND_STATUS) in ("", FIND_PENDING))
+    who = get(rec, PERSON)
+    return (bool(get(rec, COMPANY).strip()) and (is_person(who) or is_generic_inbox(who))
+            and not get(rec, EMAIL).strip() and status(rec, FIND_STATUS) in ("", FIND_PENDING))
 
 
 def pending(records: list[dict]) -> tuple[list[dict], list[tuple]]:
     """(rows to look up, [(row, why skipped)]). A pending row that repeats any earlier row
     — or any row already looked up — is skipped."""
-    done = {dedupe_key(r) for r in records if not is_pending(r) and is_person(get(r, PERSON))}
+    done = {dedupe_key(r) for r in records if not is_pending(r)
+            and (is_person(get(r, PERSON)) or is_generic_inbox(get(r, PERSON)))}
     todo, skipped, seen = [], [], set()
     for r in records:
         if not is_pending(r):
@@ -196,10 +216,11 @@ def pending(records: list[dict]) -> tuple[list[dict], list[tuple]]:
 
 
 def by_company(records: list[dict]) -> dict[str, list[dict]]:
+    """Rows per job (Job ID, else company): the unit of waves, the cap and stop-on-reply."""
     out: dict[str, list[dict]] = {}
     for r in records:
         if get(r, COMPANY).strip():
-            out.setdefault(company_key(get(r, COMPANY)), []).append(r)
+            out.setdefault(job_key(r), []).append(r)
     return out
 
 
@@ -208,28 +229,64 @@ def replied_companies(records: list[dict]) -> set[str]:
 
 
 def stop_updates(records: list[dict]) -> list[tuple[dict, dict]]:
-    """Rows to close because someone at their company replied: [(row, fields)]."""
+    """Writes because someone on a job replied: [(row, fields)]. The replied row carries
+    Companies Outreach status → replied (when it isn't already); the job's rows not yet sent
+    → no reply. Sent rows are left as they are."""
     stop = replied_companies(records)
     out = []
     for key, rows in by_company(records).items():
         if key not in stop:
             continue
-        who = next(get(r, PERSON) for r in rows if status(r, DRAFT_STATUS) == REPLIED)
+        first = next(r for r in rows if status(r, DRAFT_STATUS) == REPLIED)
+        if first.get(COMPANY_ROW) is not None and status(first, OUTREACH) != OUTREACH_REPLIED:
+            out.append((first, {OUTREACH: OUTREACH_REPLIED}))
         for r in rows:
-            if status(r, DRAFT_STATUS) not in (REPLIED, NO_REPLY):
+            if status(r, DRAFT_STATUS) not in (REPLIED, NO_REPLY, SENT):
                 out.append((r, {DRAFT_STATUS: NO_REPLY, UPDATED: _now(),
-                                NOTES: add_note(get(r, NOTES), f"stopped: {who} replied")}))
+                                NOTES: add_note(get(r, NOTES), f"stopped: {get(first, PERSON)} replied")}))
     return out
 
 
-def draft_queue(records: list[dict], cap: Optional[int] = None) -> tuple[list[dict], dict]:
+def business_days(start: date, end: date) -> int:
+    """Weekdays after `start`, up to and including `end`."""
+    n, d = 0, start
+    while d < end:
+        d += timedelta(days=1)
+        n += d.weekday() < 5
+    return n
+
+
+def cell_date(text: str) -> Optional[date]:
+    m = re.search(r"\b(20\d\d)-(\d\d)-(\d\d)\b", text or "")
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    except ValueError:
+        return None
+
+
+def wave_cleared(rec: dict, today: date, sent_on: Optional[dict] = None) -> bool:
+    """A later wave may start after this row: it's "no reply", or it was sent WAVE_WAIT_DAYS
+    business days ago (sent date from Gmail, else the Updated cell) and nobody answered."""
+    st = status(rec, DRAFT_STATUS)
+    if st == NO_REPLY:
+        return True
+    if st != SENT:
+        return False
+    sent = (sent_on or {}).get(rec[ROW]) or cell_date(get(rec, UPDATED))
+    return sent is not None and business_days(sent, today) >= WAVE_WAIT_DAYS
+
+
+def draft_queue(records: list[dict], cap: Optional[int] = None, today: Optional[date] = None,
+                sent_on: Optional[dict] = None) -> tuple[list[dict], dict]:
     """(rows to draft now, {row number: wave to write}). Pure.
 
     Draftable: a real person or a generic inbox, an address, Confidence verified|pattern, no
     reply yet at the company, no Gmail draft link yet; a person listed twice counts once. Waves 1..cap go to the company's draftable rows in sheet order (rows already in
     flight keep theirs and count toward the cap). The active wave is the lowest one not yet
-    cleared (sent / no reply); only its undrafted rows are drafted."""
+    cleared (wave_cleared: no reply, or sent WAVE_WAIT_DAYS business days ago); only its
+    undrafted rows are drafted. sent_on: {row: date sent} from Gmail."""
     cap = config.CONTACTS_PER_COMPANY if cap is None else cap
+    today = today or date.today()
     stop = replied_companies(records)
     queue, waves = [], {}
     for key, rows in by_company(records).items():
@@ -262,7 +319,7 @@ def draft_queue(records: list[dict], cap: Optional[int] = None) -> tuple[list[di
             if r[ROW] not in wave_of:
                 nxt += 1
                 wave_of[r[ROW]] = waves[r[ROW]] = nxt
-        open_waves = [wave_of[r[ROW]] for r in slotted if status(r, DRAFT_STATUS) not in _WAVE_CLEARED]
+        open_waves = [wave_of[r[ROW]] for r in slotted if not wave_cleared(r, today, sent_on)]
         if not open_waves:
             continue
         active = min(open_waves)
@@ -458,7 +515,8 @@ class _Writer:
         c = self.company_rows.get(rec.get(COMPANY_ROW))
         if c is None:
             return
-        fields = {k: v for k, v in fields.items() if str(v).strip() and not get(c, k).strip()}
+        fields = {k: v for k, v in fields.items() if str(v).strip() and get(c, k).strip() != str(v).strip()
+                  and (k == OUTREACH or not get(c, k).strip())}
         rec.update(fields)
         if not fields:
             return
@@ -500,7 +558,8 @@ def run(
         with log.step("read sheet") as s:
             records = sheet.records()
             company_rows = companies.records() if companies is not None else []
-            join(records, company_rows)
+            if companies is not None:
+                join(records, company_rows)
             s.detail = f"{len(records)} rows in {sheet.tab}, {len(company_rows)} in {companies.tab if companies else '-'}"
         write = _Writer(sheet, say, companies, company_rows)
         say(f"1. read: {len(records)} rows in '{sheet.tab}'"
@@ -509,12 +568,16 @@ def run(
         with log.step("stop on reply") as s:
             for rec, fields in stop_updates(records):
                 write(rec, fields)
-                rep.stopped.append(rec[ROW])
+                if DRAFT_STATUS in fields:
+                    rep.stopped.append(rec[ROW])
             s.detail = f"{len(rep.stopped)} rows → no reply"
         say(f"2. stop on reply: {len(rep.stopped)} row(s) set to 'no reply'")
 
         todo, skipped = pending(records)
         rep.skipped += [(r[ROW], why) for r, why in skipped]
+        for r, why in skipped:                  # the user's row that names no job Muse has
+            if r.get(UNJOINED) and why == r[UNJOINED] and why not in get(r, NOTES):
+                write(r, {UPDATED: _now(), NOTES: add_note(get(r, NOTES), why)})
         if limit is not None:
             todo = todo[:limit]
         dupes = sum(1 for _, why in skipped if why == "duplicate of another row")
@@ -543,7 +606,8 @@ def run(
                 if not get(rec, DOMAIN).strip():
                     write(rec, {DOMAIN: dom})
                 cached = dom.lower() in client.patterns
-                lk = client.find(get(rec, PERSON), get(rec, COMPANY), dom)
+                lk = client.find(get(rec, PERSON), get(rec, COMPANY), dom,       # "—": Coldstart finds a team inbox
+                                 use_cache=not is_generic_inbox(get(rec, PERSON)))
                 say(f"  coldstart{' (cached pattern, no call)' if cached and lk.ok else ''}: "
                     + (f"{lk.confidence} {lk.email}".rstrip() + (f", pattern {lk.pattern}" if lk.pattern else "")
                        if lk.ok else f"error — {lk.error}"))
@@ -572,8 +636,37 @@ def run(
         return "The Contacts run failed; nothing was sent."
 
 
+def _jobs_gmail(gmail):
+    if gmail is None:
+        from aria.plugins.productivity.gmail import GmailClient
+        gmail = GmailClient(google_auth.JOBS)
+    return gmail
+
+
+def sent_dates(gmail, records: list[dict]) -> dict:
+    """{row: date} for rows marked sent: the newest message to that address in the jobs
+    Gmail's Sent. Rows Gmail can't date are left out (the Updated cell stands in)."""
+    from email.utils import parsedate_to_datetime
+    out = {}
+    for r in records:
+        to = first_email(r)
+        if status(r, DRAFT_STATUS) != SENT or not to:
+            continue
+        try:
+            got = gmail.list_messages(f"in:sent to:{to}", limit=1)
+            if isinstance(got, list) and got:
+                out[r[ROW]] = parsedate_to_datetime(got[0]["date"]).date()
+        except Exception as exc:
+            logger.warning("contacts: sent date for row %s: %s", r[ROW], exc)
+    return out
+
+
 def _draft_all(records, only, limit, gmail, resume, write, rep, say, log) -> None:
-    queue, waves = draft_queue(records)
+    sent_on = {}
+    if any(status(r, DRAFT_STATUS) == SENT for r in records):
+        gmail = _jobs_gmail(gmail)
+        sent_on = sent_dates(gmail, records)
+    queue, waves = draft_queue(records, sent_on=sent_on)
     if only is not None:
         rows = {r[ROW] for r in only} or {r[ROW] for r in queue[:limit]}     # nothing looked up: the next draft(s)
         queue = [r for r in queue if r[ROW] in rows]
@@ -584,9 +677,7 @@ def _draft_all(records, only, limit, gmail, resume, write, rep, say, log) -> Non
     say(f"5. draft: {len(queue)} row(s) ready" + (f" ({', '.join(str(r[ROW]) for r in queue)})" if queue else ""))
     if not queue:
         return
-    if gmail is None:
-        from aria.plugins.productivity.gmail import GmailClient
-        gmail = GmailClient(google_auth.JOBS)
+    gmail = _jobs_gmail(gmail)
     problem = sender_problem(gmail)
     resume = resume if resume is not None else resume_pdf()
     if not problem and not resume:

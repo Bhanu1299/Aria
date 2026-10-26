@@ -147,6 +147,9 @@ class Job:
     threads: list = field(default_factory=list)
     drafts: list = field(default_factory=list)
     contacts: list = field(default_factory=list)
+    job_id: str = ""          # the sheet's ID column (J0042): joins Muse's Companies / Contacts tabs
+    company_row: dict = field(default_factory=dict)  # Muse's Companies row (research, Blocker, Outreach status)
+    people: list = field(default_factory=list)       # Muse's Contacts rows for this job, joined
     applied_on: list = field(default_factory=list)   # dates from aria.db (submitted runs, applications)
     evidence: list = field(default_factory=list)
     stage: int = FOUND
@@ -213,6 +216,7 @@ def _sheet_job(idx: _Index, row: dict, tab: str, today: datetime) -> Job:
     job.apply_key = job.apply_key or norm_link(apply_link)
     job.link = job.link or (post_link if norm_link(post_link) else "") or (apply_link if norm_link(apply_link) else "")
     job.fit = job.fit or row.get("Profile alignment /5", "")
+    job.job_id = job.job_id or row.get("ID", "").strip().upper()
     status = row.get("Status", "")
     if tab == "applied" or not job.status:
         job.status = status or job.status
@@ -286,6 +290,8 @@ def build(sources: dict, now: Optional[datetime] = None) -> dict:
         for row in sheet.get(tab, []):
             if row.get("Company") or row.get("Role"):
                 _sheet_job(idx, row, tab, now)
+
+    contacts = _outreach_tabs(idx, sheet, unmatched)
 
     db = data("aria_db") or {}
     reviews = data("reviews") or {}
@@ -384,7 +390,52 @@ def build(sources: dict, now: Optional[datetime] = None) -> dict:
                            for row in sheet.get(tab, [])[:1] for k in row)
     return {"jobs": idx.jobs, "unmatched": unmatched, "threads": threads_out, "drafts": drafts_out,
             "reviews": reviews, "now": now, "sources": sources, "has_deadline_col": has_deadline_col,
-            "coldstart": cs}
+            "coldstart": cs, "contacts": contacts}
+
+
+# Muse's outreach tabs: Companies (one row per job) + Contacts (one row per person), on Job ID.
+DRAFT_STAGE = {"drafted": DRAFT, "approved": DRAFT, "sent": SENT, "replied": REPLIED}
+
+
+def _outreach_tabs(idx: _Index, sheet: dict, unmatched: list) -> list[dict]:
+    """Contacts rows joined with their Companies row (and job): [{**contact, "company": {...},
+    "job": Job|None}]. Each adds evidence to its job: Contact found, Email found, Draft, Sent, Replied."""
+    by_id = {j.job_id: j for j in idx.jobs if j.job_id}
+    companies = {}
+    for c in sheet.get("companies", []):
+        jid = c.get("Job ID", "").strip().upper()
+        if jid:
+            companies[jid] = c
+            if jid in by_id:
+                by_id[jid].company_row = c
+    by_name = {norm_text(c.get("Company", "")): c for c in sheet.get("companies", [])}
+    out = []
+    for r in sheet.get("contacts", []):
+        jid = r.get("Job ID", "").strip().upper()
+        co = companies.get(jid) if jid else by_name.get(norm_text(r.get("Company", "")))
+        if co is not None:
+            jid = co.get("Job ID", "").strip().upper()
+        job = by_id.get(jid)
+        out.append({**r, "company": co or {}, "job": job, "job_id": jid})
+        if job is None:
+            continue
+        job.people.append(r)
+        ref = f"Muse Contacts row {r.get('_row')}"
+        who, title = r.get("Person", "").strip(), r.get("Title", "").strip()
+        if who:
+            job.add(CONTACT, ref, who if who not in ("—", "–", "-") else "team inbox")
+            if not job.contact and who not in ("—", "–", "-"):
+                job.contact, job.contact_title = who, title
+        found = emails_in(r.get("Email", ""))
+        if found and r.get("Confidence", "").strip().lower() in ("verified", "pattern"):
+            job.add(EMAIL, ref, f"{found[0]} ({r.get('Confidence')})")
+            job.channels.add("email")
+            if not job.email:
+                job.email, job.email_status = found[0], r.get("Confidence", "")
+        st = DRAFT_STAGE.get(r.get("Draft status", "").strip().lower())
+        if st is not None:
+            job.add(st, ref, r.get("Draft status", ""))
+    return out
 
 
 def thread_info(t: dict, me: str) -> Optional[dict]:

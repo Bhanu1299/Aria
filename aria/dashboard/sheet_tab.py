@@ -1,7 +1,9 @@
 """dashboard/sheet_tab.py — the Muse sheet itself, live and editable.
 
-GET  /api/sheet?tab=jobs|applied   the whole tab, read fresh — when the Sheet tab is first opened
-                                   and when the user presses Refresh (never on a timer)
+GET  /api/sheet?tab=jobs|applied|companies|contacts
+                                   the whole tab, read fresh — when the Sheet tab is first opened
+                                   and when the user presses Refresh (never on a timer). companies /
+                                   contacts are Muse's outreach tabs (Archive / Contacts backup never)
 POST /api/sheet/move_applied       every Jobs row already marked Applied → the Applied tab
 POST /api/sheet/cell               {tab, row, id, column, value, expect, company, role} → one cell;
                                    Status → Applied on the Jobs tab moves the row to the Applied tab
@@ -10,18 +12,29 @@ Every job row gets its stable ID (sheets.ensure_ids) before a read, and the page
 not the sheet row number. A write goes through the Sheets API (sheets.JobSheet.set_cell) — never
 the browser. It re-finds the row by its ID, then company + role (rows move when the sheet is sorted) and refuses if the cell no
 longer holds `expect`, the value the page showed, so an edit made in the sheet meanwhile is never
-overwritten blind.
+overwritten blind. Companies / Contacts rows are re-found by Job ID + Company (+ Person) the
+same way (integrations/header_sheet.py).
 """
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 MAX_VALUE = 5000
-TAB_KEYS = ("jobs", "applied")
+TAB_KEYS = ("jobs", "applied", "companies", "contacts")
+OUTREACH_TABS = ("companies", "contacts")
 # Status choices besides whatever the column already holds.
 STATUSES = ("Not applied", "In review", "Applied", "Not gonna apply", "Skipped", "Needs human")
+# Dropdown columns on the outreach tabs (lowercased header → choices; the column's own values join them).
+CHOICES = {
+    "companies": {"outreach status": ("active", "skip", "review", "replied")},
+    "contacts": {"draft status": ("none", "drafted", "approved", "sent", "replied", "no reply"),
+                 "find status": ("pending", "done", "error"),
+                 "confidence": ("verified", "pattern", "not found")},
+}
+ID_COLUMN = {"jobs": "ID", "applied": "ID", "companies": "Job ID", "contacts": "Job ID"}
 
 
 class SheetEditError(Exception):
@@ -32,13 +45,33 @@ def _tab_name(key: str) -> str:
     import aria.core.config as config
     if key not in TAB_KEYS:
         raise SheetEditError(f"unknown tab {key!r}")
-    return config.MUSE_SHEET_TAB if key == "jobs" else config.MUSE_APPLIED_TAB
+    return {"jobs": config.MUSE_SHEET_TAB, "applied": config.MUSE_APPLIED_TAB,
+            "companies": config.MUSE_COMPANIES_TAB, "contacts": config.MUSE_CONTACTS_TAB}[key]
+
+
+def _outreach_sheet(key: str):
+    import aria.core.config as config
+    from aria.integrations.header_sheet import HeaderSheet
+    return HeaderSheet(config.MUSE_SHEET_ID, _tab_name(key))
+
+
+def _choices(key: str, headers: list, rows: list) -> dict:
+    """{column index: [choices]} for the dropdown columns, plus values the column already holds."""
+    want = {"status": STATUSES} if key not in OUTREACH_TABS else CHOICES[key]
+    out = {}
+    for i, h in enumerate(headers):
+        base = want.get(h.strip().lower())
+        if base is not None:
+            out[i] = list(base) + sorted({r["cells"][i].strip() for r in rows} - set(base) - {""})
+    return out
 
 
 def data(key: str, sheet=None) -> dict:
     """{"tab", "headers", "rows", "statuses"} — or {"error"} when the sheet can't be read."""
     from aria.integrations import sheets
     try:
+        if sheet is None and key in OUTREACH_TABS:
+            sheet = _outreach_sheet(key)
         sh = sheet or sheets.tab_sheet(_tab_name(key))
         if sheet is None:
             try:
@@ -51,12 +84,16 @@ def data(key: str, sheet=None) -> dict:
     except Exception as exc:
         logger.error("dashboard: sheet read failed: %s", type(exc).__name__)
         return {"tab": key, "error": f"couldn't read the sheet ({type(exc).__name__})"}
-    statuses = list(STATUSES)
     hdr = [h.strip().lower() for h in got["headers"]]
-    if "status" in hdr:
-        col = hdr.index("status")
-        statuses += sorted({r["cells"][col].strip() for r in got["rows"]} - set(statuses) - {""})
-    return {"tab": key, "headers": got["headers"], "rows": got["rows"], "statuses": statuses}
+    id_col = ID_COLUMN[key]
+    if key in OUTREACH_TABS and id_col.lower() in hdr:          # rows are shown by their Job ID
+        idc = hdr.index(id_col.lower())
+        for r in got["rows"]:
+            r["id"] = r["cells"][idc].strip()
+    choices = _choices(key, got["headers"], got["rows"])
+    statuses = choices.get(hdr.index("status"), list(STATUSES)) if "status" in hdr else list(STATUSES)
+    return {"tab": key, "headers": got["headers"], "rows": got["rows"], "statuses": statuses,
+            "choices": {str(k): v for k, v in choices.items()}, "id_col": id_col}
 
 
 def _text(body: dict, name: str, required: bool = True) -> str:
@@ -86,6 +123,9 @@ def edit(body: dict, sheet=None, applied_sheet=None) -> dict:
     company, role = _text(body, "company", False), _text(body, "role", False)
     job_id = _text(body, "id", False).strip() or None
     key = str(body.get("tab") or "")
+    if key in OUTREACH_TABS:
+        person = _text(body, "person", False)
+        return edit_outreach(key, row, column, value, expect, job_id or "", company, person, sheet)
     sh = sheet or sheets.tab_sheet(_tab_name(key))
     if key == "jobs" and column.strip().lower() == "status" and value.strip().lower() == "applied":
         if not (company or role):
@@ -99,6 +139,32 @@ def edit(body: dict, sheet=None, applied_sheet=None) -> dict:
     written = sh.set_cell(row, column, value, expect=expect, job_id=job_id,
                           company=company if company or role else None, role=role if company or role else None)
     sources.CACHE.drop("sheet")          # the other tabs read the new value on their next load
+    return {"ok": True, "row": written}
+
+
+def edit_outreach(key: str, row: int, column: str, value: str, expect: Optional[str], job_id: str,
+                  company: str, person: str = "", sheet=None) -> dict:
+    """One cell on Companies / Contacts. The row is re-found by Job ID + Company (+ Person on
+    Contacts) and refused if the cell no longer holds `expect`."""
+    from aria.dashboard import sources
+    from aria.integrations.header_sheet import ROW, get
+    from aria.integrations.sheets import SheetError, _norm
+    sh = sheet or _outreach_sheet(key)
+    match = {k: v for k, v in (("Job ID", job_id), ("Company", company),
+                               ("Person", person if key == "contacts" else "")) if v.strip()}
+    if not match:
+        raise SheetEditError("this row has no Job ID or Company, so it can't be found safely")
+    if _norm(column) not in {_norm(h) for h in sh.headers()}:
+        raise SheetError(f"The {sh.tab} tab has no {column!r} column.")
+    holds = lambda r: all(_norm(get(r, k)) == _norm(v) for k, v in match.items())
+    recs = sh.records()
+    rec = next((r for r in recs if r[ROW] == row and holds(r)), None) or next((r for r in recs if holds(r)), None)
+    if rec is None:
+        raise SheetError("That row isn't in the sheet anymore: " + ", ".join(f"{k}={v}" for k, v in match.items()))
+    if expect is not None and get(rec, column).strip() != expect.strip():
+        raise SheetError(f"That cell changed in the sheet since you loaded it (it now says {get(rec, column)[:60]!r}).")
+    written = sh.write_cell(rec[ROW], column, value, match=match)
+    sources.CACHE.drop("sheet")
     return {"ok": True, "row": written}
 
 
@@ -142,7 +208,9 @@ def render() -> str:
     """The shell; the table is drawn by JS from GET /api/sheet (also how it refreshes)."""
     return ('<section class="card sheetcard" id="sheet-root">'
             '<div class="toolbar"><div class="utabs"><button type="button" class="utab shtab on" data-t="jobs">Jobs</button>'
-            '<button type="button" class="utab shtab" data-t="applied">Applied</button></div>'
+            '<button type="button" class="utab shtab" data-t="applied">Applied</button>'
+            '<button type="button" class="utab shtab" data-t="companies">Companies</button>'
+            '<button type="button" class="utab shtab" data-t="contacts">Contacts</button></div>'
             '<input id="shq" type="search" placeholder="Filter rows…" autocomplete="off">'
             '<button type="button" class="btn" id="shrefresh">Refresh</button>'
             '<button type="button" class="btn" id="shmove" style="display:none"></button>'
@@ -150,6 +218,8 @@ def render() -> str:
             '<div class="tablewrap shwrap"><table id="sheet"><thead></thead><tbody></tbody></table></div>'
             '<p class="muted small">Click a cell to edit it; Enter saves, Shift+Enter is a new line, Esc cancels. '
             'Saved straight to Google Sheets. Setting a job to Applied moves it to the Applied tab. '
+            'Companies and Contacts are Muse\u2019s outreach tabs: Draft status approved / sent / replied are '
+            'yours to set (Aria only writes none / drafted / no reply). '
             'Changes made in Google Sheets show up when you press Refresh.</p></section>')
 
 
@@ -180,20 +250,20 @@ var state=document.getElementById('shstate'),q=document.getElementById('shq'),pa
 var tab='jobs',cur=null,editing=null,busy=false,lastAt=0,note=null;
 function say(t,bad){state.textContent=t;state.classList.toggle('bad',!!bad)}
 function col(name){return cur?cur.headers.findIndex(function(h){return h.trim().toLowerCase()===name}):-1}
-function ident(r){var c=col('company'),ro=col('role');return{company:c>=0?r.cells[c]:'',role:ro>=0?r.cells[ro]:''}}
+function ident(r){var c=col('company'),ro=col('role'),p=col('person');return{company:c>=0?r.cells[c]:'',role:ro>=0?r.cells[ro]:'',person:p>=0?r.cells[p]:''}}
 function isLink(v){return /^https?:\/\/\S+$/i.test(v.trim())}
 function cellBody(td,v){td.textContent='';var d=document.createElement('div');d.className='cv';
 if(isLink(v)){var a=document.createElement('a');a.href=v.trim();a.target='_blank';a.rel='noopener';
 try{a.textContent=new URL(v.trim()).hostname}catch(e){a.textContent=v}d.appendChild(a)}else d.textContent=v;
 td.appendChild(d);td.title=v.length>120?v:''}
-function draw(prev){var s=col('status'),idc=col('id'),keep={};
+function draw(prev){var idc=col((cur.id_col||'id').toLowerCase()),keep={},ch=cur.choices||{};
 if(prev)prev.rows.forEach(function(r){keep[r.row]=r.cells});
-thead.textContent='';var tr=document.createElement('tr'),th=document.createElement('th');th.textContent='ID';tr.appendChild(th);
+thead.textContent='';var tr=document.createElement('tr'),th=document.createElement('th');th.textContent=cur.id_col||'ID';tr.appendChild(th);
 cur.headers.forEach(function(h,i){if(i===idc)return;var t=document.createElement('th');t.textContent=h;tr.appendChild(t)});thead.appendChild(tr);
 tbody.textContent='';cur.rows.forEach(function(r){var tr=document.createElement('tr');tr.dataset.row=r.row;
 var n=document.createElement('td');n.textContent=r.id||'';n.title='Sheet row '+r.row;tr.appendChild(n);
 r.cells.forEach(function(v,i){if(i===idc)return;var td=document.createElement('td');td.dataset.c=i;
-if(i===s){var sel=document.createElement('select');var opts=cur.statuses.slice();if(opts.indexOf(v)<0)opts.unshift(v);
+if(ch[i]){var sel=document.createElement('select');var opts=ch[i].slice();if(opts.indexOf(v)<0)opts.unshift(v);
 opts.forEach(function(o){var op=document.createElement('option');op.value=o;op.textContent=o||'(blank)';sel.appendChild(op)});
 sel.value=v;sel.dataset.was=v;td.appendChild(sel)}else cellBody(td,v);
 if(prev&&keep[r.row]&&keep[r.row][i]!==v){td.classList.add('flash');setTimeout(function(){td.classList.remove('flash')},2500)}
@@ -211,7 +281,7 @@ function rowOf(td){var n=parseInt(td.parentNode.dataset.row,10);return cur.rows.
 function save(td,value,done){var r=rowOf(td),i=parseInt(td.dataset.c,10),was=r.cells[i];
 if(value===was){done(false);return}td.classList.add('saving');td.classList.remove('err');
 var id=ident(r);fetch('/api/sheet/cell',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':tok},
-body:JSON.stringify({tab:tab,row:r.row,id:r.id||'',column:cur.headers[i],value:value,expect:was,company:id.company,role:id.role})})
+body:JSON.stringify({tab:tab,row:r.row,id:r.id||'',column:cur.headers[i],value:value,expect:was,company:id.company,role:id.role,person:id.person})})
 .then(function(x){return x.json().then(function(d){return{ok:x.ok,d:d}})}).then(function(res){td.classList.remove('saving');
 if(res.ok&&res.d.moved){cur.rows=cur.rows.filter(function(x){return x!==r});td.parentNode.remove();done(true);
 say('Moved '+(ident(r).company||'it')+' to the Applied tab');lastAt=Date.now()}

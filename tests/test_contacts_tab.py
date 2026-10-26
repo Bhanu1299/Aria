@@ -3,6 +3,7 @@ stop-on-reply, and the end-to-end run with Coldstart, the LLM and Gmail mocked."
 from __future__ import annotations
 
 import json
+from datetime import date
 from types import SimpleNamespace
 
 import httpx
@@ -195,7 +196,7 @@ def _recs(*rows):
 def test_pending_rules():
     recs = _recs(
         r("Acme", "Pat Lee"),                                   # 2 pending
-        r("Acme", "—"),                                         # no person
+        r("Acme", "—"),                                         # 3 pending: a team inbox
         r("Acme", "(hiring contact)"),                          # placeholder
         r("Beta", "Ana Diaz", email="ana@beta.com"),            # has email
         r("Gamma", "Sam Roe", find="done"),                     # done
@@ -204,7 +205,7 @@ def test_pending_rules():
         r("", "No Company"),
     )
     todo, _ = ct.pending(recs)
-    assert [x[ROW] for x in todo] == [2, 7]
+    assert [x[ROW] for x in todo] == [2, 3, 7]
 
 
 def test_dedupe_by_linkedin_then_company_and_person():
@@ -243,9 +244,21 @@ def test_waves_cap_and_stagger():
                                    ("Sam Roe", "verified", "none"), ("Kim Ito", "verified", ""),
                                    ("Lu Wen", "not found", "")]])
     recs[0]["Wave"] = "1"
-    queue, waves = ct.draft_queue(recs, cap=3)
+    queue, waves = ct.draft_queue(recs, cap=3, today=date(2026, 10, 30), sent_on={2: date(2026, 10, 23)})
     assert waves == {3: 2, 4: 3}                 # cap 3: Pat (wave 1) + two more; Kim is left out
-    assert [x[ROW] for x in queue] == [3]        # wave 1 sent → wave 2 drafted; wave 3 waits
+    assert [x[ROW] for x in queue] == [3]        # wave 1 sent 5 business days ago → wave 2; wave 3 waits
+
+
+def test_a_sent_wave_waits_five_business_days_for_a_reply():
+    recs = _recs(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", draft="sent", wave="1"),
+                 r("Acme", "Ana Diaz", email="ana@acme.com", confidence="pattern", wave="2"))
+    fri = date(2026, 10, 23)                                    # a Friday
+    assert ct.draft_queue(recs, today=date(2026, 10, 29), sent_on={2: fri})[0] == []      # 4 business days
+    assert [x[ROW] for x in ct.draft_queue(recs, today=date(2026, 10, 30), sent_on={2: fri})[0]] == [3]
+    recs[0]["Updated"] = "2026-10-23 09:00"                     # no Gmail date: Updated stands in
+    assert [x[ROW] for x in ct.draft_queue(recs, today=date(2026, 10, 30))[0]] == [3]
+    recs[0]["Updated"] = ""
+    assert ct.draft_queue(recs, today=date(2030, 1, 1))[0] == []                           # no date at all: waits
 
 
 def test_next_wave_waits_until_the_earlier_one_is_sent():
@@ -607,7 +620,51 @@ def test_muse_waves_are_kept_and_the_next_waits_for_the_first(llm):
     assert (pe_svc.cell(2, "Wave"), pe_svc.cell(3, "Wave")) == ("1", "2")
 
 
-def test_a_contact_without_a_companies_row_falls_back_to_the_company_name():
-    recs = ct.join([{ROW: 2, "Job ID": "J9", "Company": "Acme Inc"}],
+def test_a_blank_job_id_is_matched_by_company_and_an_unknown_one_is_not():
+    recs = ct.join([{ROW: 2, "Job ID": "", "Company": "Acme Inc"}, {ROW: 3, "Job ID": "J9", "Company": "Acme"},
+                    {ROW: 4, "Job ID": "", "Company": "Zeta"}],
                    [{ROW: 5, "Job ID": "J1", "Company": "Acme", "Role": "SWE", "Notes": "x"}])
     assert recs[0][ct.COMPANY_ROW] == 5 and recs[0]["Role"] == "SWE" and "Notes" not in recs[0]
+    assert ct.hold_reason(recs[1]) == "Job ID J9 isn't on Companies" and ct.hold_reason(recs[2]) == "no Job ID"
+
+
+def test_a_user_row_with_no_job_gets_a_note_once_and_is_skipped(llm):
+    co, co_svc, pe, pe_svc = two_tabs([company("J1", "Acme")],
+                                      [person("", "Zeta", "Bo Li", "", **{"Added by": "Bhanu"})])
+    client, calls = coldstart({})
+    run(pe, client, companies=co)
+    run(pe, client, companies=co)
+    assert calls == [] and pe_svc.cell(2, "Find status") == "pending"
+    assert pe_svc.cell(2, "Notes").count("no Job ID") == 1
+
+
+def test_blank_outreach_status_is_held_on_a_two_tab_sheet(llm):
+    co, co_svc, pe, pe_svc = two_tabs([company("J1", "Acme", outreach="")], [person("J1", "Acme", "Pat Lee", "1")])
+    client, calls = coldstart({})
+    run(pe, client, companies=co)
+    assert calls == []
+
+
+def test_team_inbox_row_asks_coldstart_for_a_team_address_and_is_drafted_to_the_team(llm):
+    co, co_svc, pe, pe_svc = two_tabs([company("J1", "Acme", **{"Email pattern": "{first}"})],
+                                      [person("J1", "Acme", "—", "1", Title="")])
+    client, calls = coldstart({"—": {"email": "careers@acme.com", "status": "verified", "confidence": 0.9,
+                                     "pattern": None, "source": "site"}})
+    gmail = FakeGmail()
+    run(pe, client, gmail, companies=co)
+    assert calls == [{"name": "—", "company": "Acme", "domain": "acme.com"}]     # never the pattern cache
+    assert gmail.drafts[0]["to"] == "careers@acme.com" and gmail.drafts[0]["body"].startswith("Hi Acme team,")
+
+
+def test_reply_marks_the_company_replied_and_leaves_sent_rows_alone(llm):
+    co, co_svc, pe, pe_svc = two_tabs(
+        [company("J1", "Acme"), company("J2", "Acme", Role="Data Engineer")],
+        [person("J1", "Acme", "Pat Lee", "1", Email="pat@acme.com", Confidence="verified", **{"Draft status": "replied"}),
+         person("J1", "Acme", "Ana Diaz", "2", Email="ana@acme.com", Confidence="verified", **{"Draft status": "sent"}),
+         person("J1", "Acme", "Sam Roe", "3", Email="sam@acme.com", Confidence="verified", **{"Draft status": "drafted"}),
+         person("J2", "Acme", "Kim Ito", "1", Email="kim@acme.com", Confidence="verified")])
+    gmail = FakeGmail()
+    out, _ = run(pe, coldstart({})[0], gmail, companies=co)
+    assert co_svc.cell(2, "Outreach status") == "replied" and co_svc.cell(3, "Outreach status") == "active"
+    assert [pe_svc.cell(n, "Draft status") for n in (2, 3, 4)] == ["replied", "sent", "no reply"]
+    assert [d["to"] for d in gmail.drafts] == ["kim@acme.com"]                # the other job goes on
