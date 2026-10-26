@@ -115,3 +115,15 @@ def test_job_pipeline_cannot_send_email():
     # The only Gmail the pipeline may touch is the jobs account's, and only for drafts.
     clients = [m.group(0) for p in pipeline for m in re.finditer(r"GmailClient\([^)]*\)", p.read_text())]
     assert clients and all(c == "GmailClient(google_auth.JOBS)" for c in clients), clients
+
+
+def test_save_draft_returns_a_link_to_the_draft_in_that_account():
+    svc = MagicMock()
+    svc.users().drafts().create().execute.return_value = {"id": "r-1", "message": {"id": "18f2a"}}
+    client = _client(svc)
+    with patch.object(client, "is_configured", return_value=True), \
+            patch.object(google_auth, "account_email", return_value="candidate@example.com"):
+        out = client.save_draft("pat@acme.com", "Founding Engineer — Bhanu", "Hi Pat,")
+    assert out["ok"] and out["draft_id"] == "r-1" and out["message_id"] == "18f2a"
+    assert out["link"] == "https://mail.google.com/mail/u/candidate@example.com/#drafts?compose=18f2a"
+    assert not svc.users().messages().send.called

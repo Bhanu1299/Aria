@@ -16,6 +16,8 @@ Tools:
   job_outreach   — the outreach loop over the sheet (aria/features/outreach): people →
                    Coldstart emails → jobs-Gmail drafts or LinkedIn notes in the sheet.
                    NEVER sends. dry_run=true writes nothing and saves a report.
+  job_contacts   — the Contacts tab (features/outreach/contacts_tab.py): Coldstart emails
+                   over HTTP → jobs-Gmail drafts. Runs in the background; NEVER sends.
 
 Every Google call here uses the jobs account (google_auth.JOBS), never personal.
 
@@ -203,6 +205,7 @@ class ApplyPlugin(_plugin_base.PluginBase):
         registry.register(self._application_continue_tool())
         registry.register(self._job_outreach_draft_tool())
         registry.register(self._job_outreach_tool())
+        registry.register(self._job_contacts_tool())
 
     # -- voice helpers -----------------------------------------------------
 
@@ -554,6 +557,27 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 },
                 "required": ["body"],
             },
+            execute=execute,
+        )
+
+    def _job_contacts_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.outreach import contacts_tab
+            from aria.web import websearch
+            if not contacts_tab.start_background(done_fn=self._progress_fn(),
+                                                 search_fn=lambda q: websearch.search(q, max_results=8)):
+                return "I'm already working through the Contacts tab."
+            return "Finding emails for the Contacts tab in the background. I'll tell you when the drafts are ready."
+
+        return ToolDescriptor(
+            name="job_contacts",
+            description=(
+                "Work through the Contacts tab of the user's job sheet in the background: look up "
+                "emails for pending people with Coldstart, then write Gmail DRAFTS (jobs account) "
+                "for verified or pattern addresses. Never sends. Use for 'find emails for my "
+                "contacts', 'run Coldstart', 'draft emails for my contacts'."
+            ),
+            input_schema={"type": "object", "properties": {}, "required": []},
             execute=execute,
         )
 

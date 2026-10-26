@@ -1,6 +1,6 @@
 """features/outreach/writer.py — the outreach text. The LLM writes the body; code does the rest.
 
-    email(target) → {"to", "subject", "body"} | None        task outreach_email (frontier)
+    email(target, to, posting="") → {"to", "subject", "body"} | None   task outreach_email (frontier)
     linkedin_note(target) → str | None                     task outreach_linkedin_note (frontier)
 
 Code owns the subject ("<Role> — <Name>", which the dashboard parses to link the thread
@@ -82,10 +82,13 @@ def roles_text(target) -> str:
     return ", ".join(roles[:-1]) + " and " + roles[-1]
 
 
-def _brief(target) -> str:
+def _brief(target, posting: str = "") -> str:
     p = target.contact
-    return (f"Company: {target.company}\nRole(s): {roles_text(target)}\n"
+    text = (f"Company: {target.company}\nRole(s): {roles_text(target)}\n"
             f"Recipient: {p.name}, {p.title or 'works there'}\n\nCandidate profile:\n{outreach_profile(target)}")
+    if posting:
+        text += f"\n\nJob posting (for what the role needs; quote nothing):\n{posting}"
+    return text
 
 
 def first_name(name: str) -> str:
@@ -116,11 +119,12 @@ def _note_validator(prefix: str):
     return check
 
 
-def email(target, to: str) -> Optional[dict]:
-    """Draft for the target's contact. None when the LLM output didn't pass validation."""
+def email(target, to: str, posting: str = "") -> Optional[dict]:
+    """Draft for the target's contact. None when the LLM output didn't pass validation.
+    posting: text of the job page, so the email speaks to that role's needs."""
     try:
         _resp, body = llm_client.complete_checked(
-            "outreach_email", [{"role": "user", "content": _brief(target)}],
+            "outreach_email", [{"role": "user", "content": _brief(target, posting)}],
             validate=_valid_body, system=_EMAIL_SYSTEM, max_tokens=500)
     except Exception as exc:
         logger.error("outreach: email for %s failed: %s", target.company, exc)

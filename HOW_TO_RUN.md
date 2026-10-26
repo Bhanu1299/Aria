@@ -170,3 +170,22 @@ If near-misses outnumber detections, the report suggests a lower threshold (edit
 
 **6. Screen questions fail**
 → Screen Recording permission missing (see Permissions above). Screen tools need it; everything else runs without it.
+
+---
+
+## Contacts tab → Coldstart → Gmail drafts
+
+Coldstart is a separate service; Aria only calls `POST $COLDSTART_URL/find`
+(`{name, company, domain}` → `{email, status, confidence, pattern}`). Aria starts it
+itself when `COLDSTART_URL` is local and nothing answers (`python -m coldstart serve` from
+`COLDSTART_DIR`'s venv, log `~/.aria/logs/coldstart.log`; `COLDSTART_AUTOSTART=0` disables). Then:
+
+```bash
+python -m aria.features.outreach contacts --one       # one pending contact, every step printed
+python -m aria.features.outreach contacts --no-draft  # look up emails only
+python -m aria.features.outreach contacts             # full pass
+```
+
+Or say "find emails for my contacts" — it runs in the background while form-filling
+stays visible. Drafts land in the jobs Gmail (only if it is `OUTREACH_FROM`, default `GOOGLE_JOBS_ACCOUNT`); nothing is
+ever sent. Logic: `aria/features/outreach/contacts_tab.py`.

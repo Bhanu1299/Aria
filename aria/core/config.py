@@ -57,6 +57,24 @@ MUSE_APPLIED_TAB: str = os.getenv("MUSE_APPLIED_TAB", "Applied")
 MUSE_CONTACTS_TAB: str = os.getenv("MUSE_CONTACTS_TAB", "Contacts")
 
 # ---------------------------------------------------------------------------
+# Coldstart — the standalone email-finding service, reached over HTTP only
+# (POST {COLDSTART_URL}/find). Aria never imports it for the Contacts flow.
+# A local COLDSTART_URL that's down is started from COLDSTART_DIR's venv
+# (`python -m coldstart serve`); COLDSTART_AUTOSTART=0 disables that.
+# COLDSTART_MIN_INTERVAL: seconds between calls (rate limit).
+# OUTREACH_FROM: the only address Contacts drafts may be created in
+# (defaults to GOOGLE_JOBS_ACCOUNT; with neither set, no drafts are made).
+# ---------------------------------------------------------------------------
+
+COLDSTART_URL: str = os.getenv("COLDSTART_URL", "http://127.0.0.1:8765").rstrip("/")
+COLDSTART_DIR: str = os.path.expanduser(os.getenv("COLDSTART_DIR", "~/Documents/trae_projects/coldstart"))
+COLDSTART_AUTOSTART: bool = os.getenv("COLDSTART_AUTOSTART", "1") != "0"
+COLDSTART_TIMEOUT: float = float(os.getenv("COLDSTART_TIMEOUT", "90"))
+COLDSTART_MIN_INTERVAL: float = float(os.getenv("COLDSTART_MIN_INTERVAL", "2"))
+CONTACTS_PER_COMPANY: int = int(os.getenv("CONTACTS_PER_COMPANY", "3"))
+OUTREACH_FROM: str = os.getenv("OUTREACH_FROM", "") or GOOGLE_JOBS_ACCOUNT
+
+# ---------------------------------------------------------------------------
 # Coder — agentic code execution
 # ---------------------------------------------------------------------------
 

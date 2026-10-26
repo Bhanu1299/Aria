@@ -84,6 +84,9 @@ def rules():
     ("do a dry run of the job outreach", "job_outreach", {"dry_run": True}),
     ("run my outreach as a dry run", "job_outreach", {"dry_run": True}),
     ("preview outreach", "job_outreach", {"dry_run": True}),
+    ("find emails for my contacts", "job_contacts", {}),
+    ("run coldstart", "job_contacts", {}),
+    ("draft emails for my contacts", "job_contacts", {}),
 ])
 def test_direct_routes(rules, utterance, tool, params):
     m = rules.match(utterance)
