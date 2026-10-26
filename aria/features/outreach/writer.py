@@ -36,8 +36,8 @@ sign-off, and drops output that fails a check:
     its own, subject under 45 chars without "application", no banned word, no number
     unless it's in the company's own name / problem / signal (a "911", never a metric),
     no 6-word run copied from the problem or signal (no restated marketing copy), line 1
-    shares 2+ words with the problem or signal and line 2 with the Angle (it can't go to
-    another company).
+    shares 2+ words with the problem, the signal or the Angle's company side (its words
+    that aren't the project's) and line 2 with the Angle (it can't go to another company).
 """
 from __future__ import annotations
 
@@ -67,7 +67,8 @@ _SIGNOFF = re.compile(r"(?im)^\s*(best|thanks|thank you|regards|cheers|sincerely
 _BANNED = re.compile(
     r"(?i)hope this (?:email |message )?finds you|passion|excit|reaching out|strong fit|leverag"
     r"|innovat|revolutioni[sz]|great addition|amazing|impressive|impressed")
-_HIRING_TITLE = re.compile(r"(?i)recruit|talent|hiring|people|\bhr\b|human resources|manager|head of|director|vp\b")
+_HIRING_TITLE = re.compile(r"(?i)recruit|talent|hiring|people|\bhr\b|human resources|manager|head of|director|vp\b|"
+                           r"president|chief|\bc[eitfo]o\b")
 _NUMBER = re.compile(r"\d[\d,.]*")
 _WORD = re.compile(r"[a-z0-9][a-z0-9'-]{3,}")
 _STOP = {"that", "with", "from", "they", "their", "them", "this", "these", "into", "about", "while",
@@ -82,15 +83,15 @@ _EMAIL_SYSTEM = (
     "(e.g. \"triaging 911 surges\", \"acme's routing layer\", \"re: <signal topic>\"). Never "
     "the word application.>\n\n"
     "<line 1>\n\n<line 2>\n\n<line 3>\n\n"
-    "Line 1: show you understand what they're solving, in your own words. Use the Signal if it "
+    "Line 1 (one sentence): show you understand what they're solving, in your own words. Use the Signal if it "
     "fits. Never restate their marketing copy. If the recipient is a recruiter or manager, talk "
     "about the team's problem, not the company mission.\n"
-    "Line 2: the Angle (or, when there's none, the candidate's work given below) — what the "
+    "Line 2 (one or two sentences): the Angle (or, when there's none, the candidate's work given below) — what the "
     "candidate built and the specific part that overlaps with their problem. Concrete and "
     "honest: what it does, what was hard.\n"
-    "Line 3: one genuine sentence on why this problem pulls the candidate in, tied to the "
+    "Line 3 (one sentence): one genuine sentence on why this problem pulls the candidate in, tied to the "
     "candidate's work given below, not passion.\n\n"
-    "Lines 1-3 together are 30-60 words. The greeting, \"I applied for the role. Resume "
+    "Lines 1-3 together are 30-60 words; count them, and cut rather than go over. The greeting, \"I applied for the role. Resume "
     "attached.\", the ask and the signature are added for you: never write them. Never claim "
     "experience beyond the Angle and the work given. Never bring up other projects. No numbers "
     "or metrics. Never: hope this finds you well, "
@@ -125,13 +126,15 @@ class Brief:
 
 
 def person_type(person: str, title: str = "", given: str = "") -> str:
-    """The sheet's Person type when set, else: no name → generic inbox; a recruiter /
-    manager / head-of title → hiring; anyone else → engineer."""
+    """The sheet's Person type when set, else: no name → generic inbox; a founder →
+    engineer; a recruiter / manager / head-of / executive title → hiring; anyone else → engineer."""
     g = (given or "").strip().lower()
     if g:
         return GENERIC if "generic" in g or "inbox" in g else HIRING if _HIRING_TITLE.search(g) or "big" in g else ENGINEER
     if not (person or "").strip() or person.strip() in ("—", "–", "-"):
         return GENERIC
+    if re.search(r"(?i)founder", title or ""):     # a startup founder: engineer to engineer
+        return ENGINEER
     return HIRING if _HIRING_TITLE.search(title or "") else ENGINEER
 
 
@@ -367,7 +370,7 @@ def plan(brief: Brief) -> Plan:
     named, fits = angle_work(brief), role_work(brief)
     if named is None:
         return Plan(fits, why="the Angle names no project; the role's pick")
-    if fits is None or named is fits:
+    if fits is None or named["key"] == fits["key"]:
         return Plan(named, why="Muse's pick fits the role")
     concrete, fact = angle_is_concrete(brief)
     if concrete:
@@ -400,6 +403,9 @@ def _validator(brief: Brief, p: Plan):
     """(subject, [line1, line2, line3]) when the output passes every check, else None."""
     built = brief.angle if p.use_angle or not p.work else f"{p.work['label']} {p.work['text']}"
     theirs = f"{brief.company} {brief.problem} {brief.signal}"
+    grounded = words(f"{brief.problem} {'' if _blank(brief.signal) else brief.signal}")
+    if p.use_angle:                                 # Muse's tie to the company, minus the project itself
+        grounded |= words(brief.angle) - (words(f"{p.work['label']} {p.work['text']}") if p.work else set())
     allowed = _numbers(theirs)
     copied = _runs(f"{brief.problem} {brief.signal}")
     fixed = f"{greeting(brief)} {ask(brief)}"
@@ -421,7 +427,7 @@ def _validator(brief: Brief, p: Plan):
             return None                             # a number or metric
         if _runs(prose) & copied:
             return None                             # their marketing copy, restated
-        if len(words(lines[0]) & words(f"{brief.problem} {brief.signal}")) < 2 or \
+        if len(words(lines[0]) & grounded) < 2 or \
                 len(words(lines[1]) & words(built)) < 2:
             return None                             # could go to another company
         if not EMAIL_WORDS[0] <= len(f"{fixed} {prose}".split()) <= EMAIL_WORDS[1]:

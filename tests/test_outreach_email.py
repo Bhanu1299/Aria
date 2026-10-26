@@ -90,6 +90,8 @@ def test_a_recruiter_gets_the_team_problem_variant(monkeypatch):
 @pytest.mark.parametrize("person,title,given,kind", [
     ("", "", "", writer.GENERIC), ("—", "", "", writer.GENERIC), ("Max Keenan", "CEO / co-founder", "", writer.ENGINEER),
     ("Jo Park", "Talent Partner", "", writer.HIRING), ("Ana Diaz", "Engineering Manager", "", writer.HIRING),
+    ("Kristen Williams", "Group Vice President and Chief Technology Officer", "", writer.HIRING),
+    ("Terry L", "SVP, CIO", "", writer.HIRING), ("Rick K", "President & CEO", "", writer.HIRING),
     ("Max Keenan", "CEO", "big company recruiter", writer.HIRING), ("Max", "", "generic inbox", writer.GENERIC),
 ])
 def test_person_type(person, title, given, kind):
@@ -212,6 +214,14 @@ def test_same_project_as_the_role_needs_no_judge(monkeypatch):
     assert "LLM Gateway" in p.work["label"] and p.use_angle and not p.override and calls == []
 
 
+def test_same_project_is_matched_by_key_not_identity(monkeypatch):
+    monkeypatch.setattr(writer, "_history", lambda: [dict(e) for e in HISTORY])   # fresh dicts, like the bank
+    calls = _judge(monkeypatch, {"concrete": False})
+    p = writer.plan(brief(role="AI Engineer", problem="Teams overpay for frontier models on easy prompts",
+                          angle="LLM Gateway: they route between models"))
+    assert not p.override and p.use_angle and calls == []
+
+
 def test_muse_wins_when_its_angle_rests_on_a_concrete_company_fact(monkeypatch):
     calls = _judge(monkeypatch, {"concrete": True, "fact": "Sierra AI voice agents for inbound sales calls"})
     p = writer.plan(brief(**CARMAX))
@@ -252,3 +262,17 @@ def test_on_override_the_email_leaves_muses_angle_out(monkeypatch):
 def test_no_history_means_no_work_line(monkeypatch):
     monkeypatch.setattr(writer, "_history", lambda: [])
     assert writer.work_for(brief()) is None
+
+
+def test_line_one_may_ground_in_the_angles_company_side(monkeypatch):
+    b = brief(signal="unknown", problem="Serves shoppers through supercenters and grocery stores in one trip.",
+              angle="LLM Gateway: Meijer is scaling digital shopping across stores, where routing between "
+                    "small and frontier models addresses cost.")
+    p = writer.Plan(HISTORY[2], why="test")
+    check = writer._validator(b, p)
+    line1 = "Scaling digital shopping across every store means model costs climb with each new feature you ship."
+    line2 = "I built a gateway that routes prompts between small and frontier models, with caching and fallback."
+    line3 = "I want to see how routing like that holds up when real shoppers lean on it daily, week after week."
+    assert check(f"SUBJECT: routing ai at meijer scale\n\n{line1}\n\n{line2}\n\n{line3}")
+    only_project = "Routing prompts between small and frontier models gets expensive when nothing caches anything."
+    assert check(f"SUBJECT: routing ai at meijer scale\n\n{only_project}\n\n{line2}\n\n{line3}") is None

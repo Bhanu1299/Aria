@@ -55,6 +55,7 @@ MUSE_SHEET_ID: str = os.getenv("MUSE_SHEET_ID", "")
 MUSE_SHEET_TAB: str = os.getenv("MUSE_SHEET_TAB", "Sheet1")
 MUSE_APPLIED_TAB: str = os.getenv("MUSE_APPLIED_TAB", "Applied")
 MUSE_CONTACTS_TAB: str = os.getenv("MUSE_CONTACTS_TAB", "Contacts")
+MUSE_COMPANIES_TAB: str = os.getenv("MUSE_COMPANIES_TAB", "Companies")
 
 # ---------------------------------------------------------------------------
 # Coldstart — the standalone email-finding service, reached over HTTP only

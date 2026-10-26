@@ -1,15 +1,21 @@
-"""features/outreach/contacts_tab.py — the Muse "Contacts" tab: Coldstart emails → Gmail drafts.
+"""features/outreach/contacts_tab.py — Muse's Contacts + Companies tabs: Coldstart emails → Gmail drafts.
 
     run(limit=None, step_fn=None) → summary sentence. Never raises. Never sends.
     start_background(...) → bool      the same run on a daemon thread (False if one is running)
 
-Columns are read and written by header name (integrations/header_sheet.py):
-  the user's      Company, Tracked role, Person, Title, LinkedIn URL, Job URL, Domain
-  Muse's          Company problem, Signal, Angle, Person type (optional)
-  Coldstart's     Email, Source, Confidence, Email pattern, Find status
-  Aria's          Draft status, Gmail draft link, Wave, Updated, Notes
-Aria writes Domain only when it was blank. Draft status "approved", "sent" and "replied"
-are the user's: Aria only ever writes none / drafted / no reply.
+Columns are read and written by header name (integrations/header_sheet.py). Muse keeps one
+row per job on Companies and one row per person on Contacts, joined by Job ID:
+  Companies (Muse's)   Job ID, Company, Role, Job URL, Domain, Email pattern, Company problem,
+                       Signal, Signal source, Angle, Blocker, Outreach status
+  Contacts (Muse's)    Job ID, Company, Person, Title, LinkedIn URL, Wave, Person type (optional)
+  Contacts (Aria's)    Email, Source, Confidence, Find status, Draft status, Gmail draft link,
+                       Wave, Updated, Notes
+Each Contacts row is read with its Companies row's cells (join). On Companies Aria writes only
+Domain and Email pattern, and only into blank cells. Source keeps Muse's text when it has
+some (Coldstart's source then goes to Notes). Only Outreach status "active" (or blank, with no
+Blocker) is looked up or drafted. Draft status "approved", "sent" and "replied" are the
+user's: Aria only ever writes none / drafted / no reply. A sheet without a Companies tab
+(every column on Contacts) works the same way.
 
 One run, all code until the email body:
   1. read      the tab
@@ -59,12 +65,16 @@ from aria.observability import run_log
 
 logger = logging.getLogger(__name__)
 
-COMPANY, ROLE, PERSON, TITLE = "Company", "Tracked role", "Person", "Title"
+COMPANY, ROLE, PERSON, TITLE, JOB_ID = "Company", "Role", "Person", "Title", "Job ID"
 LINKEDIN, JOB_URL, DOMAIN = "LinkedIn URL", "Job URL", "Domain"
 EMAIL, SOURCE, CONFIDENCE, PATTERN, FIND_STATUS = "Email", "Source", "Confidence", "Email pattern", "Find status"
 DRAFT_STATUS, DRAFT_LINK, WAVE, UPDATED, NOTES = "Draft status", "Gmail draft link", "Wave", "Updated", "Notes"
 PROBLEM, SIGNAL, SIGNAL_SOURCE, ANGLE, PERSON_TYPE = "Company problem", "Signal", "Signal source", "Angle", "Person type"
+BLOCKER, OUTREACH = "Blocker", "Outreach status"
 WRITABLE = (DOMAIN, EMAIL, SOURCE, CONFIDENCE, PATTERN, FIND_STATUS, DRAFT_STATUS, DRAFT_LINK, WAVE, UPDATED, NOTES)
+COMPANY_WRITABLE = (DOMAIN, PATTERN)                     # on Companies, blank cells only
+COMPANY_FIELDS = (ROLE, JOB_URL, DOMAIN, PATTERN, PROBLEM, SIGNAL, SIGNAL_SOURCE, ANGLE, BLOCKER, OUTREACH)
+COMPANY_ROW = "_company_row"                            # the joined Companies row, on a Contacts record
 
 FIND_PENDING, FIND_DONE, FIND_ERROR = "pending", "done", "error"
 NONE, DRAFTED, APPROVED, SENT, REPLIED, NO_REPLY = "none", "drafted", "approved", "sent", "replied", "no reply"
@@ -119,7 +129,40 @@ def first_email(rec: dict) -> str:
 
 def match_of(rec: dict) -> dict:
     """Cells that identify the row if the sheet moves under us."""
-    return {COMPANY: get(rec, COMPANY), PERSON: get(rec, PERSON)}
+    m = {COMPANY: get(rec, COMPANY), PERSON: get(rec, PERSON)}
+    if get(rec, JOB_ID).strip():
+        m[JOB_ID] = get(rec, JOB_ID)
+    return m
+
+
+def join(contacts: list[dict], companies: list[dict]) -> list[dict]:
+    """Each Contacts record gains its Companies row's cells (COMPANY_FIELDS, where its own
+    are blank) and COMPANY_ROW. Matched by Job ID, else by company name. In place."""
+    by_id = {get(c, JOB_ID).strip().upper(): c for c in companies if get(c, JOB_ID).strip()}
+    by_name: dict = {}
+    for c in companies:
+        by_name.setdefault(company_key(get(c, COMPANY)), c)
+    for r in contacts:
+        c = by_id.get(get(r, JOB_ID).strip().upper()) or by_name.get(company_key(get(r, COMPANY)))
+        if c is None:
+            continue
+        r[COMPANY_ROW] = c[ROW]
+        for name in COMPANY_FIELDS:
+            if not get(r, name).strip() and get(c, name).strip():
+                r[name] = get(c, name)
+    return contacts
+
+
+def hold_reason(rec: dict) -> str:
+    """'' when Muse's Companies row lets this contact be looked up and drafted, else why not.
+    Outreach status decides; with none, a Blocker holds the row."""
+    st = status(rec, OUTREACH)
+    if st and st != "active":
+        blocker = get(rec, BLOCKER).strip()
+        return f"Outreach status {st}" + (f" ({blocker})" if blocker else "")
+    if not st and get(rec, BLOCKER).strip():
+        return f"Blocker: {get(rec, BLOCKER).strip()}"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +181,10 @@ def pending(records: list[dict]) -> tuple[list[dict], list[tuple]]:
     todo, skipped, seen = [], [], set()
     for r in records:
         if not is_pending(r):
+            continue
+        held = hold_reason(r)
+        if held:
+            skipped.append((r, held))
             continue
         key = dedupe_key(r)
         if key in done or key in seen:
@@ -192,7 +239,7 @@ def draft_queue(records: list[dict], cap: Optional[int] = None) -> tuple[list[di
         for r in rows:                          # one row per person: the first, or the one in flight
             who = get(r, PERSON)
             if not ((is_person(who) or is_generic_inbox(who)) and first_email(r) and status(r, DRAFT_STATUS) != NO_REPLY
-                    and status(r, CONFIDENCE) in (cs.VERIFIED, cs.PATTERN)):
+                    and status(r, CONFIDENCE) in (cs.VERIFIED, cs.PATTERN) and not hold_reason(r)):
                 continue
             key = dedupe_key(r)
             have = next((x for x in ok if dedupe_key(x) == key), None)
@@ -285,16 +332,25 @@ def seed_patterns(client: cs.ColdstartClient, records: list[dict]) -> None:
         client.remember(dom, pat)
 
 
-def find_fields(lk: cs.Lookup, notes: str) -> dict:
-    """Coldstart's answer → the row's cells."""
+def find_fields(lk: cs.Lookup, notes: str, source: str = "") -> dict:
+    """Coldstart's answer → the row's cells. source: the row's Source cell now — Muse's
+    text there is kept and Coldstart's source goes to Notes instead."""
     if not lk.ok:
         return {FIND_STATUS: FIND_ERROR, UPDATED: _now(), NOTES: add_note(notes, f"Coldstart error: {lk.error}")}
     if lk.confidence == cs.NOT_FOUND:
-        return {EMAIL: "not found", SOURCE: lk.source, CONFIDENCE: cs.NOT_FOUND, PATTERN: lk.pattern,
-                FIND_STATUS: FIND_DONE, UPDATED: _now(),
-                NOTES: add_note(notes, "Coldstart found no address; no draft")}
-    return {EMAIL: lk.email, SOURCE: lk.source, CONFIDENCE: lk.confidence, PATTERN: lk.pattern,
-            FIND_STATUS: FIND_DONE, UPDATED: _now()}
+        fields = {EMAIL: "not found", SOURCE: lk.source, CONFIDENCE: cs.NOT_FOUND, PATTERN: lk.pattern,
+                  FIND_STATUS: FIND_DONE, UPDATED: _now(),
+                  NOTES: add_note(notes, "Coldstart found no address; no draft")}
+    else:
+        fields = {EMAIL: lk.email, SOURCE: lk.source, CONFIDENCE: lk.confidence, PATTERN: lk.pattern,
+                  FIND_STATUS: FIND_DONE, UPDATED: _now()}
+    if source.strip():
+        del fields[SOURCE]
+        if lk.source:
+            fields[NOTES] = add_note(fields.get(NOTES, notes), f"email source: {lk.source}")
+    if not fields[PATTERN]:
+        del fields[PATTERN]
+    return fields
 
 
 # ---------------------------------------------------------------------------
@@ -376,24 +432,50 @@ class Report:
 
 
 class _Writer:
-    """sheet.update that also refreshes the in-memory row and refuses user-owned statuses."""
+    """sheet.update that also refreshes the in-memory row and refuses user-owned statuses.
+    With a Companies tab, Domain / Email pattern go to the contact's Companies row, and
+    only into cells that are blank there."""
 
-    def __init__(self, sheet: HeaderSheet, step: Callable[[str], None]) -> None:
-        self.sheet, self.step = sheet, step
+    def __init__(self, sheet: HeaderSheet, step: Callable[[str], None],
+                 companies: Optional[HeaderSheet] = None, company_rows: Optional[list[dict]] = None) -> None:
+        self.sheet, self.step, self.companies = sheet, step, companies
+        self.company_rows = {c[ROW]: c for c in company_rows or []}
 
     def __call__(self, rec: dict, fields: dict) -> None:
         ds = fields.get(DRAFT_STATUS)
         if ds is not None and ds not in ARIA_DRAFT_STATUSES:
             raise SheetError(f"Aria doesn't set Draft status to {ds!r}.")
+        fields = dict(fields)
+        if self.companies is not None:
+            self._company(rec, {k: fields.pop(k) for k in COMPANY_WRITABLE if k in fields})
+        if not fields:
+            return
         rec[ROW] = self.sheet.update(rec[ROW], fields, match=match_of(rec))
         rec.update(fields)
+        self._said(self.sheet.tab, rec[ROW], fields)
+
+    def _company(self, rec: dict, fields: dict) -> None:
+        c = self.company_rows.get(rec.get(COMPANY_ROW))
+        if c is None:
+            return
+        fields = {k: v for k, v in fields.items() if str(v).strip() and not get(c, k).strip()}
+        rec.update(fields)
+        if not fields:
+            return
+        match = {JOB_ID: get(c, JOB_ID)} if get(c, JOB_ID).strip() else {COMPANY: get(c, COMPANY)}
+        c[ROW] = self.companies.update(c[ROW], fields, match=match)
+        c.update(fields)
+        self._said(self.companies.tab, c[ROW], fields)
+
+    def _said(self, tab: str, row: int, fields: dict) -> None:
         shown = ", ".join(f"{k}={v!r}" for k, v in fields.items() if k != NOTES)
-        self.step(f"  wrote row {rec[ROW]}: {shown}" + (" (+ Notes)" if NOTES in fields else ""))
+        self.step(f"  wrote {tab} row {row}: {shown}" + (" (+ Notes)" if NOTES in fields else ""))
 
 
 def run(
     sheet: Optional[HeaderSheet] = None,
     client: Optional[cs.ColdstartClient] = None,
+    companies: Optional[HeaderSheet] = None,
     gmail=None,
     search_fn=None,
     resume: Optional[str] = None,
@@ -401,21 +483,28 @@ def run(
     draft: bool = True,
     step_fn: Optional[Callable[[str], None]] = None,
 ) -> str:
-    """One pass over the Contacts tab. resume: the PDF to attach (default resume_pdf()).
+    """One pass over the Contacts tab (joined with `companies`, Muse's Companies tab; by
+    default both tabs of the Muse sheet). resume: the PDF to attach (default resume_pdf()).
     limit: look up at most this many pending rows, and
     draft only rows looked up in this run — or, when none were pending, the first `limit`
     rows ready to draft (the thin slice: limit=1). Never raises."""
     say = _safe(step_fn)
-    sheet = sheet or HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_CONTACTS_TAB, writable=WRITABLE)
+    if sheet is None:
+        sheet = HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_CONTACTS_TAB, writable=WRITABLE)
+        if companies is None and config.MUSE_COMPANIES_TAB:
+            companies = HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_COMPANIES_TAB, writable=COMPANY_WRITABLE)
     client = client or cs.ColdstartClient()
-    write = _Writer(sheet, say)
     rep = Report()
     log = run_log.start("contacts")
     try:
         with log.step("read sheet") as s:
             records = sheet.records()
-            s.detail = f"{len(records)} rows in {sheet.tab}"
-        say(f"1. read: {len(records)} rows in '{sheet.tab}'")
+            company_rows = companies.records() if companies is not None else []
+            join(records, company_rows)
+            s.detail = f"{len(records)} rows in {sheet.tab}, {len(company_rows)} in {companies.tab if companies else '-'}"
+        write = _Writer(sheet, say, companies, company_rows)
+        say(f"1. read: {len(records)} rows in '{sheet.tab}'"
+            + (f", joined with {len(company_rows)} in '{companies.tab}'" if companies is not None else ""))
 
         with log.step("stop on reply") as s:
             for rec, fields in stop_updates(records):
@@ -428,8 +517,10 @@ def run(
         rep.skipped += [(r[ROW], why) for r, why in skipped]
         if limit is not None:
             todo = todo[:limit]
+        dupes = sum(1 for _, why in skipped if why == "duplicate of another row")
         say(f"3. pending: {len(todo)} row(s) to look up" + (f" ({', '.join(str(r[ROW]) for r in todo)})" if todo else "")
-            + (f"; {len(skipped)} duplicate(s) skipped" if skipped else ""))
+            + (f"; {dupes} duplicate(s) skipped" if dupes else "")
+            + (f"; {len(skipped) - dupes} held by Companies (Outreach status / Blocker)" if len(skipped) > dupes else ""))
 
         seed_patterns(client, records)
         if todo:
@@ -456,7 +547,7 @@ def run(
                 say(f"  coldstart{' (cached pattern, no call)' if cached and lk.ok else ''}: "
                     + (f"{lk.confidence} {lk.email}".rstrip() + (f", pattern {lk.pattern}" if lk.pattern else "")
                        if lk.ok else f"error — {lk.error}"))
-                write(rec, find_fields(lk, get(rec, NOTES)))
+                write(rec, find_fields(lk, get(rec, NOTES), get(rec, SOURCE)))
                 if lk.ok:
                     rep.found.append((rec[ROW], lk.confidence, lk.email))
                 else:

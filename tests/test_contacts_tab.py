@@ -15,7 +15,7 @@ from aria.integrations.header_sheet import ROW, HeaderSheet
 from aria.integrations.sheets import SheetError, col_letter
 
 # The real Contacts header (its order differs from the spec's — code must not care).
-HEADERS = ["Company", "Tracked role", "Person", "Title", "Email", "Source", "Confidence", "LinkedIn URL",
+HEADERS = ["Company", "Role", "Person", "Title", "Email", "Source", "Confidence", "LinkedIn URL",
            "Job URL", "Domain", "Email pattern", "Find status", "Draft status", "Gmail draft link", "Wave",
            "Updated", "Notes", "Company problem", "Signal", "Signal source", "Angle", "Added by"]
 
@@ -43,7 +43,7 @@ def r(company, person, **kw):
     return out
 
 
-MAP = {"role": "Tracked role", "title": "Title", "email": "Email", "confidence": "Confidence",
+MAP = {"role": "Role", "title": "Title", "email": "Email", "confidence": "Confidence",
        "linkedin": "LinkedIn URL", "job_url": "Job URL", "domain": "Domain", "pattern": "Email pattern",
        "find": "Find status", "draft": "Draft status", "wave": "Wave", "notes": "Notes", "source": "Source",
        "link": "Gmail draft link", "problem": "Company problem", "signal": "Signal", "angle": "Angle"}
@@ -505,3 +505,109 @@ def test_role_override_is_noted_and_the_row_is_still_drafted(llm, monkeypatch):
     assert svc.cell(2, "Draft status") == "drafted"
     notes = svc.cell(2, "Notes").splitlines()
     assert [n.split(": ", 1)[1] for n in notes] == ["pattern guess", "angle: role override"]
+
+
+# ---------------------------------------------------------------------------
+# Muse's two tabs: Companies (one row per job) + Contacts (one row per person), by Job ID
+# ---------------------------------------------------------------------------
+
+CO_HEADERS = ["Job ID", "Company", "Role", "Job URL", "Domain", "Email pattern", "Company problem", "Signal",
+              "Signal source", "Angle", "Blocker", "Outreach status", "Notes"]
+PEOPLE_HEADERS = ["Job ID", "Company", "Person", "Title", "LinkedIn URL", "Email", "Source", "Confidence",
+                  "Find status", "Wave", "Draft status", "Gmail draft link", "Updated", "Added by", "Notes"]
+
+
+def row_of(headers, cells, **kw):
+    cells = {**cells, **kw}
+    return [cells.get(h, "") for h in headers]
+
+
+def company(job_id, name, outreach="active", blocker="", **kw):
+    return row_of(CO_HEADERS, {"Job ID": job_id, "Company": name, "Role": "Founding Engineer",
+                                 "Domain": f"{name.lower()}.com", "Company problem": PROBLEM, "Angle": ANGLE,
+                                 "Blocker": blocker, "Outreach status": outreach, "Notes": "Muse's note"}, **kw)
+
+
+def person(job_id, name, who, wave, **kw):
+    return row_of(PEOPLE_HEADERS, {"Job ID": job_id, "Company": name, "Person": who, "Title": "CTO",
+                                     "Source": "The Org profile", "Find status": "pending", "Wave": wave,
+                                     "Draft status": "none", "Added by": "Muse"}, **kw)
+
+
+def two_tabs(companies, people):
+    co_svc, pe_svc = LiveSheet([CO_HEADERS, *companies]), LiveSheet([PEOPLE_HEADERS, *people])
+    return (HeaderSheet("sheet-id", "Companies", service=co_svc, writable=ct.COMPANY_WRITABLE), co_svc,
+            HeaderSheet("sheet-id", "Contacts", service=pe_svc, writable=ct.WRITABLE), pe_svc)
+
+
+def test_two_tabs_join_by_job_id_and_draft_from_the_companies_research(llm):
+    co, co_svc, pe, pe_svc = two_tabs(
+        [company("J0001", "Acme", **{"Email pattern": ""}), company("J0002", "Acme", Role="Data Engineer")],
+        [person("J0002", "Acme", "Pat Lee", "1")])
+    client, calls = coldstart({"Pat Lee": {"email": "pat.lee@acme.com", "status": "verified",
+                                           "confidence": 0.97, "pattern": "{first}.{last}"}})
+    gmail = FakeGmail()
+    out, lines = run(pe, client, gmail, companies=co)
+
+    assert calls == [{"name": "Pat Lee", "company": "Acme", "domain": "acme.com"}]
+    assert (pe_svc.cell(2, "Email"), pe_svc.cell(2, "Confidence"), pe_svc.cell(2, "Find status")) == \
+        ("pat.lee@acme.com", "verified", "done")
+    assert pe_svc.cell(2, "Source") == "The Org profile"                     # Muse's source kept
+    assert "email source: Coldstart" in pe_svc.cell(2, "Notes")
+    assert co_svc.cell(3, "Email pattern") == "{first}.{last}" and co_svc.cell(2, "Email pattern") == ""
+    assert co_svc.cell(3, "Notes") == "Muse's note"                         # Companies Notes never touched
+    assert pe_svc.cell(2, "Draft status") == "drafted" and pe_svc.cell(2, "Wave") == "1"
+    assert "I applied for the Data Engineer role." in gmail.drafts[0]["body"]   # J0002's role, not J0001's
+    assert "joined with 2 in 'Companies'" in lines[0]
+
+
+def test_companies_cells_already_filled_are_never_overwritten(llm):
+    co, co_svc, pe, pe_svc = two_tabs([company("J1", "Acme", **{"Email pattern": "{f}{last}"})],
+                                      [person("J1", "Acme", "Pat Lee", "1")])
+    client, calls = coldstart({})
+    run(pe, client, companies=co, draft=False)
+    assert calls == []                                                      # Muse's pattern seeded the cache
+    assert pe_svc.cell(2, "Email") == "plee@acme.com"
+    assert co_svc.cell(2, "Email pattern") == "{f}{last}" and co_svc.writes == []
+
+
+def test_skip_review_and_blocked_companies_are_neither_looked_up_nor_drafted(llm):
+    co, co_svc, pe, pe_svc = two_tabs(
+        [company("J1", "Statejobs", outreach="skip", blocker="Government agency: apply via portal"),
+         company("J2", "Fidelity", outreach="review", blocker="No sponsorship"),
+         company("J3", "Quiet", outreach="", blocker="Posting no longer listed"),
+         company("J4", "Acme")],
+        [person("J1", "Statejobs", "Ann Bo", "1"), person("J2", "Fidelity", "Cy Do", "1"),
+         person("J3", "Quiet", "Ed Fu", "1"), person("J4", "Acme", "Pat Lee", "1"),
+         person("J2", "Fidelity", "Gil Ho", "2", Email="gil@fidelity.com", Confidence="verified",
+                **{"Find status": "done"})])
+    client, calls = coldstart({"Pat Lee": {"email": "pat@acme.com", "status": "verified", "confidence": 0.9,
+                                           "pattern": "{first}"}})
+    gmail = FakeGmail()
+    out, lines = run(pe, client, gmail, companies=co)
+    assert [c["name"] for c in calls] == ["Pat Lee"]
+    assert [d["to"] for d in gmail.drafts] == ["pat@acme.com"]
+    for n in (2, 3, 4):
+        assert pe_svc.cell(n, "Find status") == "pending"
+    assert "3 held by Companies" in lines[2]
+    assert ct.hold_reason({"Outreach status": "skip", "Blocker": "x"}) == "Outreach status skip (x)"
+    assert ct.hold_reason({"Outreach status": "Active", "Blocker": "No named contact"}) == ""
+
+
+def test_muse_waves_are_kept_and_the_next_waits_for_the_first(llm):
+    co, co_svc, pe, pe_svc = two_tabs(
+        [company("J1", "Acme")],
+        [person("J1", "Acme", "Pat Lee", "1"), person("J1", "Acme", "Ana Diaz", "2")])
+    client, _ = coldstart({"Pat Lee": {"email": "pat@acme.com", "status": "verified", "confidence": 0.9,
+                                       "pattern": "{first}"}})
+    gmail = FakeGmail()
+    run(pe, client, gmail, companies=co)
+    assert pe_svc.cell(3, "Email") == "ana@acme.com"                        # looked up from the pattern
+    assert [d["to"] for d in gmail.drafts] == ["pat@acme.com"]              # wave 2 waits
+    assert (pe_svc.cell(2, "Wave"), pe_svc.cell(3, "Wave")) == ("1", "2")
+
+
+def test_a_contact_without_a_companies_row_falls_back_to_the_company_name():
+    recs = ct.join([{ROW: 2, "Job ID": "J9", "Company": "Acme Inc"}],
+                   [{ROW: 5, "Job ID": "J1", "Company": "Acme", "Role": "SWE", "Notes": "x"}])
+    assert recs[0][ct.COMPANY_ROW] == 5 and recs[0]["Role"] == "SWE" and "Notes" not in recs[0]
