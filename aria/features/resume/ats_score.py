@@ -101,7 +101,7 @@ def _parse_part(text: str, resume: dict) -> dict:
         notes.append("name / email / phone not all found")
     # 3. standard headers only
     odd = [ln for ln in lines if re.fullmatch(r"[A-Z][A-Z &/]{3,40}", ln) and ln not in STANDARD_HEADERS
-           and ln != resume["name"].upper()]
+           and ln != resume["name"].upper() and not skills.canonical(ln)]
     checks += 5 if heads and not odd else 0
     if odd:
         notes.append(f"non-standard headers: {', '.join(odd[:3])}")

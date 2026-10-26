@@ -241,8 +241,9 @@ def cleanup(statuses: dict, days: int = KEEP_DAYS, now: Optional[float] = None) 
         try:
             if not folder.is_dir() or now - folder.stat().st_mtime < days * 86400:
                 continue
-            jid = folder.name.split("-", 1)[0]
-            status = statuses.get(folder.name, statuses.get(jid, ""))
+            status = statuses.get(folder.name, "")
+            if not status:                                   # keyed by job id: "<id>-<company-slug>"
+                status = next((v for k, v in statuses.items() if k and folder.name.startswith(f"{k}-")), "")
             if _APPLIED.search(status or ""):
                 continue
             shutil.rmtree(folder)

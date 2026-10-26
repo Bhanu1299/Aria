@@ -1,0 +1,6 @@
+{
+ "title": "Mobile Engineer (React Native)",
+ "company": "Sprout Banking",
+ "kind": "fullstack",
+ "text": "Sprout Banking is a mobile-first bank for teenagers and their parents.\n\nYou will\n- Build features in React Native and TypeScript for iOS and Android.\n- Write native modules in Swift and Kotlin when needed.\n- Integrate with our GraphQL API and Firebase for push notifications.\n- Write tests with Jest; automate releases with GitHub Actions.\n- Care about performance, accessibility and secure storage of user data (OAuth, biometrics).\n- Collaborate in Figma with design and in Jira with product.\n\nYou have\n- 3+ years building mobile apps, at least 1 with React Native.\n- Comfort with Redux and REST APIs.\n- Experience shipping to the App Store and Google Play.\n- Fintech experience is a plus."
+}

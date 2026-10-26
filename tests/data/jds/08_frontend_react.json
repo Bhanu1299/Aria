@@ -1,0 +1,6 @@
+{
+ "title": "Frontend Engineer",
+ "company": "Lumina Learning",
+ "kind": "fullstack",
+ "text": "Lumina Learning makes interactive math lessons for 2 million students.\n\nThe role\n- Build accessible, delightful UIs in React and TypeScript with Redux and Tailwind CSS.\n- Own our design system in Storybook alongside designers working in Figma.\n- Improve performance optimization of large lesson pages (Webpack to Vite migration in progress).\n- Write unit tests with Jest and end-to-end tests with Cypress.\n- Consume REST and GraphQL APIs from a Node.js BFF.\n- Champion accessibility (WCAG 2.1 AA) and responsive design across devices.\n\nAbout you\n- 3+ years of frontend experience with React.\n- Strong CSS and HTML; JavaScript fundamentals.\n- Experience with CI/CD and Git workflows.\n- Nice to have: React Native, Next.js, Sentry."
+}

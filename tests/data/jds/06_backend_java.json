@@ -1,0 +1,6 @@
+{
+ "title": "Software Engineer II, Backend",
+ "company": "Meridian Insurance",
+ "kind": "backend",
+ "text": "Meridian Insurance is modernizing its claims platform. We're hiring a Software Engineer II to build backend services.\n\nResponsibilities\n- Develop microservices in Java 17 with Spring Boot, deployed to Azure Kubernetes Service.\n- Design RESTful APIs and integrate with partner systems through RabbitMQ.\n- Work with SQL Server and MongoDB; write efficient queries and migrations.\n- Practice TDD with JUnit; maintain build pipelines in Jenkins and Maven.\n- Participate in Agile ceremonies (Scrum) and code reviews.\n- Apply secure coding practices and OAuth2 for service authentication.\n\nMinimum qualifications\n- Bachelor's degree in Computer Science or related field.\n- 2+ years of experience with Java and object-oriented programming.\n- Experience with Docker and Git.\n\nPreferred\n- Experience with Kafka and event-driven architecture.\n- Azure certification."
+}

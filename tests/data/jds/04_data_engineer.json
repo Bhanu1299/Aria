@@ -1,0 +1,6 @@
+{
+ "title": "Data Engineer",
+ "company": "Northwind Logistics",
+ "kind": "data",
+ "text": "Northwind Logistics runs freight analytics for retailers across North America. Our Data Platform team is looking for a Data Engineer.\n\nWhat you'll do\n- Build and maintain batch and streaming data pipelines (ETL/ELT) with Airflow, Spark and Kafka.\n- Model data in Snowflake with dbt; own data quality checks and documentation.\n- Work with analysts to ship dashboards in Looker and Tableau.\n- Optimize SQL for cost and speed; manage storage in S3 using Parquet and Delta Lake.\n- Write Python for ingestion services and data validation; deploy with Terraform and GitHub Actions.\n\nWhat you bring\n- 3+ years in data engineering.\n- Expert SQL and Python; experience with data warehousing and data modeling.\n- Experience with Databricks or BigQuery is a plus.\n- Familiarity with Docker and Linux.\n- Excellent communication skills.\n\nWe sponsor visas for this role. Location: Chicago, IL (hybrid)."
+}

@@ -1,0 +1,6 @@
+{
+ "title": "Site Reliability Engineer",
+ "company": "Halcyon Cloud",
+ "kind": "infra",
+ "text": "Halcyon Cloud provides managed databases to thousands of developers. As a Site Reliability Engineer you'll keep the fleet fast and available.\n\nIn this role you will\n- Operate large Kubernetes clusters on GCP and AWS; manage releases with Helm and Argo CD.\n- Build infrastructure as code in Terraform and Ansible.\n- Own monitoring and alerting with Prometheus, Grafana and Datadog; lead incident response and postmortems.\n- Automate toil with Go and Python; write Bash where it fits.\n- Improve load balancing, networking and DNS for multi-region failover.\n- Drive capacity planning and fault tolerance reviews with service teams.\n\nQualifications\n- 4+ years in SRE, DevOps or infrastructure roles.\n- Deep Linux knowledge and comfort debugging under pressure.\n- Experience with CI/CD systems (Jenkins or GitHub Actions).\n- Experience running PostgreSQL or MySQL in production is a plus.\n- On-call participation required (one week in six)."
+}

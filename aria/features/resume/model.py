@@ -199,6 +199,18 @@ def _split_link(head: str) -> tuple:
     return head.strip(), ""
 
 
+_LOCATION_TAIL = re.compile(r"^(?P<head>.+?),\s*(?P<loc>(?i:remote|hybrid)|[A-Z][A-Za-z .'-]+,\s*[A-Z]{2}|"
+                            r"[A-Z][A-Za-z .'-]+,\s*[A-Z][a-z]+)$")
+
+
+def _split_location(head: str, location: str) -> tuple:
+    """'Lumen Freight, Remote' → ('Lumen Freight', 'Remote') when the parser kept them together."""
+    if location:
+        return head, location
+    m = _LOCATION_TAIL.match(head.strip())
+    return (m.group("head").strip(), m.group("loc").strip()) if m else (head, "")
+
+
 def build_from_text(text: str) -> dict:
     """The base resume from its pdftotext text: header lines, skills, and the dated entries
     resume_sections already reads. What it can't read stays empty (fixed in the dashboard)."""
@@ -217,7 +229,8 @@ def build_from_text(text: str) -> dict:
     d["skills"] = _skills(text)
     parsed = resume_sections.parse(text)
     for e in parsed["experience"]:
-        d["experience"].append({"company": e["company"], "location": e["location"],
+        company, location = _split_location(e["company"], e["location"])
+        d["experience"].append({"company": company, "location": location,
                                 "dates": f"{e['start']} - {e['end']}", "role": e["title"],
                                 "bullets": [b[2:] for b in e["description"].splitlines() if b.startswith("• ")]})
     for p in parsed["projects"]:
@@ -226,8 +239,12 @@ def build_from_text(text: str) -> dict:
                               "bullets": [b[2:] for b in p["description"].splitlines() if b.startswith("• ")]})
     for e in parsed["education"]:
         degree = ", ".join(x for x in (e["degree"], e["field"]) if x)
-        d["education"].append({"school": e["school"], "location": "", "dates": f"{e['start']} - {e['end']}",
-                               "degree": degree, "detail": f"GPA: {e['gpa']}" if e["gpa"] else ""})
+        detail = f"GPA: {e['gpa']}" if e["gpa"] else ""
+        if "; " in degree:                                  # "B.S., Computer Science; GPA: 3.7" on one line
+            degree, detail = [x.strip() for x in degree.split("; ", 1)]
+        school, location = _split_location(e["school"], "")
+        d["education"].append({"school": school, "location": location, "dates": f"{e['start']} - {e['end']}",
+                               "degree": degree, "detail": detail})
     d["certifications"] = [c["name"] + (f" ({c['date']})" if c["date"] else "") for c in parsed["certifications"]]
     return d
 

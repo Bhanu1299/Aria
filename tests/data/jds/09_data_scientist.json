@@ -1,0 +1,6 @@
+{
+ "title": "Data Scientist, Product Analytics",
+ "company": "Fernway Travel",
+ "kind": "data",
+ "text": "Fernway Travel helps 10 million travelers plan trips. Our analytics team is hiring a Data Scientist focused on product analytics.\n\nWhat you'll do\n- Design and analyze A/B tests for search and booking features.\n- Build forecasting and time series models for demand; build recommendation systems features with our ML team.\n- Write production-quality SQL in BigQuery and Python (Pandas, NumPy, scikit-learn).\n- Create dashboards in Looker and communicate insights through data visualization.\n- Partner with engineering on feature engineering and experiment tooling in Jupyter.\n\nQualifications\n- MS in Statistics, Economics, Computer Science or a related field.\n- 2+ years of experience in data analysis and statistical modeling.\n- Experience with R or Python; XGBoost or LightGBM a plus.\n- Strong communication skills and stakeholder management."
+}

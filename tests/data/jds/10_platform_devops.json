@@ -1,0 +1,6 @@
+{
+ "title": "DevOps Engineer",
+ "company": "Ironclad Robotics",
+ "kind": "infra",
+ "text": "Ironclad Robotics builds warehouse robots. Our DevOps team runs the fleet's cloud backend and the build systems that ship robot software.\n\nResponsibilities\n- Maintain CI/CD with GitLab CI and Bazel for C++ and Python codebases.\n- Run services on AWS (EC2, ECS, Lambda, S3) defined with CloudFormation and Terraform.\n- Containerize workloads with Docker and orchestrate with Kubernetes.\n- Operate observability: ELK stack for logs, Prometheus for metrics, Sentry for errors.\n- Harden systems: secure coding reviews, SSO and secrets management.\n- Write automation in Python and Bash on Linux.\n\nRequirements\n- 3+ years in DevOps or platform engineering.\n- Experience with networking fundamentals (TCP/IP, DNS) and Nginx.\n- Experience supporting embedded or robotics teams is a plus.\n- Ability to travel to warehouses up to 10%."
+}

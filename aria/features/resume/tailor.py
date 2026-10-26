@@ -180,7 +180,9 @@ def merge_skills(resume: dict, wanted: list) -> list:
 # ---------------------------------------------------------------------------
 
 def clean_title(title: str) -> str:
-    t = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", title or "")
+    # parentheses that say where / how ("(Remote)", "[Contract]") go; "(React Native)" stays
+    t = re.sub(r"\((?:[^)]*\b(?:remote|hybrid|on-?site|contract|temp|f/m|m/f|w/m|new grad|level|us|usa|"
+               r"[A-Z][a-z]+,\s*[A-Z]{2})\b[^)]*|\d[^)]*)\)|\[[^\]]*\]", " ", title or "", flags=re.I)
     t = re.split(r"\s+[-–—|]\s+(?=(?:remote|hybrid|onsite|on-site|[A-Z][a-z]+,?\s+[A-Z]{2}\b|new york|san francisco|"
                  r"us\b|usa\b))", t, flags=re.I)[0]
     t = re.sub(r",\s*(?:remote|hybrid|us|usa)\s*$", "", t, flags=re.I)
@@ -293,6 +295,20 @@ def _apply(resume: dict, new: dict) -> None:
 # 6. code weave
 # ---------------------------------------------------------------------------
 
+# Words that make a bullet a natural home for a category's skills (code weave only).
+_AFFINITY = {
+    "Languages": r"\b(?:built|wrote|scripts?|service|implemented|automated)\b",
+    "Frameworks": r"\b(?:api|service|front end|frontend|dashboard|ui|app|endpoint|server)\b",
+    "AI/ML": r"\b(?:model|llm|retrieval|evaluation|trained|accuracy|chatbot|categorizer|forecast|labeled)\b",
+    "Data": r"\b(?:pipeline|batch|event|data|records|ingest|etl|queries|analytics|dashboard)\b",
+    "Databases": r"\b(?:quer(?:y|ies)|database|data|cache|caching|storage|records|tables?)\b",
+    "Cloud & DevOps": r"\b(?:deploy\w*|pipeline|ci|container\w*|services?|aws|on-call|infrastructure|runbooks?|"
+                      r"latency|migrat\w+|provisioning)\b",
+    "Practices": r"\b(?:designed|cut|reduc\w+|improv\w+|shipped|mentored|reviews?|latency|tests?|on-call)\b",
+    "Tools": r"\b(?:tests?|pipeline|ci|reviews?|tracking|api)\b",
+}
+
+
 def _join(names: list) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
@@ -316,8 +332,9 @@ def weave(resume: dict, missing: list, original: dict) -> dict:
     def candidate(bid: str, s: Skill) -> tuple:
         t = texts[bid]
         same = sum(1 for it in skills.extract(t) if it.category == s.category) if s.category else 0
+        near = len(re.findall(_AFFINITY.get(s.category, r"(?!x)x"), t, re.I))
         recency = -order.index(bid) / max(1, len(order))
-        return (same, bid.startswith("e"), recency)
+        return (same + near, bid.startswith("e"), recency)
 
     for s in missing:
         practice = s.category == "Practices"
@@ -393,7 +410,7 @@ def tailor(base: dict, jd_text: str, jd_title: str = "", use_llm: bool = True) -
         wanted = jd_skills(jd_text, use_llm=use_llm)
         out.jd_skills = wanted
         out.added_skills = merge_skills(resume, wanted)
-        resume["headline"] = headline(resume, jd_title, wanted)
+        resume["headline"] = headline(model.normalize(base), jd_title, wanted)
         reorder(resume, wanted)
         original = model.bullets(resume)
         missing = [s for s in wanted if not skills.present(s, model.bullet_text(resume))]

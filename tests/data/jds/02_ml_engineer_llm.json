@@ -1,0 +1,6 @@
+{
+ "title": "Machine Learning Engineer, LLM Applications",
+ "company": "Brightwell Health",
+ "kind": "ml",
+ "text": "Brightwell Health builds clinical documentation tools used by 3,000 clinics. Our Applied AI team turns large language models into reliable product features.\n\nResponsibilities\n- Build retrieval-augmented generation (RAG) pipelines over clinical knowledge bases using embeddings and a vector database (pgvector, Pinecone).\n- Fine-tune open models with PyTorch and Hugging Face Transformers, including LoRA adapters.\n- Design LLM evaluation: offline evals, human review loops and regression suites.\n- Ship model-backed services in Python with FastAPI; deploy with Docker on AWS (SageMaker for training jobs).\n- Track experiments in MLflow and work with product on A/B testing.\n- Practice prompt engineering and guardrails for safety-critical outputs.\n\nRequirements\n- 3+ years of experience in machine learning engineering.\n- Fluency in Python, PyTorch and the modern LLM stack (LangChain or LlamaIndex a plus).\n- Solid NLP fundamentals and statistics.\n- MS or PhD in a quantitative field preferred.\n- Must be authorized to work in the United States."
+}

@@ -46,7 +46,8 @@ class Skill:
         ("distributed systems" → "Distributed Systems")."""
         w = self.text
         if w.islower() and not any(c in w for c in "./+#") and len(w) > 4:
-            return " ".join(x.capitalize() for x in w.split())
+            small = {"and", "or", "of", "as", "for", "to", "in", "on", "with", "the", "a"}
+            return " ".join(x if k and x in small else x.capitalize() for k, x in enumerate(w.split()))
         if w.islower() and len(w) <= 4 and w.isalpha():
             return self.name
         return w
@@ -138,8 +139,9 @@ def _wording(hit: str, skill: Skill) -> str:
     """The JD's spelling with whitespace tidied; a lowercase hit of a proper name
     ("kubernetes", "postgresql") takes the canonical's capitalisation."""
     hit = " ".join(hit.split())
+    generic = " " in skill.name and all(w[:1].isupper() and w[1:].islower() for w in skill.name.split())
     if _norm(hit) == _norm(skill.name) and hit.islower() and not skill.name.islower() \
-            and skill.category != "Practices":
+            and skill.category != "Practices" and not generic:
         return skill.name
     return hit
 

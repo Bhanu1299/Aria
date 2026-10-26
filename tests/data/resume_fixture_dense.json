@@ -1,0 +1,174 @@
+{
+  "name": "Morgan T. Okafor",
+  "contact": [
+    {
+      "text": "(555) 014-7781",
+      "url": ""
+    },
+    {
+      "text": "morgan.okafor@example.com",
+      "url": "mailto:morgan.okafor@example.com"
+    },
+    {
+      "text": "linkedin.com/in/morgan-okafor-example",
+      "url": "https://linkedin.com/in/morgan-okafor-example"
+    },
+    {
+      "text": "github.com/mokafor-example",
+      "url": "https://github.com/mokafor-example"
+    }
+  ],
+  "headline": "Software Engineer | Distributed Backend Systems | Machine Learning Infrastructure",
+  "skills": [
+    {
+      "label": "Languages",
+      "items": [
+        "Python",
+        "Java",
+        "TypeScript",
+        "JavaScript",
+        "SQL",
+        "Bash",
+        "C++"
+      ]
+    },
+    {
+      "label": "Backend",
+      "items": [
+        "FastAPI",
+        "Flask",
+        "Django",
+        "Node.js",
+        "Express",
+        "REST APIs",
+        "GraphQL",
+        "PostgreSQL",
+        "MySQL",
+        "Redis",
+        "MongoDB"
+      ]
+    },
+    {
+      "label": "ML/AI",
+      "items": [
+        "PyTorch",
+        "TensorFlow",
+        "scikit-learn",
+        "Pandas",
+        "NumPy",
+        "LLMs",
+        "RAG",
+        "Hugging Face"
+      ]
+    },
+    {
+      "label": "Cloud & DevOps",
+      "items": [
+        "AWS",
+        "Docker",
+        "GitHub Actions",
+        "Linux",
+        "Nginx"
+      ]
+    },
+    {
+      "label": "Tools",
+      "items": [
+        "Git",
+        "Pytest",
+        "Jira",
+        "Postman",
+        "Jupyter"
+      ]
+    }
+  ],
+  "experience": [
+    {
+      "company": "Harborview Analytics",
+      "location": "Boston, MA",
+      "dates": "Feb 2026 - Present",
+      "role": "Software Engineer",
+      "bullets": [
+        "Built a document-search service in Python and FastAPI that answers 12,000 analyst queries a week with retrieval over 2M filings and citation links back to source pages",
+        "Cut p95 API latency from 840 ms to 210 ms by adding Redis caching, rewriting three hot PostgreSQL queries and batching downstream calls",
+        "Shipped a CI pipeline in GitHub Actions that runs 1,400 tests in under 6 minutes, blocks merges on failures and posts coverage diffs on every pull request",
+        "Wrote an evaluation harness that scores LLM answers against 300 labeled questions, raising answer accuracy by 18% over two releases",
+        "Led the migration of four internal tools from a monolith to separate services with shared authentication and audit logging"
+      ]
+    },
+    {
+      "company": "Lumen Freight",
+      "location": "Remote",
+      "dates": "Jun 2024 - Jan 2026",
+      "role": "Backend Engineer",
+      "bullets": [
+        "Designed a shipment-tracking API in Java that serves 45 carrier integrations and 3M status events a day with idempotent retries and dead-letter handling",
+        "Migrated nightly batch jobs to an event pipeline on AWS, reducing data delay from 24 hours to 15 minutes for 1,200 customer accounts",
+        "Containerized six services with Docker and documented runbooks that cut on-call pages by 35% within one quarter",
+        "Built a rate-limiting layer for partner APIs that held error rates under 0.5% during a 4x holiday traffic spike",
+        "Mentored two interns through their first production features, design documents and code reviews"
+      ]
+    },
+    {
+      "company": "Copperline Robotics",
+      "location": "Pittsburgh, PA",
+      "dates": "May 2023 - Aug 2023",
+      "role": "Software Engineering Intern",
+      "bullets": [
+        "Wrote C++ and Python tooling to replay 900 hours of sensor logs, letting the perception team reproduce field bugs in minutes",
+        "Built a Flask dashboard that tracked nightly simulation results across 120 test scenarios and flagged regressions automatically",
+        "Reduced simulation setup time from 40 minutes to 7 minutes by caching map tiles and parallelizing scenario loading"
+      ]
+    },
+    {
+      "company": "Northbridge University IT",
+      "location": "Providence, RI",
+      "dates": "Sep 2022 - May 2024",
+      "role": "Software Developer (Part-time)",
+      "bullets": [
+        "Built a TypeScript dashboard for 9,000 students to track course waitlists, replacing a manual email process used by 30 departments",
+        "Automated account provisioning with Python and Bash scripts, saving the help desk 20 hours a month"
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "title": "Ledgerline",
+      "dates": "Mar 2025 - Jun 2025",
+      "link": "github.com/mokafor-example/ledgerline",
+      "bullets": [
+        "Built a personal-finance categorizer with scikit-learn that labels transactions with 92% accuracy across 14 categories",
+        "Served the model behind a Flask API with Pytest coverage of 85% and a small React front end"
+      ]
+    },
+    {
+      "title": "TrailCast",
+      "dates": "Oct 2024 - Dec 2024",
+      "link": "github.com/mokafor-example/trailcast",
+      "bullets": [
+        "Trained a PyTorch model on 40,000 weather records to forecast trail conditions three days out",
+        "Built a Node.js front end that 600 hikers used in its first month"
+      ]
+    },
+    {
+      "title": "Shelfie",
+      "dates": "Jan 2024 - Mar 2024",
+      "link": "",
+      "bullets": [
+        "Wrote a RAG chatbot over a public library catalog using an LLM and Pandas preprocessing of 50,000 records"
+      ]
+    }
+  ],
+  "education": [
+    {
+      "school": "Northbridge University",
+      "location": "Providence, RI",
+      "dates": "Sep 2020 - May 2024",
+      "degree": "B.S., Computer Science",
+      "detail": "GPA: 3.7"
+    }
+  ],
+  "certifications": [
+    "AWS Certified Cloud Practitioner (Aug 2025)"
+  ]
+}

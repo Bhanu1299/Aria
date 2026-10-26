@@ -1,0 +1,6 @@
+{
+ "title": "ML Platform Engineer",
+ "company": "Quanta Retail",
+ "kind": "ml",
+ "text": "Quanta Retail's ML Platform team builds the tools our 60 data scientists use to train and serve models.\n\nWhat you'll do\n- Build the training and model serving platform on Kubernetes with Kubeflow and Ray-free batch jobs on Spark.\n- Maintain the feature store and model registry (MLflow); add CI/CD for models.\n- Serve PyTorch and XGBoost models with low latency (ONNX, CUDA where it pays off).\n- Write platform services in Python and Go with gRPC APIs.\n- Instrument everything with OpenTelemetry and Grafana dashboards.\n- Partner on MLOps best practices: reproducibility, monitoring and data quality.\n\nRequirements\n- 4+ years of software engineering, 2+ on ML infrastructure.\n- Experience with AWS or GCP, Docker, Terraform.\n- Understanding of machine learning and deep learning workflows.\n- BS/MS in Computer Science or similar."
+}

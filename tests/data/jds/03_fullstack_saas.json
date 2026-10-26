@@ -1,0 +1,6 @@
+{
+ "title": "Full Stack Engineer",
+ "company": "Tandem Notes",
+ "kind": "fullstack",
+ "text": "Tandem Notes is a collaborative workspace for research teams. We're a 25-person company looking for a Full Stack Engineer who enjoys shipping end to end.\n\nYou will\n- Build product features across a React and TypeScript front end (Next.js) and a Node.js back end.\n- Design GraphQL and REST APIs backed by PostgreSQL and Redis.\n- Implement real-time collaboration features over WebSockets.\n- Write tests with Jest and Playwright; keep our GitHub Actions CI green.\n- Care about accessibility and responsive design; work closely with design in Figma.\n- Deploy on Vercel and AWS; use Docker for local environments.\n\nYou have\n- 2+ years of professional full-stack experience.\n- Strong JavaScript and TypeScript, HTML and CSS (Tailwind CSS is what we use).\n- Comfort with SQL and data modeling.\n- Bonus: experience with Stripe billing or Sentry.\n\nSalary range $140k-$175k plus equity. Hybrid in New York, 2 days a week."
+}

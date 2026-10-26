@@ -1,0 +1,6 @@
+{
+ "title": "AI Engineer, Agents",
+ "company": "Pathfinder Labs",
+ "kind": "ml",
+ "text": "Pathfinder Labs builds AI agents that automate back-office work for mid-size companies.\n\nWhat you'll work on\n- Design agentic workflows with LLMs: tool calling, planning, memory and retries.\n- Build agent infrastructure in Python and TypeScript: FastAPI services, Celery workers, Redis queues.\n- Integrate the OpenAI API and open models served with vLLM; measure cost and latency.\n- Build evaluation harnesses (evals) and observability for agents in production.\n- Work with Playwright to let agents operate web apps.\n- Store and search knowledge with embeddings in Weaviate or pgvector.\n\nYou might be a fit if\n- You've shipped LLM features to real users.\n- You write clean, tested Python (pytest) and understand async programming.\n- You're comfortable with Docker, Kubernetes and GCP.\n- Startup experience preferred. Equity-heavy compensation."
+}
