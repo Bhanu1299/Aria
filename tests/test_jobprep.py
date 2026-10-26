@@ -255,6 +255,29 @@ def test_nothing_is_written_until_approve():
         replies.approve(sid, sheet)
 
 
+def test_a_spoken_request_writes_only_the_kinds_it_names():
+    replies.scan([{"id": "m20", "from": "hr@acme.com", "subject": "Regret to inform", "snippet": ""},
+                  {"id": "m21", "from": "hr@globex.com", "subject": "Globex Corporation: can we schedule a call?",
+                   "snippet": ""}], JOBS, use_llm=False)
+    sheet = FakeSheet()
+    line = replies.approve_kinds(["rejected"], sheet=sheet)
+    assert line == "Marked on the sheet: Acme." and [c[2] for c in sheet.calls] == ["Rejected"]
+    assert [p["kind"] for p in replies.pending()] == ["interview"]          # not asked for: still waits
+    assert replies.approve_kinds(["rejected"], sheet=sheet) == "No pending rejected statuses to write."
+
+
+def test_the_llm_gets_room_to_answer(monkeypatch):
+    seen = {}
+
+    def complete_checked(task, messages, validate, system=None, max_tokens=1024):
+        seen["max_tokens"] = max_tokens
+        return None, validate("rejected")
+    from aria.llm import llm_client
+    monkeypatch.setattr(llm_client, "complete_checked", complete_checked)
+    assert replies.classify("Quick update", "About your candidacy", "pat@acme.com") == ("rejected", "llm")
+    assert seen["max_tokens"] >= 200
+
+
 def test_dismiss_writes_nothing():
     replies.scan([{"id": "m10", "from": "hr@acme.com", "subject": "Offer letter", "snippet": ""}], JOBS, use_llm=False)
     replies.dismiss(replies.pending()[0]["id"])

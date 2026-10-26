@@ -455,19 +455,27 @@ class ApplyPlugin(_plugin_base.PluginBase):
         def execute(params: dict) -> str:
             from aria.features.jobprep import replies
             try:
-                return replies.scan_gmail(_sheet_jobs())
+                line = replies.scan_gmail(_sheet_jobs())
             except Exception as exc:
                 logger.error("check_job_replies failed: %s", exc)
                 return "I couldn't check for replies right now."
+            mark = [k for k in (params.get("mark_on_sheet") or []) if k in replies.STATUS]
+            return f"{line} {replies.approve_kinds(mark)}" if mark else line
 
         return ToolDescriptor(
             name="check_job_replies",
             description=(
                 "Check the jobs Gmail for employer replies (interview, rejection, offer) to applications and "
-                "suggest a sheet status for each. Nothing is written to the sheet until the user approves it "
-                "in the dashboard. Use for 'did anyone reply', 'check for replies from companies'."
+                "suggest a sheet status for each. Use for 'did anyone reply', 'check for replies from "
+                "companies'. mark_on_sheet: the kinds the user asked IN THIS REQUEST to write to the sheet "
+                "('mark the rejections as rejected', 'update my rejection list' → [\"rejected\"]); it writes "
+                "every pending suggestion of those kinds, old ones included. Without it nothing is written "
+                "(the user approves in the dashboard)."
             ),
-            input_schema={"type": "object", "properties": {}, "required": []},
+            input_schema={"type": "object", "properties": {
+                "mark_on_sheet": {"type": "array", "items": {"type": "string", "enum": ["rejected", "interview", "offer"]},
+                                  "description": "Kinds the user explicitly asked to write to the sheet now"}},
+                "required": []},
             execute=execute,
         )
 

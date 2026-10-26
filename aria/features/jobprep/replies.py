@@ -12,8 +12,12 @@ scan(messages, jobs) → [new suggestion]
 pending() → [suggestion]          interview / rejected / offer, not yet approved or dismissed
 approve(id, sheet=None) → str     JobSheet.set_cell(Status) — the ONLY sheet write, and only here
 dismiss(id) → None
+approve_kinds(kinds) → str        approve() every pending suggestion of those kinds — only when the
+                                  user ASKED for it by voice ("mark the rejections on the sheet")
 
-NOTHING is written to the sheet until the user presses Approve in the dashboard.
+NOTHING is written to the sheet until the user approves it: Approve in the dashboard, or a
+spoken request naming the kind (user, 2026-10-26: "mark them as rejected on the sheet").
+max_tokens 300 for the one-word answer: the small tier reasons first (5 came back empty).
 """
 from __future__ import annotations
 
@@ -75,7 +79,7 @@ def classify(subject: str, snippet: str = "", sender: str = "", use_llm: bool = 
 
     try:
         _resp, kind = llm_client.complete_checked("reply_classify", [{"role": "user", "content": block}],
-                                                  validate=validate, system=_SYSTEM, max_tokens=5)
+                                                  validate=validate, system=_SYSTEM, max_tokens=300)
     except Exception as exc:
         logger.warning("replies: LLM classify failed: %s", exc)
         return None, "llm"
@@ -202,6 +206,25 @@ def approve(sid: int, sheet=None) -> str:
     with store.conn() as c:
         c.execute("UPDATE reply_suggestions SET approved_at = datetime('now') WHERE id = ?", (int(sid),))
     return f"{s['company']}: Status set to {s['suggested_status']} (row {row})."
+
+
+def approve_kinds(kinds, sheet=None) -> str:
+    """Approve every pending suggestion whose kind is in `kinds` (interview / rejected / offer).
+    One line: what was written, and what failed. Never raises."""
+    want = {k for k in (kinds or ()) if k in STATUS}
+    todo = [s for s in pending() if s["kind"] in want]
+    if not todo:
+        return "No pending " + " / ".join(sorted(want) or ["reply"]) + " statuses to write."
+    done, failed = [], []
+    for s in todo:
+        try:
+            approve(s["id"], sheet=sheet)
+            done.append(s["company"])
+        except Exception as exc:
+            logger.warning("replies: approve %s failed: %s", s["company"], exc)
+            failed.append(f"{s['company']} ({exc})")
+    line = (f"Marked on the sheet: {', '.join(done)}." if done else "")
+    return (line + (f" Couldn't write: {'; '.join(failed)}." if failed else "")).strip()
 
 
 def dismiss(sid: int) -> None:
