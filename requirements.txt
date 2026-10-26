@@ -23,3 +23,4 @@ google-auth-oauthlib
 spotipy
 rapidfuzz
 keyring
+reportlab

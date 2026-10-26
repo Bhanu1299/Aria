@@ -1,0 +1,74 @@
+{
+  "name": "Jordan A. Rivera",
+  "contact": [
+    {"text": "(555) 014-2290", "url": ""},
+    {"text": "jordan.rivera@example.com", "url": "mailto:jordan.rivera@example.com"},
+    {"text": "linkedin.com/in/jordan-rivera-example", "url": "https://linkedin.com/in/jordan-rivera-example"},
+    {"text": "github.com/jrivera-example", "url": "https://github.com/jrivera-example"}
+  ],
+  "headline": "Software Engineer | Backend Systems | Applied ML",
+  "skills": [
+    {"label": "Languages", "items": ["Python", "Java", "TypeScript", "SQL", "Bash"]},
+    {"label": "Backend", "items": ["FastAPI", "Flask", "Node.js", "REST APIs", "PostgreSQL", "Redis"]},
+    {"label": "ML/AI", "items": ["PyTorch", "scikit-learn", "Pandas", "LLMs", "RAG"]},
+    {"label": "Cloud & DevOps", "items": ["AWS", "Docker", "GitHub Actions", "Linux"]},
+    {"label": "Tools", "items": ["Git", "Pytest", "Jira", "Postman"]}
+  ],
+  "experience": [
+    {
+      "company": "Harborview Analytics", "location": "Boston, MA", "dates": "Feb 2026 - Present",
+      "role": "Software Engineer",
+      "bullets": [
+        "Built a document-search service in Python and FastAPI that answers 12,000 analyst queries a week with retrieval over 2M filings",
+        "Cut p95 API latency from 840 ms to 210 ms by adding Redis caching and rewriting three hot PostgreSQL queries",
+        "Shipped a CI pipeline in GitHub Actions that runs 1,400 tests in under 6 minutes and blocks merges on failures",
+        "Wrote an evaluation harness that scores LLM answers against 300 labeled questions, raising answer accuracy by 18%"
+      ]
+    },
+    {
+      "company": "Lumen Freight", "location": "Remote", "dates": "Jun 2024 - Jan 2026",
+      "role": "Backend Engineer",
+      "bullets": [
+        "Designed a shipment-tracking API in Java that serves 45 carrier integrations and 3M status events a day",
+        "Migrated nightly batch jobs to an event pipeline on AWS, reducing data delay from 24 hours to 15 minutes",
+        "Containerized six services with Docker and documented runbooks that cut on-call pages by 35%",
+        "Mentored two interns through their first production features and code reviews"
+      ]
+    },
+    {
+      "company": "Northbridge University IT", "location": "Providence, RI", "dates": "Sep 2022 - May 2024",
+      "role": "Software Developer (Part-time)",
+      "bullets": [
+        "Built a TypeScript dashboard for 9,000 students to track course waitlists, replacing a manual email process",
+        "Automated account provisioning with Python and Bash scripts, saving the help desk 20 hours a month"
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "title": "Ledgerline", "dates": "Mar 2025 - Jun 2025", "link": "github.com/jrivera-example/ledgerline",
+      "bullets": [
+        "Built a personal-finance categorizer with scikit-learn that labels transactions with 92% accuracy",
+        "Served the model behind a Flask API with Pytest coverage of 85%"
+      ]
+    },
+    {
+      "title": "TrailCast", "dates": "Oct 2024 - Dec 2024", "link": "github.com/jrivera-example/trailcast",
+      "bullets": [
+        "Trained a PyTorch model on 40,000 weather records to forecast trail conditions three days out",
+        "Built a Node.js front end that 600 hikers used in its first month"
+      ]
+    },
+    {
+      "title": "Shelfie", "dates": "Jan 2024 - Mar 2024", "link": "",
+      "bullets": [
+        "Wrote a RAG chatbot over a public library catalog using an LLM and Pandas preprocessing of 50,000 records"
+      ]
+    }
+  ],
+  "education": [
+    {"school": "Northbridge University", "location": "Providence, RI", "dates": "Sep 2020 - May 2024",
+     "degree": "B.S., Computer Science", "detail": "GPA: 3.7"}
+  ],
+  "certifications": ["AWS Certified Cloud Practitioner (Aug 2025)"]
+}
