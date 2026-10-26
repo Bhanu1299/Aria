@@ -388,6 +388,15 @@ here so the code can be checked against them.
 Aria owns every runtime step. Claude is one model behind GateLLM, not a
 component of the pipeline.
 
+**One command runs it all: "run the job pipeline"** (`aria/features/applying/job_pipeline.py`;
+also "run the pipeline", "start the job pipeline"; the agent's `run_job_pipeline` for other
+wordings). It does the bring-up (GateLLM → Coldstart → dashboard → Chrome), then runs the
+application batch (step 4, visible tabs, never submits) and the Contacts tab (steps 3 + 5:
+Coldstart emails → jobs-Gmail drafts, never sends, no browser) at the same time, and speaks
+once when both are done. Each part keeps its own words and starts only itself: "start
+applying" = applications, "find emails for my contacts" / "draft emails for my contacts" =
+contacts, "open my dashboard" = the dashboard. Only "pipeline" words start the whole thing.
+
 ### Step 4 in detail: apply → review → submit
 
 ```mermaid

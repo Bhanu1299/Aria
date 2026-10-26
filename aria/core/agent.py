@@ -124,6 +124,8 @@ def _build_system_prompt(memory_context: str = "") -> str:
         "Google Sheets in the browser, because those tools find the right row and log the change.\n"
         "- When the user says they submitted, wants to submit, skip, close or mark an application, "
         "in any words, use application_action; when it returns a question, ask exactly that.\n"
+        "- \"Run the job pipeline\" (the whole automation) is run_job_pipeline; applying only is "
+        "start_applications, drafting emails only is job_contacts, because each word means only its own part.\n"
         "- To apply to several or the next jobs, use start_applications. It runs in the "
         "background: say it started, don't poll it, and report when it finishes.\n"
         "- To pick up an application that's waiting (signed in, a step 2), use "

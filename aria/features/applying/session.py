@@ -76,7 +76,9 @@ def _names(jobs: list) -> str:
 
 
 def start(say: Callable[[str], None], voice_ask: Optional[Callable[[str], str]] = None,
-          limit: Optional[int] = None) -> str:
+          limit: Optional[int] = None, finish_fn: Optional[Callable[[str], None]] = None) -> str:
+    """finish_fn(line) gets the run's one end line instead of it being spoken (the job pipeline
+    speaks it together with the Contacts result). It's called only if the run started."""
     global _thread
     if control.current is not None and control.current.active:
         return "Applications are already running. Say pause or stop."
@@ -98,7 +100,7 @@ def start(say: Callable[[str], None], voice_ask: Optional[Callable[[str], str]] 
     ctl = control.RunControl()
     ctl.wait_walls = False
     control.current = ctl
-    _thread = threading.Thread(target=_run, args=(jobs, say, voice_ask, ctl), daemon=True, name="aria-apply-run")
+    _thread = threading.Thread(target=_run, args=(jobs, say, voice_ask, ctl, finish_fn), daemon=True, name="aria-apply-run")
     _thread.start()
     n = len(jobs)
     return (f"Starting {n} application{'s' if n != 1 else ''}, best fit first: {_names(jobs)}. "
@@ -196,7 +198,18 @@ def _missing(ids: list) -> list:
     return seen
 
 
-def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
+def _run(jobs: list, say, voice_ask, ctl: control.RunControl,
+         finish_fn: Optional[Callable[[str], None]] = None) -> None:
+    def end(msg: str) -> None:
+        if finish_fn is None:
+            _speak(say, msg)
+            return
+        _note(msg)
+        try:
+            finish_fn(msg)
+        except Exception as exc:
+            logger.warning("apply run: finish_fn failed: %s", exc)
+
     prevent_sleep.start()
     done = 0
     ids: list = []
@@ -208,17 +221,17 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl) -> None:
             _note(fill_one(job, say, None, ctl, ids=ids))
             done += 1
             _resume_ready(say, ctl)                # anyone you signed in to meanwhile
-        _speak(say, run_report(ids, done))
+        end(run_report(ids, done))
         deadline = time.time() + WAITING_SECS
         while waiting_names() and time.time() < deadline and not ctl.stopped:
             ctl.wait(WALL_POLL_SECS)
             _resume_ready(say, ctl, speak=True)
     except control.Stopped:
-        _speak(say, f"Stopped after {done} application{'s' if done != 1 else ''}, nothing submitted. "
+        end(f"Stopped after {done} application{'s' if done != 1 else ''}, nothing submitted. "
                     "Every tab stays open.")
     except Exception as exc:
         logger.error("application run failed: %s", exc)
-        _speak(say, f"The application run hit an error and stopped after {done} application"
+        end(f"The application run hit an error and stopped after {done} application"
                     f"{'s' if done != 1 else ''}, nothing submitted. Every tab stays open.")
     finally:
         prevent_sleep.stop()

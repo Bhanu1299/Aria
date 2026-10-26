@@ -24,6 +24,9 @@ Every Google call here uses the jobs account (google_auth.JOBS), never personal.
   start_applications — the batch run (aria.features.applying.session): up to N jobs, best fit
                    first, each in its own tab, never stopping at a sign-in or check; one report
                    at the end. Only when the user asks to apply to several / the next jobs.
+  run_job_pipeline — the whole automation (aria.features.applying.job_pipeline): bring-up, the
+                   application run and the Contacts emails → drafts at once, one report at the end.
+                   Only when the user asks for the pipeline / the whole thing.
   application_continue — pick one application back up in its tab (after the user signed in,
                    or the site's next step, e.g. Handshake's "Step 2: apply on the employer's
                    site"). Never submits.
@@ -201,6 +204,7 @@ class ApplyPlugin(_plugin_base.PluginBase):
         registry.register(self._job_status_tool())
         registry.register(self._application_action_tool())
         registry.register(self._start_applications_tool())
+        registry.register(self._run_job_pipeline_tool())
         registry.register(self._open_dashboard_tool())
         registry.register(self._application_continue_tool())
         registry.register(self._job_outreach_draft_tool())
@@ -479,6 +483,28 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 "properties": {"limit": {"type": "integer", "description": "How many jobs (optional, max 10)"}},
                 "required": [],
             },
+            execute=execute,
+        )
+
+    def _run_job_pipeline_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.applying import commands
+            try:
+                return commands.start_pipeline()
+            except Exception as exc:
+                logger.error("run_job_pipeline failed: %s", exc)
+                return "The job pipeline didn't start."
+
+        return ToolDescriptor(
+            name="run_job_pipeline",
+            description=(
+                "Run the WHOLE job automation at once: bring everything up, fill the next new jobs in their "
+                "own tabs (never submits) AND look up contact emails and write Gmail drafts (never sends), "
+                "one report at the end. Only when the user asks for the pipeline or the whole thing ('run "
+                "the job pipeline', 'do the whole job thing'). Applying only → start_applications; drafting "
+                "emails only → job_contacts; the dashboard only → open_dashboard."
+            ),
+            input_schema={"type": "object", "properties": {}, "required": []},
             execute=execute,
         )
 

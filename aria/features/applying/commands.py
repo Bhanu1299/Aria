@@ -2,6 +2,8 @@
 
 Pure code, zero tokens, never an agent tool: no LLM can submit or close anything.
 
+  run the (job) pipeline          the whole automation: bring-up, the application run and the
+                                  Contacts emails → drafts at once, one report at the end
   start applications / let's apply to some jobs   bring everything up (startup), re-attach tabs, start the run
   open my dashboard               start the job dashboard if it's down and show it (no run)
   pause / resume / stop           only while a run is active (else not claimed: music keeps them)
@@ -35,7 +37,7 @@ import aria.web.agent_browser as agent_browser
 from aria.dispatch.dispatcher import Partial
 from aria.dispatch.parse import normalize
 from aria.features import applicator
-from aria.features.applying import control, session, startup, tabs
+from aria.features.applying import control, job_pipeline, session, startup, tabs
 from aria.features.ats import submit as ats_submit
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,12 @@ _START = re.compile(
 _START_LEAD = re.compile(
     r"(?:(?!(?:don'?t|do|not|never|no|stop|why|how|when|what|should|did|didn'?t)\b)[\w']+ ){0,2}"
     r"(?:" + _START.pattern + r")")
+# "run the job pipeline": the whole automation (job_pipeline: applications + contact drafts).
+# Only "pipeline" words start it, so it's never confused with "start applying" or "draft emails".
+_PIPELINE = re.compile(
+    r"(?:(?:can you|could you|please|go|let'?s|let us|now|ok|okay) )*"
+    r"(?:run|start|kick off|launch|do|begin|fire up)(?: up)? (?:the |my )?(?:whole |full |entire )?"
+    r"(?:jobs? |job search |application )?pipe ?(?:line|layer)(?: (?:for|on) (?:my |the )?jobs)?(?: now)?(?: please)?")
 # Any negation anywhere blocks a start: only an explicit positive command opens a run.
 _NEGATION = re.compile(
     r"\b(?:not|no|never|nope|cannot|stop|dont|wont|cant|shouldnt|wouldnt|couldnt|isnt|arent|wasnt|"
@@ -507,6 +515,11 @@ def start_run(limit: Optional[int] = None) -> str:
     return session.start(_say, _voice_ask, limit=limit)
 
 
+def start_pipeline() -> str:
+    """The whole automation: bring-up, the application run and the Contacts drafts at once."""
+    return job_pipeline.start(_say, _voice_ask)
+
+
 def continue_application(said: str = "") -> str:
     """Pick an application back up in ITS tab — after the user cleared a sign-in, or when the
     site has a next step (Handshake's "Step 2: apply on the employer's site"). Re-runs the
@@ -565,6 +578,9 @@ def handle(text: str) -> Optional[str]:
 
     if _DASHBOARD.fullmatch(q):
         return startup.open_dashboard()
+
+    if _PIPELINE.fullmatch(q) and not _NEGATION.search(q):
+        return start_pipeline()
 
     if _START_LEAD.fullmatch(q) and not _NEGATION.search(q):
         return start_run()
