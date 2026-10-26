@@ -189,3 +189,21 @@ python -m aria.features.outreach contacts             # full pass
 Or say "find emails for my contacts" — it runs in the background while form-filling
 stays visible. Drafts land in the jobs Gmail (only if it is `OUTREACH_FROM`, default `GOOGLE_JOBS_ACCOUNT`); nothing is
 ever sent. Logic: `aria/features/outreach/contacts_tab.py`.
+
+## Job prep: tailored resume per job
+
+Needs poppler (`brew install poppler`: pdftotext, pdfinfo, pdffonts, pdfimages) and
+`reportlab` (in requirements.txt).
+
+- **Base resume.** The first time a job is prepared, Aria builds `~/.aria/resume_base.json`
+  from the PDF at `resume_path` (answer bank) — check it once: name, contact line, headline,
+  skill lines, every job / project with its dates and bullets. Edit the JSON to fix anything
+  the parser missed; delete it to rebuild from a new PDF.
+- **Per job.** Each application Aria fills gets `~/.aria/jobs/<JobID>-<company>/` with the
+  tailored `resume.pdf` it uploads, `changes.md` (skills added — brush up on these — and every
+  reworded bullet) and `checks.json` (ATS score before/after).
+- **Acceptance test.** `python scripts/manual_ats_test.py` (fictional fixture, code-only) ·
+  `--llm` (with GateLLM up) · `--resume ~/.aria/resume_base.json` (your own base) · `--out DIR`
+  to keep the PDFs. Exit code 0 = median ≥ 95, ≥ 80% ≥ 95, none < 85, one page, facts unchanged.
+- **Voice.** "draft my follow-ups" (jobs-Gmail drafts, never sent), "never apply to Acme",
+  "did anyone reply" (reply suggestions wait for Approve on the dashboard's Today tab).

@@ -475,7 +475,7 @@ every non-Greenhouse form (Ashby, Lever, Jobvite, JazzHR …).
 | your preferences (offices, deadlines) | answer bank | UNKNOWN → asked |
 | choice the bank doesn't cover | LLM picks an option from the resume | UNKNOWN → asked |
 | open_text ("why us", "best project") | frontier LLM, resume + job, char limit kept | **never asked**; written again, else FAILED |
-| upload | resume file (filename verified on the page) | asked |
+| upload | the job's tailored `resume.pdf` (job prep), else the base resume; a cover letter field gets `cover_letter.pdf` (filename verified on the page) | asked |
 | consent / agreement | the user ticks it when approving the submit | — |
 
 The LLM's profile is the answer bank plus the resume's text (`resume_text.py`,
@@ -589,6 +589,68 @@ port while Chrome runs.
   that job's LLM cost, keyed by sheet row. `daily_check.py report` prints
   per-row spend.
 
+### Job prep: a tailored resume, checked answers, follow-ups, reposts
+
+Design: `docs/job-prep-design.md`. Every application goes out with a resume tailored to its
+posting that scores ≥ 95 on a strict ATS check, answers that agree with that resume, and nothing
+wasted on dead, reposted or blocked jobs.
+
+```mermaid
+flowchart LR
+    JD["posting text<br/>(apply target / form)"] --> UT["untrusted.clean<br/>strip 'ignore previous…'"]
+    UT --> PR["resume.prepare<br/>~/.aria/jobs/&lt;JobID&gt;-&lt;co&gt;/"]
+    BASE["~/.aria/resume_base.json<br/>(built once from the PDF)"] --> PR
+    PR --> SC0{"base ATS ≥ 95?"}
+    SC0 -->|yes| USE["base, unchanged"]
+    SC0 -->|no| TL["tailor: skills merge · headline ·<br/>reorder · LLM rewrite (validated) ·<br/>code weave · one page"]
+    TL --> VF{"facts unchanged?<br/>score ≥ base?"}
+    VF -->|no| USE
+    VF -->|yes| PDF["resume.pdf (ReportLab,<br/>the base layout exactly)"]
+    USE --> PDF
+    PDF --> FILL["form fill uploads it<br/>(planner.resume_for)"]
+    FILL --> AC["answer_check: every number /<br/>employer / school / project on it"]
+```
+
+- **Per-job folder** (`aria/features/resume/prepare.py`): `resume.pdf`, `resume.json`,
+  `cover_letter.pdf` (only when a form asks), `changes.md` (skills added — what to brush up on —
+  then every reworded bullet old → new, dropped items, ATS before/after), `posting.txt`,
+  `checks.json` (ATS breakdown, fact check, injection flags, repost). Reused while the posting is
+  unchanged; folders of skipped/closed jobs older than 60 days are deleted at the start of a batch.
+  Any failure → the base resume, a line in the run log (`prepare resume` step); a fill never stops here.
+- **Renderer** (`render.py`): the base resume's measured layout (letter, Times 17/9.5/11.5, rule
+  x=42..570, bullets at 46/56, leading 11.2). Never shrinks: one page by dropping least-relevant
+  bullets, then the least-relevant project.
+- **Tailoring** (`tailor.py`): every JD skill (lexicon `skills_lexicon.json` + one small-tier pass,
+  `resume_skills_extract`) goes on the matching skill line and into a bullet in the JD's wording;
+  `resume_tailor` (strong) rewrites bullets as JSON, each validated in code (same numbers, same
+  names, ≤ 2 lines); whatever is still missing is woven in by code. Employers, titles, dates,
+  degrees, certifications and numbers are never changed (`tailor.verify`).
+- **Strict ATS check** (`ats_score.py`, pure code): parse 25 · hard skills 40 · title 10 ·
+  context 15 · format 10. Acceptance: `tests/test_ats_acceptance.py` /
+  `scripts/manual_ats_test.py` — 12 real-style JDs × 2 fictional resumes, median ≥ 95,
+  ≥ 80% ≥ 95, none < 85, one page, facts unchanged.
+- **Answer check** (`ats/answer_check.py`): every LLM-drafted or reused open-text answer is checked
+  against that job's `resume.json` (base if none); violations → one `answer_fix` rewrite → else
+  the offending sentences are dropped. Never asks, never leaves the field empty. The note lands in
+  the review and `<stem>.log.json` (which also records the job's `prepared` resume).
+- **Untrusted posting text** (`ats/untrusted.py`): every prompt carrying a JD, a form label or page
+  text wraps it in `<<<DATA … DATA>>>` with a system rule; instruction-like sentences are stripped
+  first and recorded in `checks.json` / the run log.
+- **Follow-ups** (`jobprep/followups.py`): Applied → follow-up 1 due in 7 business days, then 7 more,
+  max 2. "Draft my follow-ups" (direct route + `draft_followups` tool + the Today card) writes
+  jobs-Gmail drafts only — to the Contacts-tab contact, else a reply in the application thread —
+  with the job's tailored resume attached.
+- **Employer replies** (`jobprep/replies.py`): rules first (offer · rejected · interview · noise),
+  small tier (`reply_classify`) only when the rules can't tell; the suggested Status waits on
+  Today with Approve / Dismiss. Nothing is written to the sheet until Approve
+  (`JobSheet.set_cell`, row re-found by Job ID).
+- **Reposts** (`jobprep/reposts.py`): every row read / prepared → `postings_seen`; same company +
+  normalized title under 2+ URLs on 2+ dates within 90 days → flagged (Today card, end-of-run
+  line, run log), never skipped.
+- **Do-not-apply** (`jobprep/blocklist.py`): company (case/punctuation-insensitive) or domain (host
+  or subdomain). Batch runs skip hits and say so at the end; `apply_job` asks once ("still
+  apply?"). Voice: "never apply to Acme" (direct route) / the `do_not_apply` tool; Today card.
+
 ### Steps 2, 3, 5, 6 in detail: outreach
 
 `aria/features/outreach/pipeline.py` is the entry point ("do my outreach", the
@@ -621,7 +683,9 @@ port while Chrome runs.
 |---|---|---|
 | Google Sheet | the user's view: Status, Who to contact, Outreach, Updates | caches, logs |
 | Coldstart SQLite | contact cache, email pattern per domain, verification results | application state |
-| Aria `~/.aria/aria.db` | applications log, learned form answers (`learned_answers`), run and cost history | contacts |
+| Aria `~/.aria/aria.db` | applications log, learned form answers (`learned_answers`), run and cost history; job prep: `postings_seen`, `do_not_apply`, `followups`, `reply_suggestions` | contacts |
+| `~/.aria/resume_base.json` | the base resume as structured data (built once from the PDF; personal, never committed) | — |
+| `~/.aria/jobs/<JobID>-<company>/` | one prepared job: tailored resume.pdf/json, cover_letter.pdf, changes.md, posting.txt, checks.json | jobs Aria didn't prepare |
 
 Data is not duplicated across stores. Only what the user needs to see is synced
 into the sheet. The hand-written answer seed (`~/.aria/answer_bank.json`) is
@@ -636,7 +700,8 @@ fields, answer-bank lookups, the salary rule, dates, regex parsing of
 permutations, MX/SMTP checks, caching, reply detection and follow-up timing.
 
 An LLM is allowed only for:
-- **small:** picking an option for a background choice question from the resume; parse/rank fallbacks when regex fails or ties; reply classification
+- **small:** picking an option for a background choice question from the resume; parse/rank fallbacks when regex fails or ties; reply classification; JD skills the lexicon misses
+- **strong:** resume bullet rewrites (validated in code), cover letters, the one answer-check rewrite
 - **frontier:** every open-text form answer, from the resume; outreach emails
 - **vision:** only when the DOM fails
 
@@ -722,7 +787,10 @@ aria/
                         auto_dream · away_summary — the memory layers
   features/             applicator (apply → review → submit) · ats/ (detect · apply_target ·
                         adapters/ · form_engine · planner · greenhouse · answers · submit ·
-                        email_code · corrections) · answer_bank · jobs · briefing · media ·
+                        email_code · corrections · answer_check · untrusted) ·
+                        resume/ (model · skills + lexicon · render · ats_score · tailor · prepare ·
+                        cover_letter · acceptance) · jobprep/ (followups · replies · reposts ·
+                        blocklist) · answer_bank · jobs · briefing · media ·
                         mac_controller · coder · scenes · summarizer · tips
   system/               sleep_guard · prevent_sleep · keychain (portal logins, per tenant host)
   observability/        flight_recorder · wake_stats · run_log (pipeline steps + pick reasons → Live run tab)
