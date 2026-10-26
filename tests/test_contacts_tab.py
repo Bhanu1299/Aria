@@ -88,6 +88,8 @@ def coldstart(answers: dict):
     calls = []
 
     def handler(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"ok": True})
         body = json.loads(request.content)
         calls.append(body)
         a = answers[body["name"]]
@@ -337,6 +339,33 @@ def test_no_drafts_when_the_jobs_gmail_is_another_account(llm, monkeypatch):
     gmail = FakeGmail()
     run(sheet, coldstart({})[0], gmail)
     assert gmail.drafts == [] and svc.cell(2, "Draft status") == ""
+
+
+def test_no_drafts_without_a_sender_address(llm, monkeypatch):
+    monkeypatch.setattr(ct.config, "OUTREACH_FROM", "")
+    sheet, svc = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", find="done"))
+    gmail = FakeGmail()
+    _, lines = run(sheet, coldstart({})[0], gmail)
+    assert gmail.drafts == [] and any("OUTREACH_FROM" in l for l in lines)
+
+
+def test_coldstart_down_writes_nothing_and_leaves_rows_pending(llm):
+    sheet, svc = sheet_of(r("Acme", "Pat Lee", domain="acme.com"))
+    client, calls = coldstart({})
+    client.ensure_running = lambda: "Coldstart isn't running at http://cs.test (refused)"
+    out, _ = run(sheet, client)
+    assert calls == [] and svc.writes == [] and "isn't running" in out
+    assert ct.pending(sheet.records())[0]
+
+
+def test_real_coldstart_find_reply_is_understood(llm):
+    """The shape Coldstart's POST /find actually sends (extra keys, its own source names)."""
+    sheet, svc = sheet_of(r("Acme", "Pat Lee", domain="acme.com"))
+    client, _ = coldstart({"Pat Lee": {"email": "plee@acme.com", "status": "pattern_guess", "confidence": 0.41,
+                                       "pattern": "{f}{last}", "source": "pattern", "smtp_status": "catch_all"}})
+    run(sheet, client, draft=False)
+    assert (svc.cell(2, "Email"), svc.cell(2, "Confidence"), svc.cell(2, "Email pattern"), svc.cell(2, "Source")) == \
+        ("plee@acme.com", "pattern", "{f}{last}", "Coldstart (pattern)")
 
 
 def test_gmail_failure_leaves_the_row_undrafted_with_a_note(llm):

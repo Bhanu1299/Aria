@@ -306,8 +306,10 @@ def posting_text(url: str, client=None) -> str:
 def sender_problem(gmail) -> str:
     """'' when the jobs Gmail is OUTREACH_FROM, else why no draft may be made there."""
     want = (config.OUTREACH_FROM or "").strip().lower()
+    if not want:
+        return "OUTREACH_FROM (or GOOGLE_JOBS_ACCOUNT) isn't set in .env"
     have = (google_auth.account_email(getattr(gmail, "account", google_auth.JOBS)) or "").strip().lower()
-    if want and have != want:
+    if have != want:
         return f"the jobs Gmail is {have or 'not connected'}, not {want}"
     return ""
 
@@ -402,6 +404,12 @@ def run(
             + (f"; {len(skipped)} duplicate(s) skipped" if skipped else ""))
 
         seed_patterns(client, records)
+        if todo:
+            down = client.ensure_running()
+            if down:                            # nothing written: the rows stay pending for the next run
+                say(f"  {down}")
+                log.finish("error", down)
+                return f"{down}. Nothing was looked up or sent."
         with log.step("find emails") as s:
             for rec in todo:
                 say(f"4. find row {rec[ROW]}: {get(rec, PERSON)} at {get(rec, COMPANY)}")

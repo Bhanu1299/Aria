@@ -96,3 +96,30 @@ def test_cache_skipped_when_the_name_cannot_fill_the_pattern():
 ])
 def test_render(pattern, email):
     assert cs.render(pattern, "Pat O. Lee", "acme.com") == email
+
+
+def test_ensure_running_starts_a_local_coldstart_that_is_down(monkeypatch, tmp_path):
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "venv" / "bin" / "python").write_text("")
+    monkeypatch.setattr(cs.config, "COLDSTART_DIR", str(tmp_path))
+    monkeypatch.setattr(cs.config, "COLDSTART_AUTOSTART", True)
+    started = []
+    monkeypatch.setattr(cs, "_start", lambda python, port: started.append((str(python), port)))
+    up = [False]
+    c = cs.ColdstartClient(base_url="http://127.0.0.1:8765", sleep=lambda s: up.__setitem__(0, True))
+    c.health = lambda: "" if up[0] else "refused"
+    assert c.ensure_running() == ""
+    assert started == [(str(tmp_path / "venv" / "bin" / "python"), 8765)]
+
+
+def test_ensure_running_never_starts_a_remote_coldstart(monkeypatch):
+    monkeypatch.setattr(cs, "_start", lambda *a: pytest.fail("started a remote Coldstart"))
+    c = cs.ColdstartClient(base_url="http://coldstart.example.com")
+    c.health = lambda: "refused"
+    assert "isn't running" in c.ensure_running()
+
+
+def test_ensure_running_leaves_a_running_coldstart_alone(monkeypatch):
+    monkeypatch.setattr(cs, "_start", lambda *a: pytest.fail("started a second Coldstart"))
+    c, _ = _client(_reply({"ok": True}))
+    assert c.ensure_running() == ""

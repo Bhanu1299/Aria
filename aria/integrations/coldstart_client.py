@@ -7,7 +7,12 @@ Aria and Coldstart stay decoupled: the only contract is
          "confidence": 0.93, "pattern": "{first}.{last}"}          (extra keys ignored)
 
     client = ColdstartClient()
+    client.ensure_running() → ''                    or why Coldstart can't be reached
     client.find(name, company, domain) → Lookup     never raises; Lookup.error on failure
+
+ensure_running() starts a local Coldstart that's down (`python -m coldstart serve` from
+COLDSTART_DIR's venv, log ~/.aria/logs/coldstart.log) and stops it again when Aria exits.
+One you run by hand is left alone.
 
 Lookup.confidence is the sheet's label: verified | pattern | not found (pattern_guess
 and not_found are mapped). Calls are spaced at least COLDSTART_MIN_INTERVAL seconds
@@ -17,12 +22,16 @@ that domain from the cache without calling Coldstart.
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import re
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -43,6 +52,10 @@ _BARE = {
     "f.last": "{f}.{last}", "firstl": "{first}{l}", "first.l": "{first}.{l}", "last.first": "{last}.{first}",
     "lastfirst": "{last}{first}", "lastf": "{last}{f}", "fl": "{f}{l}",
 }
+_LOGFILE = Path.home() / ".aria" / "logs" / "coldstart.log"
+_START_TIMEOUT = 30.0
+_start_lock = threading.Lock()
+_proc: Optional[subprocess.Popen] = None
 _TOKEN = re.compile(r"\{(first|last|f|l|first_initial|last_initial)\}")
 
 
@@ -185,6 +198,28 @@ class ColdstartClient:
                     out.email or out.error)
         return out
 
+    def ensure_running(self) -> str:
+        """'' once Coldstart answers /health, starting a local one if it's down; else why not."""
+        why = self.health()
+        if not why:
+            return ""
+        port = _local_port(self.base_url)
+        python = Path(config.COLDSTART_DIR) / "venv" / "bin" / "python"
+        if not (config.COLDSTART_AUTOSTART and port and python.exists()):
+            return f"Coldstart isn't running at {self.base_url} ({why})"
+        with _start_lock:
+            if _proc is None or _proc.poll() is not None:
+                _start(python, port)
+            deadline = self._clock() + _START_TIMEOUT
+            while self._clock() < deadline:
+                if not self.health():
+                    logger.info("coldstart: started at %s", self.base_url)
+                    return ""
+                if _proc is not None and _proc.poll() is not None:
+                    break
+                self._sleep(0.5)
+        return f"Coldstart didn't start at {self.base_url}; see {_LOGFILE}"
+
     def health(self) -> str:
         """'' when Coldstart answers GET /health, else why not."""
         http = self._client or httpx.Client()
@@ -196,3 +231,32 @@ class ColdstartClient:
         finally:
             if self._client is None:
                 http.close()
+
+
+def _local_port(base_url: str) -> Optional[int]:
+    u = urlparse(base_url)
+    return (u.port or 80) if u.hostname in ("127.0.0.1", "localhost") else None
+
+
+def _start(python: Path, port: int) -> None:
+    global _proc
+    _LOGFILE.parent.mkdir(parents=True, exist_ok=True)
+    log = open(_LOGFILE, "ab")
+    _proc = subprocess.Popen([str(python), "-m", "coldstart", "serve", "--port", str(port)],
+                             cwd=config.COLDSTART_DIR, stdout=log, stderr=subprocess.STDOUT,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+    log.close()
+    logger.info("coldstart: starting (pid %s, port %s)", _proc.pid, port)
+
+
+@atexit.register
+def stop() -> None:
+    """Stop the Coldstart Aria started, if any."""
+    global _proc
+    if _proc is not None and _proc.poll() is None:
+        _proc.terminate()
+        try:
+            _proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _proc.kill()
+    _proc = None
