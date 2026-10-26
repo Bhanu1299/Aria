@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 NOTE_LIMIT = 300                 # LinkedIn's connection-note cap
 EMAIL_WORDS = (60, 100)          # greeting to the ask, signature not counted
-SUBJECT_CHARS = 45
+SUBJECT_CHARS = 50
 GENERIC, HIRING, ENGINEER = "generic inbox", "hiring", "engineer"
 _PROFILE_KEYS = ("preferred_name", "first_name", "last_name", "school", "degree", "grad_date",
                  "years_experience", "current_company", "location", "linkedin", "github")
@@ -67,6 +67,24 @@ _SIGNOFF = re.compile(r"(?im)^\s*(best|thanks|thank you|regards|cheers|sincerely
 _BANNED = re.compile(
     r"(?i)hope this (?:email |message )?finds you|passion|excit|reaching out|strong fit|leverag"
     r"|innovat|revolutioni[sz]|great addition|amazing|impressive|impressed")
+# Subjects that read like a pitch (user, 2026-10-26: "feels like I'm selling something").
+_SALESY_SUBJECT = re.compile(
+    r"(?i)\b(?:solution|opportunit|proposal|partner|help(?:ing)? you|value|boost|streamlin|unlock|transform|"
+    r"grow(?:th)?|scal(?:e|ing) your|improv\w* your|reduc\w+|optimi[sz]\w*|roi|synerg|offer|demo|"
+    r"collaborat|introduc)|^\s*(?:re|fwd?)\s*:|[:!]")
+
+
+def subject_problem(subject: str) -> str:
+    """Why `subject` reads like a sales email, or "" when it's fine."""
+    m = _SALESY_SUBJECT.search(subject or "")
+    if m:
+        return f"salesy ({m.group(0).strip()!r})"
+    words_ = [w for w in re.findall(r"[A-Za-z][A-Za-z']*", subject or "") if len(w) > 3]
+    if len(words_) >= 3 and all(w[0].isupper() for w in words_):
+        return "title case"
+    return ""
+
+
 _HIRING_TITLE = re.compile(r"(?i)recruit|talent|hiring|people|\bhr\b|human resources|manager|head of|director|vp\b|"
                            r"president|chief|\bc[eitfo]o\b")
 _NUMBER = re.compile(r"\d[\d,.]*")
@@ -79,9 +97,13 @@ _EMAIL_SYSTEM = (
     "You write a short cold email from an engineer who just applied for a role, to someone at "
     "that company. Write like one engineer to another: short sentences, contractions fine, "
     "curious not flattering, specific not impressive. Output exactly:\n"
-    "SUBJECT: <under 45 characters, lowercase is fine. Name THEIR problem, not the candidate "
-    "(e.g. \"triaging 911 surges\", \"acme's routing layer\", \"re: <signal topic>\"). Never "
-    "the word application.>\n\n"
+    "SUBJECT: <under 50 characters, lowercase. It reads like a note from a curious person, not a "
+    "pitch: warm and a little intriguing — a genuine question about their work, a small shared-"
+    "interest hook, or a hint of the candidate's own work that connects to theirs (e.g. "
+    "\"curious how you triage 911 calls\", \"i built a tiny cousin of your planner\", \"a fellow "
+    "agent tinkerer says hi\"). Never a problem statement or value pitch (\"reducing X\", "
+    "\"scaling your Y\"), never sales words (solution, opportunity, proposal, partner, help you, "
+    "value), no \"re:\", no colon, no exclamation mark, never the word application.>\n\n"
     "<line 1>\n\n<line 2>\n\n<line 3>\n\n"
     "Line 1 (one sentence): show you understand what they're solving, in your own words. Use the Signal if it "
     "fits. Never restate their marketing copy. If the recipient is a recruiter or manager, talk "
@@ -225,8 +247,9 @@ def _clean(text: str) -> str:
 
 
 def words(text: str) -> set:
-    """Content words (4+ letters, common filler dropped), lowercased."""
-    return {w for w in _WORD.findall((text or "").lower()) if w not in _STOP}
+    """Content words (4+ letters, common filler dropped), lowercased, plurals folded
+    ("dealerships" matches "dealership")."""
+    return {re.sub(r"(?<=[^s])s$", "", w) for w in _WORD.findall((text or "").lower()) if w not in _STOP}
 
 
 def _numbers(text: str) -> set:
@@ -412,10 +435,13 @@ def _validator(brief: Brief, p: Plan):
 
     def no(why: str):
         logger.warning("outreach: %s email rejected — %s", brief.company, why)
+        check.why = why
         return None
 
     def check(text: str):
         parts = [p.strip() for p in _clean(text).split("\n\n") if p.strip()]
+        if len(parts) != 4:                         # some models break the lines with single newlines
+            parts = [p.strip() for p in _clean(text).split("\n") if p.strip()]
         m = re.match(r"(?i)^subject:\s*(.+)$", parts[0]) if parts else None
         if not m or len(parts) != 4:
             return no(f"shape: {len(parts)} blocks, subject line {'found' if m else 'missing'}")
@@ -423,6 +449,8 @@ def _validator(brief: Brief, p: Plan):
         prose = " ".join(lines)
         if not subject or len(subject) >= SUBJECT_CHARS or "application" in subject.lower():
             return no(f"subject: {subject!r}")
+        if subject_problem(subject):
+            return no(f"subject {subject!r} is {subject_problem(subject)}")
         if any(_GREETING.match(l) or _SIGNOFF.search(l) for l in lines) or _PLACEHOLDER.search(prose + subject):
             return no("greeting / sign-off / placeholder in the body")
         if _BANNED.search(prose + " " + subject) or re.search(r"(?i)\bresume attached|\bI applied\b", prose):
@@ -440,6 +468,7 @@ def _validator(brief: Brief, p: Plan):
         if not EMAIL_WORDS[0] <= n <= EMAIL_WORDS[1]:
             return no(f"{n} words (want {EMAIL_WORDS[0]}–{EMAIL_WORDS[1]})")
         return subject, lines
+    check.why = ""
     return check
 
 
@@ -451,10 +480,19 @@ def email(brief: Brief, to: str, p: Optional[Plan] = None) -> Optional[dict]:
         logger.info("outreach: %s needs research (%s)", brief.company, ", ".join(missing(brief)))
         return None
     p = p or plan(brief)
+    check = _validator(brief, p)
+    messages = [{"role": "user", "content": _input(brief, p)}]
     try:
-        _resp, out = llm_client.complete_checked(
-            "outreach_email", [{"role": "user", "content": _input(brief, p)}],
-            validate=_validator(brief, p), system=_EMAIL_SYSTEM, max_tokens=500)
+        resp, out = llm_client.complete_checked(
+            "outreach_email", messages, validate=check, system=_EMAIL_SYSTEM, max_tokens=500)
+        if out is None and check.why and (resp.text or "").strip():
+            # One rewrite with the reason it was refused (models miscount words).
+            messages += [{"role": "assistant", "content": resp.text},
+                         {"role": "user", "content": f"That was refused: {check.why}. Rewrite it in "
+                                                     "the same format, fixing only that."}]
+            resp = llm_client.complete(messages, task="outreach_email", max_tokens=500,
+                                       system=_EMAIL_SYSTEM)
+            out = check(resp.text or "") if resp.stop_reason != "error" else None
     except Exception as exc:
         logger.error("outreach: email for %s failed: %s", brief.company, exc)
         return None

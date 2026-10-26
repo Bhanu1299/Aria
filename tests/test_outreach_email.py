@@ -52,8 +52,33 @@ def _llm(monkeypatch, text):
     def complete_checked(task, messages, validate, system=None, max_tokens=1024):
         calls.append({"task": task, "content": messages[0]["content"], "system": system})
         return SimpleNamespace(text=text, stop_reason="end_turn"), validate(text)
+
+    def complete(messages, task=None, max_tokens=1024, system=None):    # the one rewrite
+        calls.append({"task": task, "content": messages[-1]["content"], "system": system})
+        return SimpleNamespace(text=text, stop_reason="end_turn")
     monkeypatch.setattr(writer.llm_client, "complete_checked", complete_checked)
+    monkeypatch.setattr(writer.llm_client, "complete", complete)
     return calls
+
+
+def test_a_refused_draft_is_rewritten_once_with_the_reason(monkeypatch):
+    long = OUT.replace(LINES, LINES + " " + "really " * 40)
+    sent = []
+
+    def complete_checked(task, messages, validate, system=None, max_tokens=1024):
+        return SimpleNamespace(text=long, stop_reason="end_turn"), validate(long)
+
+    def complete(messages, task=None, max_tokens=1024, system=None):
+        sent.append((task, messages))
+        return SimpleNamespace(text=OUT, stop_reason="end_turn")
+    monkeypatch.setattr(writer.llm_client, "complete_checked", complete_checked)
+    monkeypatch.setattr(writer.llm_client, "complete", complete)
+    msg = writer.email(brief(), "max@aurelian.io")
+    assert msg and msg["subject"] == "triaging non-emergency 911 calls"
+    task, messages = sent[0]
+    assert task == "outreach_email" and len(sent) == 1
+    assert messages[1] == {"role": "assistant", "content": long}
+    assert "words (want 60–100)" in messages[2]["content"]
 
 
 def test_the_email_is_the_spec_frame_around_the_llm_lines(monkeypatch):
@@ -107,7 +132,7 @@ def test_no_problem_or_angle_means_no_email_and_no_llm_call(monkeypatch, missing
 
 @pytest.mark.parametrize("bad", [
     OUT.replace("SUBJECT: triaging non-emergency 911 calls", "SUBJECT: my application for the SWE role"),
-    OUT.replace("SUBJECT: triaging non-emergency 911 calls", "SUBJECT: " + "x" * 45),
+    OUT.replace("SUBJECT: triaging non-emergency 911 calls", "SUBJECT: " + "x" * writer.SUBJECT_CHARS),
     OUT.replace("SUBJECT: triaging non-emergency 911 calls\n\n", ""),                         # no subject
     OUT.replace("\n\nVoice that has to be right the first time is the problem I keep coming back to.", ""),  # 2 lines
     OUT.replace("Dispatchers at", "Hi Max,\n\nDispatchers at"),                               # its own greeting
@@ -177,7 +202,7 @@ def test_the_llm_sees_only_the_chosen_work_never_the_whole_history(monkeypatch):
     calls = _llm(monkeypatch, OUT)
     writer.email(brief(role="Backend Engineer", problem="Checkout APIs slow down under load",
                        angle="Appetit: loyalty tables"), "x@y.io")
-    c = calls[-1]["content"]
+    c = next(x["content"] for x in calls if x["content"].startswith("Company:"))
     assert calls[-1]["task"] == "outreach_email"
     assert "Software Engineer Intern at Appetit" in c and "Loyalty tables, CI/CD." in c
     assert "LLM Gateway" not in c and "Draw.AI" not in c and "AppsTek" not in c
@@ -193,8 +218,33 @@ def _judge(monkeypatch, verdict, email_out=OUT):
         text = (verdict if isinstance(verdict, str) else json.dumps(verdict)) if task == "outreach_angle_judge" \
             else email_out
         return SimpleNamespace(text=text, stop_reason="end_turn"), validate(text)
+
+    def complete(messages, task=None, max_tokens=1024, system=None):    # the one rewrite
+        calls.append({"task": task, "content": messages[-1]["content"], "system": system})
+        return SimpleNamespace(text=text, stop_reason="end_turn")
     monkeypatch.setattr(writer.llm_client, "complete_checked", complete_checked)
+    monkeypatch.setattr(writer.llm_client, "complete", complete)
     return calls
+
+
+def test_a_refused_draft_is_rewritten_once_with_the_reason(monkeypatch):
+    long = OUT.replace(LINES, LINES + " " + "really " * 40)
+    sent = []
+
+    def complete_checked(task, messages, validate, system=None, max_tokens=1024):
+        return SimpleNamespace(text=long, stop_reason="end_turn"), validate(long)
+
+    def complete(messages, task=None, max_tokens=1024, system=None):
+        sent.append((task, messages))
+        return SimpleNamespace(text=OUT, stop_reason="end_turn")
+    monkeypatch.setattr(writer.llm_client, "complete_checked", complete_checked)
+    monkeypatch.setattr(writer.llm_client, "complete", complete)
+    msg = writer.email(brief(), "max@aurelian.io")
+    assert msg and msg["subject"] == "triaging non-emergency 911 calls"
+    task, messages = sent[0]
+    assert task == "outreach_email" and len(sent) == 1
+    assert messages[1] == {"role": "assistant", "content": long}
+    assert "words (want 60–100)" in messages[2]["content"]
 
 
 CARMAX = dict(company="CarMax", role="Analyst Rotation Program",
@@ -276,3 +326,25 @@ def test_line_one_may_ground_in_the_angles_company_side(monkeypatch):
     assert check(f"SUBJECT: routing ai at meijer scale\n\n{line1}\n\n{line2}\n\n{line3}")
     only_project = "Routing prompts between small and frontier models gets expensive when nothing caches anything."
     assert check(f"SUBJECT: routing ai at meijer scale\n\n{only_project}\n\n{line2}\n\n{line3}") is None
+
+
+def test_subjects_that_read_like_a_pitch_are_refused():
+    for bad in ("reducing triage time for 911 centers", "a solution for your routing layer",
+                "re: your search stack", "Quick Question About Search", "loved your planner!",
+                "glean: search quality", "an opportunity to talk agents"):
+        assert writer.subject_problem(bad), bad
+    for good in ("curious how you triage 911 calls", "i built a tiny cousin of your planner",
+                 "a fellow agent tinkerer says hi", "triaging non-emergency 911 calls"):
+        assert writer.subject_problem(good) == "", good
+
+
+def test_lines_split_by_single_newlines_are_read():
+    b = brief()
+    check = writer._validator(b, writer.plan(b))
+    assert check(OUT) is not None
+    assert check(OUT.replace("\n\n", "\n")) == check(OUT)
+
+
+def test_plurals_count_as_the_same_word():
+    assert writer.words("Dealerships and programs") == writer.words("a dealership program")
+    assert "process" in writer.words("the sales process")
