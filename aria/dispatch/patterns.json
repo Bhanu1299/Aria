@@ -56,6 +56,10 @@
     {"id": "app_quit", "tool": "system_control", "params": {"action": "quit_app", "app_name": "{app_name}"},
      "regex": "(?:quit|close|exit) (?!my |the |a |this |that |it |all |every |full ?screen)(?!.*\\band\\b)(?P<app_name>[a-z0-9][a-z0-9 &'+-]{0,30})"},
 
+    {"id": "draft_followups", "tool": "draft_followups", "params": {},
+     "regex": "(?:draft|write|prepare) (?:my |the |all )?follow[- ]?ups?(?: emails?)?(?: for (?:my )?(?:applications|jobs))?"},
+    {"id": "never_apply", "tool": "do_not_apply", "params": {"action": "add", "company": "{company}"},
+     "regex": "(?:never|don't|do not|dont) (?:ever )?apply (?:to|at|for) (?!(?:them|it|this|that|those|these|this one|that one|here|there)\\b)(?P<company>[a-z0-9][a-z0-9 .&'-]{0,40}?)(?: again| ever)?"},
     {"id": "apply_next_job", "tool": "apply_job", "params": {},
      "regex": "apply (?:to|for) (?:the )?next (?:job|one|role|position)(?: (?:from|on|in) (?:muse|the muse sheet|my (?:job )?(?:list|sheet)|the sheet))?"},
     {"id": "apply_sheet_row", "tool": "apply_job", "params": {"row": "{row:int}"},

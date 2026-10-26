@@ -110,6 +110,17 @@ def _note(run, msg: str, status: str = "ok") -> None:
     logger.info("prepare: %s", msg)
 
 
+def _repost(job: dict) -> Optional[dict]:
+    """Records the posting (postings_seen) and says whether it looks reposted. Never raises."""
+    try:
+        from aria.features.jobprep import reposts
+        reposts.record(job)
+        return reposts.is_repost(job.get("company", ""), job.get("role", ""))
+    except Exception as exc:
+        logger.warning("prepare: repost check failed: %s", exc)
+        return None
+
+
 def prepare(job: dict, jd_text: str, title: str = "", use_llm: bool = True, base: Optional[dict] = None,
             run=None, base_pdf: Optional[str] = None) -> Prepared:
     started = time.monotonic()
@@ -128,6 +139,7 @@ def prepare(job: dict, jd_text: str, title: str = "", use_llm: bool = True, base
             _note(run, f"fallback to the base resume: {out.fallback}", "error")
             return out
         title = title or job.get("role", "")
+        repost = _repost(job)
         cleaned, flags = untrusted.clean(jd_text or "")
         out.injection_flags = flags
         folder = job_dir(job)
@@ -181,7 +193,7 @@ def prepare(job: dict, jd_text: str, title: str = "", use_llm: bool = True, base
                   "title": title, "score_before": out.score_before, "score_after": out.score_after,
                   "used_base": out.used_base, "fallback": out.fallback, "added_skills": out.added_skills,
                   "before": before, "after": after, "fact_check": problems,
-                  "injection_flags": flags, "llm_used": bool(t and t.llm_used),
+                  "injection_flags": flags, "repost": repost, "llm_used": bool(t and t.llm_used),
                   "dropped": t.dropped if t else [], "seconds": round(time.monotonic() - started, 2),
                   "prepared_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
         checks_path.write_text(json.dumps(checks, indent=1, default=str))
@@ -190,6 +202,8 @@ def prepare(job: dict, jd_text: str, title: str = "", use_llm: bool = True, base
         if not out.fallback:
             _note(run, f"ATS {out.score_before} → {out.score_after}"
                        + (" (base unchanged)" if out.used_base else f", {len(out.added_skills)} skills added"))
+        if repost:
+            _note(run, f"looks reposted: {repost['count']} postings since {repost['dates'][0]}")
         if flags:
             _note(run, f"posting had {len(flags)} instruction-like sentence(s), stripped: {flags[0][:120]}")
         return out

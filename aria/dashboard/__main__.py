@@ -10,11 +10,15 @@ Endpoints:
   GET  /api/sheet?tab=jobs|applied                  the Muse sheet tab, read fresh (Sheet tab polls it)
   POST /api/sheet/move_applied {}                   every Jobs row marked Applied → the Applied tab
   POST /api/sheet/cell      {tab, row, column, value, expect, company, role}   one sheet cell
+  POST /api/jobprep         {op, ...}               follow-up drafts, reply Approve/Dismiss (the sheet's
+                                                    Status), do-not-apply list (dashboard/jobprep.py)
   GET  /review-img?f=x.png  a review screenshot / field crop from ~/.aria/reviews
   GET  /health
 
 The only writes: GateLLM keys/tiers (settings.py), the answer bank (answers.py →
-aria.features.answer_bank) and single Muse sheet cells (sheet_tab.py → Sheets API). Everything
+aria.features.answer_bank), single Muse sheet cells (sheet_tab.py → Sheets API; an approved
+reply's Status via jobprep.py) and job prep state in aria.db (follow-ups, replies, do-not-apply)
+plus jobs-Gmail drafts. Everything
 else is read-only.
 
 Every request must carry a Host of 127.0.0.1/localhost on our port (DNS rebinding);
@@ -67,7 +71,7 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
             built[key] = render._no_data(f"{type(exc).__name__}: {exc}")
 
     questions = answers.open_count(srcs.get("reviews"))
-    guard("today", lambda: today.render(mdl, questions) + render.today_extras(mdl))
+    guard("today", lambda: today.render(mdl, questions) + _jobprep(mdl) + render.today_extras(mdl))
     guard("outreach", lambda: outreach.render(mdl))
     guard("answers", lambda: answers.render(srcs.get("reviews")))
     guard("sheet", sheet_tab.render)
@@ -83,6 +87,16 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
     guard("costs", costs_html)
     guard("settings", lambda: tabs.settings_tab(st.providers(), st.tiers()))
     return render.page(mdl, built, token, badges(mdl, questions))
+
+
+def _jobprep(mdl: dict) -> str:
+    """Follow-ups, employer replies, reposts and the do-not-apply list — never breaks Today."""
+    from aria.dashboard import jobprep
+    try:
+        return jobprep.render(mdl)
+    except Exception:
+        logger.exception("dashboard: job prep cards failed")
+        return ""
 
 
 def badges(mdl: dict, questions: Optional[int]) -> dict:
@@ -114,6 +128,15 @@ def runs_json() -> dict:
 def settings_action(path: str, body: dict) -> tuple:
     """(status, json) for a POST: GateLLM settings, answer-bank edits or a sheet cell — the only writes."""
     from aria.dashboard import answers, sheet_tab
+    if path == "/api/jobprep":
+        from aria.dashboard import jobprep
+        try:
+            return 200, jobprep.act(body)
+        except jobprep.JobPrepError as exc:
+            return 400, {"error": str(exc)}
+        except Exception as exc:
+            logger.error("dashboard: job prep action failed: %s", type(exc).__name__)
+            return 500, {"error": f"failed: {type(exc).__name__}: {str(exc)[:120]}"}
     if path == "/api/sheet/move_applied":
         return 200, sheet_tab.move_applied()
     if path == "/api/sheet/cell":

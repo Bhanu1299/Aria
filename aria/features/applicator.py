@@ -634,7 +634,17 @@ def mark_applied(entry: dict, note: str) -> str:
     err = _sheet_update_now(_job_of(entry), sheets.STATUS_APPLIED, note)
     if not err:
         tabs.update(entry["id"], sheet_marked=True)
+        schedule_followup(_job_of(entry))
     return err
+
+
+def schedule_followup(job: dict) -> None:
+    """The job turned Applied: follow-up 1 due in 7 business days (jobprep.followups). Never raises."""
+    try:
+        from aria.features.jobprep import followups
+        followups.on_applied(job)
+    except Exception as exc:
+        logger.warning("applicator: follow-up schedule failed: %s", exc)
 
 
 @_logged_followup("skip")

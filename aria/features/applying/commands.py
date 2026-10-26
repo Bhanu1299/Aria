@@ -362,6 +362,8 @@ def _write_mark(job: dict, entry: Optional[dict], status: str) -> str:
             row = sheets.set_status(int(job["row"]), status, f"you said {status.lower()} (voice)",
                                     company=job.get("company") or None, role=job.get("role") or None,
                                     job_id=job.get("job_id") or None)
+            if status == sheets.STATUS_APPLIED:
+                applicator.schedule_followup(job)
     except sheets.SheetError as exc:
         return str(exc)
     except Exception as exc:

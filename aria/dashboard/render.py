@@ -473,13 +473,13 @@ def page(mdl: dict, tabs: Optional[dict] = None, token: str = "", badges: Option
             f'Loaded {mdl["now"]:%b %d, %H:%M}</span>{state}'
             f'<button id="themebtn" class="themebtn" type="button">{icon("theme")}<span class="txt">Light theme</span></button></div>')
     meta = f'<meta name="dashboard-token" content="{e(token)}">' if token else ""
-    from aria.dashboard import answers as ans, applications as apps, sheet_tab
+    from aria.dashboard import answers as ans, applications as apps, jobprep, sheet_tab
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="dark light">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}<title>Job Pipeline</title>'
-            f'<script>{THEME_BOOT}</script>{FONTS}<style>{CSS}{tabmod.TABS_CSS}{ans.CSS}{sheet_tab.CSS}</style></head><body>'
+            f'<script>{THEME_BOOT}</script>{FONTS}<style>{CSS}{tabmod.TABS_CSS}{ans.CSS}{sheet_tab.CSS}{jobprep.CSS}</style></head><body>'
             f'<div class="shell"><aside class="side"><div class="logo"><span class="mark"></span><span class="t">Job pipeline</span></div>'
             f'<nav class="tabs">{nav}</nav>{foot}</aside><main>{"".join(panes)}</main></div>'
-            f'<script>{tabmod.TABS_JS}{JS}{SUBTABS_JS}{THEME_JS}{tabmod.LIVE_JS}{tabmod.SETTINGS_JS}{ans.JS}{apps.JS}{sheet_tab.JS}'
+            f'<script>{tabmod.TABS_JS}{JS}{SUBTABS_JS}{THEME_JS}{tabmod.LIVE_JS}{tabmod.SETTINGS_JS}{ans.JS}{apps.JS}{sheet_tab.JS}{jobprep.JS}'
             '</script></body></html>')
 
 

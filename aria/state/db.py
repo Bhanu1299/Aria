@@ -12,6 +12,10 @@ Tables owned here:
   answer_changes   — every edit to the answer bank (dashboard / review), for history + undo
   generated_answers — LLM-written open-text form answers, reused on the same question
   apply_corrections — every apply failure (unknown ATS, unmapped field, wall, timeout), to fix after a batch
+  postings_seen    — every job posting Aria read or prepared, to spot reposts (features/jobprep/reposts.py)
+  do_not_apply     — companies / domains never applied to (features/jobprep/blocklist.py)
+  followups        — follow-up emails due after an application (features/jobprep/followups.py)
+  reply_suggestions — employer replies classified, sheet status waiting for the user's Approve
 """
 
 from __future__ import annotations
@@ -122,6 +126,64 @@ CREATE TABLE IF NOT EXISTS apply_corrections (
 """
 
 
+_CREATE_POSTINGS_SEEN = """
+CREATE TABLE IF NOT EXISTS postings_seen (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    company    TEXT    NOT NULL DEFAULT '',
+    role       TEXT    NOT NULL DEFAULT '',
+    url        TEXT    NOT NULL DEFAULT '',
+    url_key    TEXT    NOT NULL UNIQUE,      -- host + path, lowercased (no query)
+    first_seen TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_seen  TEXT    NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+_CREATE_DO_NOT_APPLY = """
+CREATE TABLE IF NOT EXISTS do_not_apply (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    value      TEXT    NOT NULL UNIQUE,      -- normalized company name, or a domain
+    label      TEXT    NOT NULL DEFAULT '',  -- as the user said / typed it
+    scope      TEXT    NOT NULL DEFAULT 'company',   -- company | domain
+    reason     TEXT    NOT NULL DEFAULT '',
+    since      TEXT    NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+_CREATE_FOLLOWUPS = """
+CREATE TABLE IF NOT EXISTS followups (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id     TEXT    NOT NULL,             -- sheet Job ID, else "company|role"
+    company    TEXT    NOT NULL DEFAULT '',
+    role       TEXT    NOT NULL DEFAULT '',
+    n          INTEGER NOT NULL DEFAULT 1,   -- 1st or 2nd follow-up (max 2)
+    applied_at TEXT    NOT NULL,
+    next_due   TEXT    NOT NULL,
+    done_at    TEXT,
+    draft_link TEXT    NOT NULL DEFAULT '',
+    UNIQUE (job_id, n)
+)
+"""
+
+_CREATE_REPLY_SUGGESTIONS = """
+CREATE TABLE IF NOT EXISTS reply_suggestions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id           TEXT    NOT NULL DEFAULT '',
+    company          TEXT    NOT NULL DEFAULT '',
+    role             TEXT    NOT NULL DEFAULT '',
+    row              INTEGER,
+    thread_id        TEXT    NOT NULL UNIQUE,  -- Gmail message / thread id
+    subject          TEXT    NOT NULL DEFAULT '',
+    sender           TEXT    NOT NULL DEFAULT '',
+    kind             TEXT    NOT NULL,         -- interview | rejected | offer | noise
+    by               TEXT    NOT NULL DEFAULT 'rules',   -- rules | llm
+    suggested_status TEXT    NOT NULL DEFAULT '',
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    approved_at      TEXT,
+    rejected_at      TEXT
+)
+"""
+
+
 def get_connection() -> sqlite3.Connection:
     """
     Open (creating if needed) ~/.aria/aria.db, ensure all tables exist,
@@ -140,5 +202,9 @@ def get_connection() -> sqlite3.Connection:
     conn.execute(_CREATE_ANSWER_CHANGES)
     conn.execute(_CREATE_GENERATED_ANSWERS)
     conn.execute(_CREATE_APPLY_CORRECTIONS)
+    conn.execute(_CREATE_POSTINGS_SEEN)
+    conn.execute(_CREATE_DO_NOT_APPLY)
+    conn.execute(_CREATE_FOLLOWUPS)
+    conn.execute(_CREATE_REPLY_SUGGESTIONS)
     conn.commit()
     return conn

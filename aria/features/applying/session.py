@@ -64,8 +64,21 @@ def _is_new(job: dict) -> bool:
     return re.sub(r"\s+", " ", str(job.get("status") or "")).strip().lower() in _NEW
 
 
-def select_jobs(rows: list, limit: int) -> list:
-    picked = [r for r in rows if _is_new(r) and not tabs.is_open_for(r)]
+def select_jobs(rows: list, limit: int, blocked: Optional[list] = None) -> list:
+    """New rows not open in a tab and not on the do-not-apply list, best fit first. blocked:
+    when given, gets (row, list entry) for every new row the list held back."""
+    from aria.features.jobprep import blocklist
+    listed = blocklist.entries()
+    picked = []
+    for r in rows:
+        if not _is_new(r) or tabs.is_open_for(r):
+            continue
+        hit = blocklist.hit(r, listed)
+        if hit is not None:
+            if blocked is not None:
+                blocked.append((r, hit))
+            continue
+        picked.append(r)
     picked.sort(key=lambda r: (-fit(r), r.get("row") or 0))
     return picked[:max(0, limit)]
 
@@ -87,25 +100,57 @@ def start(say: Callable[[str], None], voice_ask: Optional[Callable[[str], str]] 
         room = min(room, limit)
     if room <= 0:
         return f"You have {MAX_OPEN_TABS} application tabs open. Close some first: say close it or close all."
+    blocked: list = []
     try:
-        jobs = select_jobs(sheets.default_sheet().jobs(), room)
+        rows = sheets.default_sheet().jobs()
+        jobs = select_jobs(rows, room, blocked)
     except sheets.SheetError as exc:
         return str(exc)
     except Exception as exc:
         logger.error("start applications: sheet read failed: %s", exc)
         return "I couldn't read your job sheet right now."
+    _housekeeping(rows)
     if not jobs:
-        return "There are no new jobs in your sheet that aren't already open in a tab."
+        held = f" {_blocked_line(blocked)}" if blocked else ""
+        return "There are no new jobs in your sheet that aren't already open in a tab." + held
 
     ctl = control.RunControl()
     ctl.wait_walls = False
     control.current = ctl
-    _thread = threading.Thread(target=_run, args=(jobs, say, voice_ask, ctl, finish_fn), daemon=True, name="aria-apply-run")
+    _thread = threading.Thread(target=_run, args=(jobs, say, voice_ask, ctl, finish_fn, blocked), daemon=True,
+                               name="aria-apply-run")
     _thread.start()
     n = len(jobs)
     return (f"Starting {n} application{'s' if n != 1 else ''}, best fit first: {_names(jobs)}. "
             "I won't stop for sign-ins or checks; I'll tell you what's ready and what's stuck at the end. "
             "Nothing gets submitted.")
+
+
+def _housekeeping(rows: list) -> None:
+    """Every row read → postings_seen (reposts); old job-prep folders of jobs not applied to
+    are deleted. Never raises."""
+    try:
+        from aria.features.jobprep import reposts
+        from aria.features.resume import prepare
+        reposts.record_many(rows)
+        prepare.cleanup({str(r.get("job_id") or ""): str(r.get("status") or "") for r in rows if r.get("job_id")})
+    except Exception as exc:
+        logger.warning("apply run: housekeeping failed: %s", exc)
+
+
+def _blocked_line(blocked: list) -> str:
+    names = [r.get("company") or "?" for r, _e in blocked]
+    return (f"Skipped {len(names)} on your do-not-apply list: {_list_names(names)}." if names else "")
+
+
+def _repost_line(jobs: list) -> str:
+    try:
+        from aria.features.jobprep import reposts
+        names = [j.get("company") or "?" for j in jobs if reposts.is_repost(j.get("company", ""), j.get("role", ""))]
+    except Exception:
+        return ""
+    return (f" {_list_names(names)} look{'s' if len(names) == 1 else ''} reposted — worth a second look."
+            if names else "")
 
 
 def _note(msg: str) -> None:
@@ -199,7 +244,7 @@ def _missing(ids: list) -> list:
 
 
 def _run(jobs: list, say, voice_ask, ctl: control.RunControl,
-         finish_fn: Optional[Callable[[str], None]] = None) -> None:
+         finish_fn: Optional[Callable[[str], None]] = None, blocked: Optional[list] = None) -> None:
     def end(msg: str) -> None:
         if finish_fn is None:
             _speak(say, msg)
@@ -221,7 +266,8 @@ def _run(jobs: list, say, voice_ask, ctl: control.RunControl,
             _note(fill_one(job, say, None, ctl, ids=ids))
             done += 1
             _resume_ready(say, ctl)                # anyone you signed in to meanwhile
-        end(run_report(ids, done))
+        extra = (f" {_blocked_line(blocked)}" if blocked else "") + _repost_line(jobs)
+        end(run_report(ids, done) + extra)
         deadline = time.time() + WAITING_SECS
         while waiting_names() and time.time() < deadline and not ctl.stopped:
             ctl.wait(WALL_POLL_SECS)

@@ -208,6 +208,9 @@ class ApplyPlugin(_plugin_base.PluginBase):
         registry.register(self._open_dashboard_tool())
         registry.register(self._application_continue_tool())
         registry.register(self._job_outreach_draft_tool())
+        registry.register(self._draft_followups_tool())
+        registry.register(self._do_not_apply_tool())
+        registry.register(self._check_job_replies_tool())
         registry.register(self._job_outreach_tool())
         registry.register(self._job_contacts_tool())
 
@@ -347,6 +350,14 @@ class ApplyPlugin(_plugin_base.PluginBase):
                 logger.error("apply_job: reading the sheet failed: %s", exc)
                 run.finish("error", f"reading the sheet failed: {exc}")
                 return "I couldn't read your job sheet right now."
+            from aria.features.jobprep import blocklist
+            listed = blocklist.hit(job) if not params.get("still_apply") else None
+            if listed is not None:
+                name = job.get("company") or listed["label"]
+                run.finish("no change", f"{name} is on the do-not-apply list — asked the user")
+                return (f"{name} is on your do-not-apply list"
+                        + (f" ({listed['reason']})" if listed.get("reason") else "")
+                        + " — still apply? (If the user says yes, call apply_job again with still_apply true.)")
             memory.set_persistent(CURRENT_JOB_KEY, job)
             return applicator.run_application(job, progress_fn=_terminal_progress, voice_ask_fn=self._voice_ask,
                                               run=run)
@@ -369,9 +380,94 @@ class ApplyPlugin(_plugin_base.PluginBase):
                             "description": "The user's words for the job, or its ID like J0018 (optional)"},
                     "row": {"type": "integer", "description": "Sheet row number (optional)"},
                     "url": {"type": "string", "description": "Application URL (optional)"},
+                    "still_apply": {"type": "boolean",
+                                    "description": "True only after the user said yes to applying to a company "
+                                                   "on their do-not-apply list"},
                 },
                 "required": [],
             },
+            execute=execute,
+        )
+
+    def _draft_followups_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.jobprep import followups
+            try:
+                _sync_followups()
+                return followups.draft_due()
+            except Exception as exc:
+                logger.error("draft_followups failed: %s", exc)
+                return "I couldn't draft your follow-ups right now."
+
+        return ToolDescriptor(
+            name="draft_followups",
+            description=(
+                "Draft follow-up emails for applications whose follow-up is due (7 business days after "
+                "applying, then 7 more; at most 2). Makes jobs-Gmail DRAFTS only — never sends — to the "
+                "job's contact from the Contacts tab, else as a reply in the application's email thread. "
+                "Use for 'draft my follow-ups', 'any follow-ups due?'."
+            ),
+            input_schema={"type": "object", "properties": {}, "required": []},
+            execute=execute,
+        )
+
+    def _do_not_apply_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.jobprep import blocklist
+            action = str(params.get("action") or "add").lower()
+            what = str(params.get("company") or "").strip()
+            try:
+                if action == "list":
+                    got = blocklist.entries()
+                    return ("Your do-not-apply list: " + ", ".join(e["label"] for e in got) + "."
+                            if got else "Your do-not-apply list is empty.")
+                if action == "remove":
+                    return (f"Took {what} off your do-not-apply list." if blocklist.remove(what)
+                            else f"{what} wasn't on your do-not-apply list.")
+                e = blocklist.add(what, str(params.get("reason") or ""))
+                return f"Got it — I'll never apply to {e['label']}. Batch runs skip it, and I'll ask before a single apply."
+            except ValueError as exc:
+                return str(exc)
+            except Exception as exc:
+                logger.error("do_not_apply failed: %s", exc)
+                return "I couldn't update your do-not-apply list right now."
+
+        return ToolDescriptor(
+            name="do_not_apply",
+            description=(
+                "The user's do-not-apply list: companies (or domains like acme.com) Aria never applies to. "
+                "'never apply to Acme' → add; 'take Acme off my do-not-apply list' → remove; "
+                "'who's on my do-not-apply list' → list."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                    "company": {"type": "string", "description": "Company name or domain"},
+                    "reason": {"type": "string", "description": "Why, if the user said (optional)"},
+                },
+                "required": [],
+            },
+            execute=execute,
+        )
+
+    def _check_job_replies_tool(self) -> ToolDescriptor:
+        def execute(params: dict) -> str:
+            from aria.features.jobprep import replies
+            try:
+                return replies.scan_gmail(_sheet_jobs())
+            except Exception as exc:
+                logger.error("check_job_replies failed: %s", exc)
+                return "I couldn't check for replies right now."
+
+        return ToolDescriptor(
+            name="check_job_replies",
+            description=(
+                "Check the jobs Gmail for employer replies (interview, rejection, offer) to applications and "
+                "suggest a sheet status for each. Nothing is written to the sheet until the user approves it "
+                "in the dashboard. Use for 'did anyone reply', 'check for replies from companies'."
+            ),
+            input_schema={"type": "object", "properties": {}, "required": []},
             execute=execute,
         )
 
@@ -633,3 +729,22 @@ class ApplyPlugin(_plugin_base.PluginBase):
             },
             execute=execute,
         )
+
+
+def _sheet_jobs() -> list:
+    """Every job in both tabs of the Muse sheet (the Applied tab too: replies come after applying)."""
+    import aria.core.config as config
+    jobs = list(sheets.default_sheet().jobs())
+    if config.MUSE_APPLIED_TAB:
+        try:
+            jobs += sheets.tab_sheet(config.MUSE_APPLIED_TAB).jobs()
+        except Exception as exc:
+            logger.warning("apply: Applied tab read failed: %s", exc)
+    return jobs
+
+
+def _sync_followups() -> None:
+    """Applied rows in the sheet → follow-ups scheduled (idempotent)."""
+    from aria.features.jobprep import followups
+    applied = [(j, None) for j in _sheet_jobs() if str(j.get("status") or "").strip().lower().startswith("applied")]
+    followups.sync(applied)
