@@ -494,7 +494,7 @@ def fill(job: dict, progress_fn: Optional[Callable[[str], None]] = None, tab: st
         llm_up = _gateway_up()
         if not llm_up:
             say("The LLM gateway is down, so questions only it could answer are left for you.")
-        resume = resume_path()
+        resume = planner.resume_for(job, form.description, form.title or job.get("role", ""), llm=llm_up)
         plans = plan(form, job, build_profile(job, resume), resume=resume, progress_fn=progress_fn,
                      llm_available=llm_up)
         to_fill = [p for p in plans if p.value and p.source in FILLED_SOURCES]

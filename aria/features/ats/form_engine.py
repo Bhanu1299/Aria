@@ -703,7 +703,7 @@ def fill(job: dict, description: str = "", progress_fn: Optional[Callable[[str],
         run = agent_browser.run
     say = progress_fn or (lambda _m: None)
     result = EngineResult()
-    resume = planner.resume_path()
+    resume = planner.resume_for(job, description, job.get("role", ""), llm=llm_available)
     profile = planner.build_profile(job, resume)
     company, role = job.get("company", ""), job.get("role", "")
     kw = {k: v for k, v in (("guess_fn", guess_fn), ("draft_fn", draft_fn)) if v is not None}

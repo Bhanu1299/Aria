@@ -40,6 +40,7 @@ from typing import Callable, Optional
 import aria.features.answer_bank as answer_bank
 import aria.state.db as db
 from aria.core import paths as _aria_paths
+from aria.features.ats import answer_check
 from aria.features.ats import answers as llm_answers
 from aria.features.ats import resume_text
 
@@ -140,6 +141,48 @@ def resume_path() -> Optional[str]:
         if c and Path(str(c)).expanduser().is_file():
             return str(Path(str(c)).expanduser())
     return None
+
+
+# Jobs prepared this session: job folder name → resume.prepare.Prepared (kept off the job
+# dict, which is stored as JSON elsewhere).
+_PREPARED: dict = {}
+
+
+def _prep_key(job: dict) -> str:
+    from aria.features.resume import prepare
+    return prepare.job_dir(job).name
+
+
+def resume_for(job: dict, description: str = "", title: str = "", llm: bool = True, run=None) -> Optional[str]:
+    """The resume this job's form uploads: the job's tailored ~/.aria/jobs/<id>/resume.pdf,
+    prepared once from the posting text; the base resume_path() when there's no posting text
+    or preparing failed (the failure is in the run log — a fill never stops here)."""
+    base = resume_path()
+    key = _prep_key(job)
+    if key in _PREPARED:
+        return _PREPARED[key].resume_pdf or base
+    if not (description or "").strip():
+        return base
+    from aria.features.resume import prepare
+    got = prepare.prepare(job, description, title or job.get("role", ""), use_llm=llm, base_pdf=base, run=run)
+    _PREPARED[key] = got
+    return got.resume_pdf or base
+
+
+def prepared(job: dict):
+    """This job's Prepared (resume.prepare) if it was prepared this session, else None."""
+    return _PREPARED.get(_prep_key(job))
+
+
+def job_resume(job: dict) -> Optional[dict]:
+    """The resume answers are checked against: the job's tailored resume.json, else the base."""
+    from aria.features.resume import model
+    p = prepared(job)
+    if p is not None and p.resume_json:
+        got = model.load(p.resume_json)
+        if got:
+            return got
+    return model.load_base()
 
 
 _PROFILE_SKIP = {"eeo", "salary_rule", "resume_path", "sponsorship", "work_authorization"}
@@ -292,12 +335,21 @@ def _is_file(value: str) -> bool:
 
 
 def upload_path(p: Planned) -> str:
-    """The file to attach: the resume path as planned, or a drafted cover letter written
-    to ~/.aria/cover_letters/<field>.txt."""
+    """The file to attach: the resume path as planned, the job's cover_letter.pdf, or a
+    drafted cover letter rendered to ~/.aria/cover_letters/cover_letter_<field>.pdf in the
+    resume's fonts (a .txt only when there is no base resume to take the header from)."""
     if p.source == "bank" or _is_file(p.value):
         return p.value
     COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
     name = re.sub(r"[^\w-]+", "_", p.field.name)[:60] or "cover_letter"
+    try:
+        from aria.features.resume import cover_letter, model
+        base = model.load_base()
+        out = COVER_LETTER_DIR / f"cover_letter_{name}.pdf"
+        if base and cover_letter.from_text(base, p.value, out):
+            return str(out)
+    except Exception as exc:
+        logger.warning("planner: cover letter PDF failed: %s", exc)
     out = COVER_LETTER_DIR / f"cover_letter_{name}.txt"
     out.write_text(p.value)
     return str(out)
@@ -515,15 +567,37 @@ def plan(
                 _unknown(p, "your resume doesn't say — answer it once and Aria remembers")
 
     job_text = f"{form.title or job.get('role', '')} at {company}\n\n{job_ctx['description']}"
+    checked_against = job_resume(job) if to_draft else None
+    no_rewrite = (lambda *_a, **_k: "") if not llm_available else None
+
+    def checked(text: str, f: FormField) -> tuple:
+        """(answer, note): the answer checked against this job's resume (answer_check)."""
+        if not checked_against or not text or text == llm_answers.UNKNOWN:
+            return text, ""
+        fixed, log = answer_check.enforce(text, checked_against, job_ctx["description"], company, f.label,
+                                          rewrite_fn=no_rewrite, max_chars=f.max_chars)
+        return fixed or text, answer_check.describe(log)
+
     for p in to_draft:
         f = p.field
         p.category = p.category or "open_text"
+        if f.kind == "file":
+            prep = prepared(job)
+            if prep is not None and prep.dir:
+                from aria.features.resume import prepare as _prepare
+                letter = _prepare.cover_letter(prep, {**job, "company": company,
+                                                      "role": form.title or job.get("role", "")})
+                if letter:
+                    p.value, p.source, p.note = letter, "llm_draft", "cover letter written for this job"
+                    continue
         label = f"Cover letter for {form.title or job.get('role', 'this role')} at {company}" \
             if f.kind == "file" else f.label
         if reuse and f.kind != "file" and reusable(f.label, company):
             again = saved_answer(f.label, f.max_chars)
             if again:
-                p.value, p.source, p.note = again, "reused", "same answer as an earlier application"
+                again, check_note = checked(again, f)
+                p.value, p.source = again, "reused"
+                p.note = "; ".join(x for x in ("same answer as an earlier application", check_note) if x)
                 continue
         if progress_fn:
             progress_fn(f"Drafting an answer for: {label[:60]}")
@@ -539,6 +613,8 @@ def plan(
             p.category = "fact"
             _unknown(p, "a personal fact your resume doesn't have — answer it once and Aria remembers")
         elif text:
+            if f.kind != "file":
+                text, p.note = checked(text, f)
             p.value, p.source = text, "llm_draft"
             if f.kind != "file":
                 save_answer(f.label, text, company, f.max_chars)

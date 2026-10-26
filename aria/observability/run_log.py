@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 LOG_PATH = Path.home() / ".aria" / "run_log.jsonl"
 MAX_BYTES = 5 * 1024 * 1024
-STEPS = ["read sheet", "find contacts", "find email", "fill form", "draft", "update sheet"]
+STEPS = ["read sheet", "prepare resume", "find contacts", "find email", "fill form", "draft", "update sheet"]
 
 _lock = threading.Lock()
 
@@ -82,6 +82,10 @@ class Run:
         finally:
             _write({"type": "step", "run": self.id, "step": name, "status": s.status,
                     "ms": int((time.monotonic() - start) * 1000), "detail": str(s.detail)[:300]})
+
+    def note(self, name: str, status: str, detail: str) -> None:
+        """A finished step in one line (no timing): status ok | error | skipped."""
+        _write({"type": "step", "run": self.id, "step": name, "status": status, "ms": 0, "detail": detail[:300]})
 
     def skip(self, name: str, why: str) -> None:
         _write({"type": "step", "run": self.id, "step": name, "status": "skipped", "ms": 0, "detail": why[:300]})

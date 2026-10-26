@@ -236,7 +236,21 @@ def build_log(job: dict, result, company: str, role: str) -> dict:
                     "value": r.get("value", ""), "source": r.get("source", ""),
                     "status": _STATUS.get(r.get("source", ""), "filled"), "required": bool(r.get("required")),
                     "note": r.get("note", ""), "page": r.get("page", 1)} for r in result.review],
+        "prepared": _prepared_info(job),
     }
+
+
+def _prepared_info(job: dict) -> dict:
+    """Where this job's tailored resume came from (resume.prepare), {} when none was made."""
+    try:
+        from aria.features.ats import planner
+        p = planner.prepared(job)
+    except Exception:
+        return {}
+    if p is None:
+        return {}
+    return {"dir": p.dir, "resume": p.resume_pdf, "ats_before": p.score_before, "ats_after": p.score_after,
+            "used_base": p.used_base, "fallback": p.fallback, "injection_flags": p.injection_flags}
 
 
 def write_log(path: Path, job: dict, result, company: str, role: str) -> None:

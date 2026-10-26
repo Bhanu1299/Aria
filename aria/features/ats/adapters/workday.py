@@ -185,7 +185,7 @@ class WorkdayAdapter(Adapter):
     def _upload_resume(self, tab: Tab, ctx: ApplyContext) -> bool:
         """The autofill step: attach the resume, wait for Workday to take it, Continue."""
         from aria.features.ats import planner
-        resume = planner.resume_path()
+        resume = planner.resume_for(ctx.job, getattr(ctx.target, "posting_text", "") or "", ctx.job.get("role", ""))
         if not resume:
             return False
         ctx.progress_fn("Uploading your resume so Workday can autofill from it.")

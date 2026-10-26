@@ -213,7 +213,7 @@ class HandshakeAdapter(Adapter):
                 ctx.report = FillReport(error="Handshake's Apply didn't open its application dialog.", form_url=here)
                 return ctx.report
 
-        resume = planner.resume_path()
+        resume = planner.resume_for(ctx.job, getattr(ctx.target, "posting_text", "") or "", ctx.job.get("role", ""))
         rows = []
         slots = info.get("slots") or []
         status, shown = resume_choice(info["picked"], resume)

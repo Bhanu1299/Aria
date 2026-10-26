@@ -52,6 +52,11 @@ def _user_stores_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr("aria.state.db.DB_PATH", str(tmp_path / "aria.db"))
     # the lists (jobs / schools) fall back to the resume: never the real one (identity.json names it)
     monkeypatch.setattr("aria.features.answer_bank._resume_lists", lambda: {})
+    # job prep: the base resume, the per-job folders and this session's prepared jobs
+    monkeypatch.setattr("aria.features.resume.model.BASE_PATH", tmp_path / "resume_base.json")
+    monkeypatch.setattr("aria.features.resume.prepare.JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr("aria.features.ats.planner._PREPARED", {})
+    monkeypatch.setattr("aria.features.ats.planner.COVER_LETTER_DIR", tmp_path / "cover_letters")
 
 
 @pytest.fixture(autouse=True)
