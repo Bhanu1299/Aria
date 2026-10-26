@@ -150,3 +150,52 @@ def test_recording_ends_when_the_speech_model_says_you_stopped(monkeypatch, tmp_
     stream = Hum()
     path = _listener(None)._record_until_silence(stream, 16000, 512)
     assert path is not None and stream.reads < 20 + int(wake_word._VAD_SILENCE_SECS / 0.032) + 3
+
+
+@pytest.mark.parametrize("text, no_speech, voiced, ok", [
+    ("Aria.", 0.63, 20, True),       # live 2026-10-26: a real "Aria." was refused at no_speech 0.63
+    ("Aria.", 0.63, 3, False),       # the same prime over a window with no voice in it
+    ("Aria.", 0.63, None, False),    # no VAD: the old strict rule
+    ("Aria", 0.40, None, True),
+    ("Aria", 0.85, 30, False),       # Whisper sure it's not speech
+    ("Thank you.", 0.10, 30, False),
+])
+def test_wake_accepted(text, no_speech, voiced, ok):
+    assert wake_word.wake_accepted(text, no_speech, voiced) is ok
+
+
+def test_verify_lets_a_voiced_borderline_aria_through(monkeypatch):
+    monkeypatch.setattr(wake_word, "voiced_chunks", lambda w: 20)
+    heard, _ = _listener(Transcriber("Aria.", no_speech=0.63))._verify(Stream(), np.zeros(32000, dtype=np.int16), 512)
+    assert heard is True
+    monkeypatch.setattr(wake_word, "voiced_chunks", lambda w: 2)
+    heard, _ = _listener(Transcriber("Aria.", no_speech=0.63))._verify(Stream(), np.zeros(32000, dtype=np.int16), 512)
+    assert heard is False
+
+
+def test_silence_has_no_voice_in_it():
+    if wake_word.vad.detector() is None:
+        pytest.skip("Silero VAD model not installed")
+    assert wake_word.voiced_chunks(np.zeros(32000, dtype=np.int16)) < wake_word._VAD_GATE_MIN
+
+
+def test_fired_clips_are_kept_locally_and_rotated(monkeypatch, tmp_path):
+    import os
+    monkeypatch.setattr(wake_word, "_CLIPS_DIR", str(tmp_path))
+    monkeypatch.setattr(wake_word, "_CLIPS_KEEP", 3)
+    for i in range(5):
+        wake_word.save_clip(np.zeros(32000, dtype=np.int16), f"k{i}", 0.7)
+        time.sleep(1.01) if i == 0 else None
+    assert len(os.listdir(tmp_path)) == 3
+    monkeypatch.setenv("ARIA_WAKE_CLIPS", "0")
+    wake_word.save_clip(np.zeros(32000, dtype=np.int16), "off", 0.7)
+    assert not any("off" in n for n in os.listdir(tmp_path))
+
+
+def test_a_vad_gate_event_logs_the_voiced_count(monkeypatch):
+    from aria.observability import wake_stats
+    lines = []
+    monkeypatch.setattr(wake_stats, "_append", lines.append)
+    wake_stats.log_event("vad_gate", "custom_onnx", 0.71, voiced=2)
+    wake_stats.log_event("verify_reject", "custom_onnx", 0.72, heard=("", 1.0, 0))
+    assert lines[0]["voiced"] == 2 and lines[1]["voiced"] == 0

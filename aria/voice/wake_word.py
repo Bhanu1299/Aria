@@ -157,6 +157,56 @@ class SecondChance:
     def woke(self) -> None:
         self.until = 0.0
 _MAX_NO_SPEECH = 0.45
+# Speech gate (2026-10-26 live: the model scored plain room sound 0.60–0.76 — ~350 fires in 6 h,
+# most with Whisper hearing nothing — while a real "Aria." was refused at no_speech 0.63). Silero
+# VAD runs on every chunk: a crossing counts only if it heard a voice in the window, and a
+# window it heard a voice in may pass Whisper's check at no_speech up to _MAX_NO_SPEECH_VOICED
+# (the strict 0.45 was only there to stop the "Aria" prime being written over silence).
+_VAD_GATE_MIN = 9              # ≈ 0.3 s: the user's clips have ≥ 12, noise / quiet clips ≤ 8 (2026-10-26)
+_MAX_NO_SPEECH_VOICED = 0.8
+
+
+def voiced_chunks(window: np.ndarray) -> Optional[int]:
+    """How many 32 ms chunks of this window Silero VAD calls speech (a fresh detector, ~60 ms
+    for 2 s). None when VAD isn't available — then nothing is gated."""
+    det = vad.detector()
+    if det is None:
+        return None
+    a = np.asarray(window)
+    return sum(det.is_speech(a[i:i + vad.CHUNK]) for i in range(0, len(a) - vad.CHUNK + 1, vad.CHUNK))
+
+
+_CLIPS_DIR = os.path.expanduser("~/.aria/wake_clips")
+_CLIPS_KEEP = 300
+
+
+def save_clip(window: np.ndarray, kind: str, score: float) -> None:
+    """The 2 s that fired, for tuning on the real room (local only, newest _CLIPS_KEEP kept).
+    ARIA_WAKE_CLIPS=0 turns it off. Never raises."""
+    if os.getenv("ARIA_WAKE_CLIPS", "1").strip().lower() in {"0", "false", "off", "no"}:
+        return
+    try:
+        os.makedirs(_CLIPS_DIR, exist_ok=True)
+        path = os.path.join(_CLIPS_DIR, f"{time.strftime('%Y%m%d-%H%M%S')}_{kind}_{score:.2f}.wav")
+        with wave.open(path, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(_SAMPLE_RATE)
+            f.writeframes(np.asarray(window, dtype=np.int16).tobytes())
+        old = sorted(os.listdir(_CLIPS_DIR))
+        for name in old[:-_CLIPS_KEEP]:
+            os.remove(os.path.join(_CLIPS_DIR, name))
+    except Exception as exc:
+        logger.debug("wake clip not saved: %s", exc)
+
+
+def wake_accepted(text: str, no_speech: float, voiced_chunks: Optional[int] = None) -> bool:
+    """Whisper heard the name, and either it's sure there's speech or VAD heard a voice."""
+    if not heard_wake_word(text):
+        return False
+    if no_speech < _MAX_NO_SPEECH:
+        return True
+    return voiced_chunks is not None and voiced_chunks >= _VAD_GATE_MIN and no_speech < _MAX_NO_SPEECH_VOICED
 _WAKE_WORDS = re.compile(r"\b(?:aria|arya|ariya|ariah|aryah|aarya|arria|aria's|arya's)\b")
 _WAKE_FIRST = re.compile(r"^(?:hey |hi |ok |okay |yo )?(?:area|maria|ariel|arian|aaria|orya|oria)\b")
 
@@ -209,6 +259,7 @@ class WakeWordListener:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._backend_name = "none"
+        self._last_window: Optional[np.ndarray] = None      # the window _verify checked (for save_clip)
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -556,7 +607,15 @@ class WakeWordListener:
 
                 threshold = chance.threshold(now, _CUSTOM_THRESHOLD)
                 if score >= threshold:
+                    voiced = voiced_chunks(buffer)
+                    if voiced is not None and voiced < _VAD_GATE_MIN:     # no voice in it: room sound
+                        wake_stats.log_event("vad_gate", "custom_onnx", score, voiced=voiced)
+                        save_clip(buffer, "vadgate", score)
+                        last_triggered = time.time() - _COOLDOWN_SECS + 1.0
+                        continue
                     heard, prefix = self._verify(stream, buffer, _CHUNK_SIZE)
+                    save_clip(self._last_window if self._last_window is not None else buffer,
+                              "wake" if heard else "reject", score)
                     if not heard:
                         print(f"[Aria] Wake model fired (score={score:.2f}) but Whisper didn't hear "
                               "\"Aria\" — ignored.")
@@ -575,8 +634,12 @@ class WakeWordListener:
                     last_triggered = time.time()
                 elif score >= _NEAR_MISS_FLOOR and now - last_near_miss > 3.0:
                     last_near_miss = now
-                    chance.near_miss(now, score)
-                    wake_stats.log_event("near_miss", "custom_onnx", score)
+                    voiced = voiced_chunks(buffer) if score >= _SECOND_CHANCE_FLOOR else None
+                    if voiced is None or voiced >= _VAD_GATE_MIN:     # room sound can't open a second chance
+                        chance.near_miss(now, score)
+                    if voiced is not None and voiced >= _VAD_GATE_MIN:
+                        save_clip(buffer, "nearmiss", score)          # maybe a missed "Aria"
+                    wake_stats.log_event("near_miss", "custom_onnx", score, voiced=voiced)
 
         except Exception as exc:
             logger.error("Custom ONNX listener crashed: %s", exc)
@@ -600,6 +663,7 @@ class WakeWordListener:
     def _verify(self, stream, window: np.ndarray, chunk_size: int) -> tuple:
         """(heard "Aria", chunks read meanwhile). Whisper runs on the window in a thread while
         the mic keeps being read, so nothing said after the wake word is dropped."""
+        self._last_window = None
         if self._transcriber is None or not _verify_enabled():
             return True, []
         # The score crosses the threshold before "Aria" has been said in full: checked right at
@@ -615,6 +679,7 @@ class WakeWordListener:
             tail = np.frombuffer(b"".join(chunks), dtype=np.int16)
             window = np.concatenate([window, tail])[-len(window):]
         out: dict = {}
+        self._last_window = window
         audio = window.astype(np.float32) / 32768.0
 
         def run() -> None:
@@ -633,10 +698,11 @@ class WakeWordListener:
         t.join(timeout=0.1)
         if "text" not in out:                     # Whisper errored or was too slow: don't drop a real wake
             return True, chunks
-        heard = heard_wake_word(out["text"]) and out.get("no_speech", 1.0) < _MAX_NO_SPEECH
+        voiced = voiced_chunks(window)
+        heard = wake_accepted(out["text"], out.get("no_speech", 1.0), voiced)
         if not heard:
-            logger.info("wake verify: rejected (no_speech=%.2f)", out.get("no_speech", 1.0))
-            self._last_reject = (out["text"], out.get("no_speech", 1.0))
+            logger.info("wake verify: rejected (no_speech=%.2f, voiced=%s)", out.get("no_speech", 1.0), voiced)
+            self._last_reject = (out["text"], out.get("no_speech", 1.0), voiced)
         return heard, chunks
 
     def _can_barge_in(self) -> bool:
