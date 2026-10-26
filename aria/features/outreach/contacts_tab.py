@@ -506,8 +506,9 @@ def _draft_all(records, only, limit, gmail, resume, write, rep, say, log) -> Non
         for rec in queue:
             wave = waves.get(rec[ROW]) or get(rec, WAVE)
             brief = brief_of(rec)
+            work = writer.work_for(brief)
             say(f"  row {rec[ROW]}: {get(rec, PERSON)} <{first_email(rec)}> at {get(rec, COMPANY)}, "
-                f"wave {wave}, {brief.kind}")
+                f"wave {wave}, {brief.kind}, about: {work['label'] if work else 'no history'}")
             gaps = writer.missing(brief)
             if gaps:
                 say(f"  needs research: {' and '.join(gaps)} blank or unknown; no draft")

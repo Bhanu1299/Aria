@@ -130,6 +130,8 @@ def env(monkeypatch):
     monkeypatch.setattr(writer.answer_bank, "load", lambda: bank)
     monkeypatch.setattr(writer, "_identity", lambda: {"summary": "Builds voice agents."})
     monkeypatch.setattr(writer, "_resume", lambda: 'Voice agent with a tool-calling loop (Aria), 2025.')
+    monkeypatch.setattr(writer, "_history", lambda: [{"label": "LLM Gateway", "key": "llm gateway",
+                                                      "text": "Routes prompts between small and frontier models."}])
     monkeypatch.setattr(ct.google_auth, "account_email", lambda account: "candidate@example.com")
     monkeypatch.setattr(ct.config, "OUTREACH_FROM", "candidate@example.com")
     monkeypatch.setattr(ct.config, "CONTACTS_PER_COMPANY", 3)

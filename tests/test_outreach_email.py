@@ -20,6 +20,16 @@ LINES = ("Dispatchers at places like MACC 911 lose minutes on non-emergency call
 OUT = "SUBJECT: triaging non-emergency 911 calls\n\n" + LINES
 
 
+HISTORY = [{"label": "Software Engineer Intern at Appetit", "key": "appetit", "text": "Loyalty tables, CI/CD."},
+     {"label": "Software Engineer Intern at AppsTek Corp", "key": "appstek corp", "text": "Spark/Kafka pipelines, churn model."},
+     {"label": "LLM Gateway - Cost-Aware Model Router", "key": "llm gateway - cost-aware model router",
+      "text": "Routes prompts between small and frontier models; semantic cache; fallback."},
+     {"label": "Draw.AI - Multimodal Spatial Canvas for AI", "key": "draw.ai - multimodal spatial canvas for ai",
+      "text": "Canvas where users sketch and speak at once."},
+     {"label": "Aria - macOS Voice AI Agent", "key": "aria - macos voice ai agent",
+      "text": "Voice agent: spoken goal, plans, executes, self-corrects."}]
+
+
 def brief(**kw) -> Brief:
     base = dict(company="Aurelian (YC)", role="Software Engineer (New Grad)", problem=PROBLEM, angle=ANGLE,
                 signal=SIGNAL, person="Max Keenan", title="CEO / co-founder")
@@ -33,7 +43,7 @@ def profile(monkeypatch):
                         "linkedin": "https://linkedin.com/in/bhanuteja1299", "github": "https://github.com/Bhanu1299",
                         "sponsorship": "Yes", "phone": "555"}}
     monkeypatch.setattr(writer.answer_bank, "load", lambda: bank)
-    monkeypatch.setattr(writer, "_resume", lambda: "Aria: voice agent. LLM Gateway: model router.")
+    monkeypatch.setattr(writer, "_history", lambda: HISTORY)
 
 
 def _llm(monkeypatch, text):
@@ -141,3 +151,36 @@ def test_writer_never_raises(monkeypatch):
                                          ("MTS - Generalist role", "MTS - Generalist role"), ("", "open role")])
 def test_role_phrase(role, phrase):
     assert writer.role_phrase(role) == phrase
+
+
+@pytest.mark.parametrize("role,problem,angle,work", [
+    ("Software Engineer (New Grad)", "911 dispatch is buried in non-emergency calls", "", "Aria"),
+    ("Speech Engineer", "", "", "Aria"),
+    ("AI Engineer", "", "", "LLM Gateway"),
+    ("Applied AI Engineer, Agentic", "", "", "LLM Gateway"),
+    ("Machine Learning Engineer", "", "", "AppsTek"),
+    ("Data Engineer", "", "", "AppsTek"),
+    ("Junior Product Engineer", "", "", "Draw.AI"),
+    ("Full-Stack Engineer", "", "", "Draw.AI"),
+    ("Founding Engineer", "Legal teams need an AI assistant for contracts", "", "LLM Gateway"),
+    ("Founding Engineer", "Freight pricing takes days", "", "Appetit"),
+    ("Junior Forward Deployed Engineer", "", "", "Appetit"),
+    ("Backend Engineer", "Our API calls time out under load", "", "Appetit"),        # "calls" isn't voice
+    ("AI Engineer", "", "Built Draw.AI, where users sketch and speak at once", "Draw.AI"),  # the Angle names it
+    ("Backend Engineer", "", "At AppsTek I built Spark pipelines", "AppsTek"),
+])
+def test_the_email_is_about_the_work_that_fits_the_role(role, problem, angle, work):
+    assert work in writer.work_for(brief(role=role, problem=problem, angle=angle))["label"]
+
+
+def test_the_llm_sees_only_the_chosen_work_never_the_whole_history(monkeypatch):
+    calls = _llm(monkeypatch, OUT)
+    writer.email(brief(role="Backend Engineer", problem=PROBLEM, angle="Loyalty tables at Appetit"), "x@y.io")
+    c = calls[0]["content"]
+    assert "Software Engineer Intern at Appetit" in c and "Loyalty tables, CI/CD." in c
+    assert "LLM Gateway" not in c and "Draw.AI" not in c and "AppsTek" not in c
+
+
+def test_no_history_means_no_work_line(monkeypatch):
+    monkeypatch.setattr(writer, "_history", lambda: [])
+    assert writer.work_for(brief()) is None

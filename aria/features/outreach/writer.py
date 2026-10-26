@@ -11,6 +11,12 @@ tab; Aria never looks anything up. A Brief carries what the email may talk about
     Signal            something recent (a launch, a post, a hire)   optional
     Person type       generic inbox | hiring (recruiter / manager) | engineer
 
+The email draws on ONE piece of the candidate's work, picked by code (work_for): the
+project or job the Angle names, else the one that fits the role — voice → Aria, ML / data
+→ AppsTek, AI / LLM / agents → LLM Gateway, frontend / full-stack / product → Draw.AI,
+anything else (backend, general SWE) → Appetit — from the answer bank's Experience and
+Projects lists. The LLM sees only that entry, never the whole resume.
+
 missing(brief) names a required input that is blank or "unknown": no email then (the
 caller writes "needs research"). The LLM writes the subject and three lines — they
 understand the problem, the Angle, why it pulls the candidate in. Code adds the greeting
@@ -72,11 +78,12 @@ _EMAIL_SYSTEM = (
     "about the team's problem, not the company mission.\n"
     "Line 2: the Angle — what the candidate built and the specific part that overlaps with "
     "their problem. Concrete and honest: what it does, what was hard.\n"
-    "Line 3: one genuine sentence on why this problem pulls the candidate in, tied to something "
-    "real from the resume (Aria or another project), not passion.\n\n"
+    "Line 3: one genuine sentence on why this problem pulls the candidate in, tied to the "
+    "candidate's work given below, not passion.\n\n"
     "Lines 1-3 together are 30-60 words. The greeting, \"I applied for the role. Resume "
     "attached.\", the ask and the signature are added for you: never write them. Never claim "
-    "experience beyond the Angle. No numbers or metrics. Never: hope this finds you well, "
+    "experience beyond the Angle and the work given. Never bring up other projects. No numbers "
+    "or metrics. Never: hope this finds you well, "
     "passionate, excited, reaching out, strong fit, leverage, innovative, revolutionize, great "
     "addition, amazing, impressive. If it could go to another company by changing the name, "
     "rewrite it."
@@ -235,6 +242,60 @@ def ask(brief: Brief) -> str:
             "or could you point me to the right person on the team?")
 
 
+# role → which of the candidate's entries fits it (first rule that matches wins)
+_VOICE = re.compile(r"(?i)\bvoice|speech|audio|conversational|call.?cent|phone|dispatch|\b911\b")
+_WORK_RULES = (
+    ("role", re.compile(r"(?i)machine learning|\bml\b|\bdata\b|analytics|data scien"), ("appstek",)),
+    ("role", re.compile(r"(?i)\bllm|\bai\b|\bagent|genai|gen ai|\bnlp\b|inference"), ("llm gateway",)),
+    ("role", re.compile(r"(?i)front.?end|full.?stack|product engineer|\bui\b|design engineer|react|mobile"),
+     ("draw.ai", "appetit")),
+    ("problem", re.compile(r"(?i)\bllm|\bagents?\b|\bmodels?\b|\bai\b"), ("llm gateway",)),
+    ("any", None, ("appetit",)),
+)
+
+
+def _history() -> list:
+    """[{label, text, key}] for every job and project in the answer bank (resume until edited)."""
+    out = []
+    for e in answer_bank.get_list("experience"):
+        if e.get("company"):
+            out.append({"label": f"{e.get('title') or 'Work'} at {e['company']}", "key": e["company"].lower(),
+                        "text": e.get("description") or ""})
+    for e in answer_bank.get_list("projects"):
+        if e.get("name"):
+            out.append({"label": e["name"], "key": e["name"].lower(), "text": e.get("description") or ""})
+    return out
+
+
+def _named(entry: dict, text: str) -> bool:
+    """The entry's short name ('Appetit', 'LLM Gateway', 'Draw.AI') appears in text."""
+    short = re.split(r"\s+[-–—(]|\s+corp\b|\s+inc\b", entry["key"])[0].strip()
+    return bool(short) and re.search(r"(?i)(?<![a-z])" + re.escape(short) + r"(?![a-z])", text or "") is not None
+
+
+def work_for(brief: Brief) -> Optional[dict]:
+    """The one job or project the email talks about: the one the Angle names, else the one
+    that fits the role (and, for voice, the company's problem). None with no history."""
+    history = _history()
+    if not history:
+        return None
+    named = next((e for e in history if _named(e, brief.angle)), None)
+    if named:
+        return named
+    if _VOICE.search(f"{brief.role} {brief.problem}"):
+        rules = (("any", None, ("aria",)),) + _WORK_RULES
+    else:
+        rules = _WORK_RULES
+    for where, pattern, keys in rules:
+        text = {"role": brief.role, "problem": brief.problem}.get(where, "")
+        if pattern is None or pattern.search(text):
+            for k in keys:
+                hit = next((e for e in history if k in e["key"]), None)
+                if hit:
+                    return hit
+    return history[0]
+
+
 def _input(brief: Brief) -> str:
     who = "a generic company inbox" if brief.kind == GENERIC else \
         f"{brief.person}, {brief.title or 'works there'}" + (" (recruiter / manager)" if brief.kind == HIRING else "")
@@ -242,9 +303,9 @@ def _input(brief: Brief) -> str:
             f"Company problem: {brief.problem}\nAngle (the only experience you may claim): {brief.angle}\n")
     if not _blank(brief.signal):
         text += f"Signal: {brief.signal}\n"
-    resume = _resume()
-    if resume:
-        text += f"\nResume (for line 3's reason only; claim nothing from it beyond the Angle):\n{resume}"
+    work = work_for(brief)
+    if work:
+        text += f"\nThe candidate's work for this role (the only project to talk about): {work['label']}\n{work['text']}"
     return text
 
 
