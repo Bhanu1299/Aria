@@ -16,6 +16,7 @@ I/O, auth (the jobs Google account) and SheetError come from integrations/sheets
 """
 from __future__ import annotations
 
+import re
 from typing import Iterable, Optional
 
 from aria.integrations.sheets import JobSheet, SheetError, _norm, col_letter, dedupe_headers
@@ -65,6 +66,32 @@ class HeaderSheet(JobSheet):
         row = self._find(values, index, row, match)
         self._write({f"{col_letter(index[_norm(k)])}{row}": str(v) for k, v in fields.items()})
         return row
+
+    def append(self, fields: dict) -> int:
+        """A new row from {header: value} (RAW, after the last row). Same column checks as
+        update(). Returns the row written (0 when the API didn't say)."""
+        headers, values = self._layout()
+        index = {_norm(h): i for i, h in enumerate(headers) if h}
+        for name in fields:
+            if _norm(name) not in index:
+                raise SheetError(f"The {self.tab} tab has no {name!r} column.")
+        if self.writable is not None:
+            bad = [k for k in fields if _norm(k) not in self.writable]
+            if bad:
+                raise SheetError(f"Aria doesn't write the {bad[0]!r} column.")
+        line = [""] * (max(index.values()) + 1)
+        for k, v in fields.items():
+            line[index[_norm(k)]] = str(v)
+        try:
+            resp = self._values_api().append(
+                spreadsheetId=self.sheet_id, range=self._a1(), valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS", body={"values": [line]}).execute()
+        except SheetError:
+            raise
+        except Exception as exc:
+            raise SheetError(f"I couldn't add a row to the {self.tab} tab: {exc}") from exc
+        m = re.search(r"!\$?[A-Z]+\$?(\d+)", (resp.get("updates") or {}).get("updatedRange", ""))
+        return int(m.group(1)) if m else 0
 
     def write_cell(self, row: int, column: str, value: str, match: Optional[dict] = None) -> int:
         """One cell (the dashboard's only write here). Same checks as update()."""

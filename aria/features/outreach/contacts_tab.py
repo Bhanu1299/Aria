@@ -540,17 +540,25 @@ def run(
     limit: Optional[int] = None,
     draft: bool = True,
     step_fn: Optional[Callable[[str], None]] = None,
+    research_gaps: bool = True,
 ) -> str:
     """One pass over the Contacts tab (joined with `companies`, Muse's Companies tab; by
     default both tabs of the Muse sheet). resume: the PDF to attach (default resume_pdf()).
     limit: look up at most this many pending rows, and
     draft only rows looked up in this run — or, when none were pending, the first `limit`
-    rows ready to draft (the thin slice: limit=1). Never raises."""
+    rows ready to draft (the thin slice: limit=1). research_gaps: on the default sheets, first
+    research applied jobs Muse left blank (research.fill_gaps). Never raises."""
     say = _safe(step_fn)
     if sheet is None:
         sheet = HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_CONTACTS_TAB, writable=WRITABLE)
         if companies is None and config.MUSE_COMPANIES_TAB:
             companies = HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_COMPANIES_TAB, writable=COMPANY_WRITABLE)
+            if research_gaps:               # applied jobs Muse left blank: Aria's own rows first
+                from aria.features.outreach import research
+                research.fill_gaps(
+                    HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_COMPANIES_TAB, writable=research.COMPANY_COLUMNS),
+                    HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_CONTACTS_TAB, writable=research.CONTACT_COLUMNS),
+                    search_fn=search_fn, say=say)
     client = client or cs.ColdstartClient()
     rep = Report()
     log = run_log.start("contacts")

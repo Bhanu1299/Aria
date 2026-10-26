@@ -64,6 +64,7 @@ TASK_TIERS: dict[str, str] = {
     "apply_page_situation": SMALL,        # features/ats/situations.py — what a non-form page is, what to click
     "form_free_text": STRONG,             # features/ats/answers.py — "why us" answers
     "outreach_angle_judge": SMALL,        # features/outreach/writer.py — Muse's Angle: company fact or analogy?
+    "outreach_research": STRONG,          # features/outreach/research.py — company problem / signal / fact when Muse left a job blank
     "outreach_email": FRONTIER,           # features/outreach/writer.py — cold email subject + 3 lines (strong ignored the subject tone rule, 2026-10-26)
     "outreach_linkedin_note": STRONG,     # features/outreach/writer.py — LinkedIn connection note
     # job prep (docs/job-prep-design.md)

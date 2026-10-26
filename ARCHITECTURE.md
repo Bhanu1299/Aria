@@ -381,6 +381,7 @@ here so the code can be checked against them.
 | 1 | Muse writes job rows to the sheet (`Sheet1`; blank Status = new) | Muse | in use |
 | 2 | Find the people behind a posting: posting → team pages → search results → GitHub org | Aria | built (`aria/features/outreach`) |
 | 3 | Find their emails, cache-first by company domain | Coldstart | built (called via its Python API) |
+| 3b | Research for an applied job Muse left blank 24 h: company problem, signal, angle from the company's own site (every claim checked against it), people → Companies + Contacts rows marked Aria | Aria | built (`outreach/research.py`) |
 | 4 | Fill the application and **stop for the user's review** | Aria | built: Greenhouse adapter, DOM form engine (any other ATS) |
 | 5 | Outreach: Gmail **drafts** (jobs account) or LinkedIn notes in the sheet. Aria never sends | Aria | built |
 | 6 | Replies and bounces → Coldstart `record_feedback` | Aria | built |

@@ -3,8 +3,9 @@
     email(brief, to) → {"to", "subject", "body"} | None          task outreach_email
     linkedin_note(target) → str | None                         task outreach_linkedin_note
 
-The email follows the user's spec (v2). Muse researches each company into the Contacts
-tab; Aria never looks anything up. A Brief carries what the email may talk about:
+The email follows the user's spec (v2). Muse researches each company into the Companies
+tab; when Muse leaves an applied job blank, research.py writes the row from the company's
+own site (checked against it). The writer itself never looks anything up. A Brief carries what the email may talk about:
 
     Company problem   what they're solving        REQUIRED
     Angle             what the candidate built that overlaps with it, and what was hard   REQUIRED
