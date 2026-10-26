@@ -410,28 +410,35 @@ def _validator(brief: Brief, p: Plan):
     copied = _runs(f"{brief.problem} {brief.signal}")
     fixed = f"{greeting(brief)} {ask(brief)}"
 
+    def no(why: str):
+        logger.warning("outreach: %s email rejected — %s", brief.company, why)
+        return None
+
     def check(text: str):
         parts = [p.strip() for p in _clean(text).split("\n\n") if p.strip()]
         m = re.match(r"(?i)^subject:\s*(.+)$", parts[0]) if parts else None
         if not m or len(parts) != 4:
-            return None
+            return no(f"shape: {len(parts)} blocks, subject line {'found' if m else 'missing'}")
         subject, lines = m.group(1).strip().strip('"'), parts[1:]
         prose = " ".join(lines)
         if not subject or len(subject) >= SUBJECT_CHARS or "application" in subject.lower():
-            return None
+            return no(f"subject: {subject!r}")
         if any(_GREETING.match(l) or _SIGNOFF.search(l) for l in lines) or _PLACEHOLDER.search(prose + subject):
-            return None
+            return no("greeting / sign-off / placeholder in the body")
         if _BANNED.search(prose + " " + subject) or re.search(r"(?i)\bresume attached|\bI applied\b", prose):
-            return None
-        if any(n not in allowed for n in _numbers(prose + " " + subject)):
-            return None                             # a number or metric
+            return no("banned phrase")
+        bad = [n for n in _numbers(prose + " " + subject) if n not in allowed]
+        if bad:
+            return no(f"numbers not in their problem/signal: {bad}")
         if _runs(prose) & copied:
-            return None                             # their marketing copy, restated
-        if len(words(lines[0]) & grounded) < 2 or \
-                len(words(lines[1]) & words(built)) < 2:
-            return None                             # could go to another company
-        if not EMAIL_WORDS[0] <= len(f"{fixed} {prose}".split()) <= EMAIL_WORDS[1]:
-            return None
+            return no("restates their own copy")
+        if len(words(lines[0]) & grounded) < 2:
+            return no("line 1 not tied to the company's problem/signal")
+        if len(words(lines[1]) & words(built)) < 2:
+            return no("line 2 not tied to the candidate's work")
+        n = len(f"{fixed} {prose}".split())
+        if not EMAIL_WORDS[0] <= n <= EMAIL_WORDS[1]:
+            return no(f"{n} words (want {EMAIL_WORDS[0]}–{EMAIL_WORDS[1]})")
         return subject, lines
     return check
 

@@ -124,6 +124,38 @@ _VERIFY_SETTLE_CHUNKS = 16    # 0.51 s of audio read after the crossing, before 
 _SECOND_CHANCE_FLOOR = 0.55
 _SECOND_CHANCE_THRESHOLD = 0.6
 _SECOND_CHANCE_SECS = 4.0
+_SECOND_CHANCE_REST_SECS = 10.0   # after a window is used up, none opens for this long
+
+
+class SecondChance:
+    """The lowered threshold after a near-miss or a rejected check — one window at a time.
+    A reject of a fire that only crossed the lowered threshold closes the window and rests:
+    before 2026-10-26 every such reject reopened it, so room noise scoring 0.60–0.69 kept
+    Aria sensitive (and Whisper busy) for hours — ~200 rejected fires in one live run."""
+
+    def __init__(self) -> None:
+        self.until = 0.0
+        self.rest_until = 0.0
+
+    def threshold(self, now: float, normal: float) -> float:
+        return _SECOND_CHANCE_THRESHOLD if now < self.until else normal
+
+    def _open(self, now: float) -> None:
+        if now >= self.rest_until and now >= self.until:
+            self.until = now + _SECOND_CHANCE_SECS
+
+    def near_miss(self, now: float, score: float) -> None:
+        if score >= _SECOND_CHANCE_FLOOR:
+            self._open(now)
+
+    def rejected(self, now: float, lowered: bool) -> None:
+        if lowered:                                   # the second chance was spent on noise
+            self.until, self.rest_until = 0.0, now + _SECOND_CHANCE_REST_SECS
+        else:
+            self._open(now)
+
+    def woke(self) -> None:
+        self.until = 0.0
 _MAX_NO_SPEECH = 0.45
 _WAKE_WORDS = re.compile(r"\b(?:aria|arya|ariya|ariah|aryah|aarya|arria|aria's|arya's)\b")
 _WAKE_FIRST = re.compile(r"^(?:hey |hi |ok |okay |yo )?(?:area|maria|ariel|arian|aaria|orya|oria)\b")
@@ -476,7 +508,7 @@ class WakeWordListener:
             self._backend_name = "custom_onnx"
             last_near_miss = 0.0
             barge_hits = 0
-            sensitive_until = 0.0
+            chance = SecondChance()
 
             while not self._stop_event.is_set():
                 wake_stats.heartbeat("custom_onnx")
@@ -522,7 +554,7 @@ class WakeWordListener:
                     logger.debug("Custom model inference error: %s", exc)
                     continue
 
-                threshold = _SECOND_CHANCE_THRESHOLD if now < sensitive_until else _CUSTOM_THRESHOLD
+                threshold = chance.threshold(now, _CUSTOM_THRESHOLD)
                 if score >= threshold:
                     heard, prefix = self._verify(stream, buffer, _CHUNK_SIZE)
                     if not heard:
@@ -531,20 +563,19 @@ class WakeWordListener:
                         wake_stats.log_event("verify_reject", "custom_onnx", score,
                                              heard=getattr(self, "_last_reject", None))
                         last_triggered = time.time() - _COOLDOWN_SECS + 1.0     # listen again in 1 s
-                        sensitive_until = time.time() + _SECOND_CHANCE_SECS
+                        chance.rejected(time.time(), lowered=threshold < _CUSTOM_THRESHOLD)
                         continue
                     print(f"[Aria] Wake word detected (custom model, score={score:.2f})")
                     wake_stats.log_event("detection" if threshold == _CUSTOM_THRESHOLD else "detection_second_chance",
                                          "custom_onnx", score)
-                    sensitive_until = 0.0
+                    chance.woke()
                     if self._can_barge_in():          # e.g. the welcome-back line: stop it, listen
                         self._barge_in()
                     self._on_wake(stream, _SAMPLE_RATE, _CHUNK_SIZE, prefix)
                     last_triggered = time.time()
                 elif score >= _NEAR_MISS_FLOOR and now - last_near_miss > 3.0:
                     last_near_miss = now
-                    if score >= _SECOND_CHANCE_FLOOR:
-                        sensitive_until = now + _SECOND_CHANCE_SECS
+                    chance.near_miss(now, score)
                     wake_stats.log_event("near_miss", "custom_onnx", score)
 
         except Exception as exc:

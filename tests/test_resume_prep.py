@@ -298,6 +298,14 @@ def test_a_rewrite_that_only_adds_a_tail_is_refused():
                                  "services", []) is None
 
 
+def test_a_rewrite_may_not_invent_leadership_or_garble_a_skill():
+    old = "Designed the loyalty and rewards data model with ACID transactions across services"
+    assert tailor.bullet_ok(old, "Led system - Design for the loyalty data model with ACID transactions across "
+                                 "services", []).startswith("adds a claim")
+    assert tailor.bullet_ok(old, "Designed system - Design for the loyalty data model with ACID transactions "
+                                 "across services", []) == "garbled wording"
+
+
 def test_numbers_inside_an_added_skill_name_are_not_new_numbers():
     old = "Rebuilt the admin portal in React with keyboard navigation"
     new = "Rebuilt the admin portal in React to WCAG 2.1 AA with keyboard navigation"

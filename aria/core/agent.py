@@ -194,7 +194,31 @@ def _build_system_prompt(memory_context: str = "") -> str:
         "City: Buffalo, NY\n"
     )
     memory = f"\n{memory_context}\n" if memory_context else ""
-    return static + memory + now_block
+    return static + memory + _background_block() + now_block
+
+
+# What Aria said on its own, outside a turn (a run's end report, a wall notice): the agent sees
+# the last few so "did you draft my emails?" is answered from them, not with "which emails?".
+_BACKGROUND_KEEP = 5
+_BACKGROUND_HOURS = 12
+_background: list = []                       # [(datetime, text)]
+
+
+def note_background(text: str) -> None:
+    text = " ".join((text or "").split())
+    if text:
+        _background.append((datetime.now(ZoneInfo("America/New_York")), text[:1200]))
+        del _background[:-_BACKGROUND_KEEP]
+
+
+def _background_block() -> str:
+    now = datetime.now(ZoneInfo("America/New_York"))
+    recent = [(t, x) for t, x in _background if (now - t).total_seconds() < _BACKGROUND_HOURS * 3600]
+    if not recent:
+        return ""
+    lines = "\n".join(f"- {t:%-I:%M %p}: {x}" for t, x in recent)
+    return ("\n# What you told the user on your own recently (background runs) — answer questions about "
+            f"them from this\n{lines}\n")
 
 
 def _get_memory_context(query: str) -> str:

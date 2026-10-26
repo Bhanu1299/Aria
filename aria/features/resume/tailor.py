@@ -262,6 +262,11 @@ def _stem(text: str) -> str:
     return re.sub(r"[\W_]+", " ", text).strip().lower()
 
 
+_CLAIM = re.compile(r"(?i)\b(?:led|lead|leading|managed|mentored|owned|spearheaded|directed|headed|supervised|"
+                    r"oversaw|architected|founded)\b")
+_GARBLED = re.compile(r"[a-z] - [A-Z]")                 # "Led system - Design for …"
+
+
 def same_numbers(old: str, new: str, skill_names=()) -> bool:
     """`new` keeps exactly `old`'s numbers, apart from numbers inside a skill name it adds."""
     kept = list(model.numbers(new))
@@ -285,6 +290,11 @@ def bullet_ok(old: str, new: str, protected: list, skill_names: tuple = ()) -> O
             return f"dropped {name}"
     if _stem(new).startswith(_stem(old)):
         return "appended to, not rewritten"
+    claim = _CLAIM.search(new)
+    if claim and not _CLAIM.search(old):
+        return f"adds a claim ({claim.group(0)})"
+    if _GARBLED.search(new) and not _GARBLED.search(old):
+        return "garbled wording"
     if render.bullet_lines(new) > 2:
         return "over 2 lines"
     return None

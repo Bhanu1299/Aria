@@ -538,7 +538,12 @@ def main():
 
     # 8b. Applications: re-attach tabs a previous Aria left open. A run starts only when
     #     the user asks ("let's apply to some jobs") — never on launch.
-    applying_commands.configure(say=speaker.say)
+    def _say_background(text: str) -> None:
+        from aria.core.agent import note_background
+        note_background(text)
+        speaker.say(text)
+
+    applying_commands.configure(say=_say_background)
     threading.Thread(target=_reattach_tabs, daemon=True,
                      name="aria-apply-startup").start()
 
