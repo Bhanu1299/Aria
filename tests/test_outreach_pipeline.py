@@ -9,17 +9,20 @@ from aria.dashboard import model as m
 from aria.dashboard import outreach as outreach_tab
 from aria.dashboard import today
 from aria.dashboard.sources import Source
-from aria.features.outreach import pipeline, writer
+from aria.features.outreach import company_fact, pipeline, writer
 from aria.features.outreach.contacts import Person
 from aria.integrations.sheets import JobSheet
 from types import SimpleNamespace
 from tests.test_sheets import HEADERS, FakeSheetsService
 
-BODY = ("I'm a recent MS CS graduate who has shipped a voice agent with a tool-calling loop and "
-        "an evaluation harness, and the ML Engineer role at Acme lines up closely with that work. "
-        "I'd love to hear how the team thinks about evaluation for production models.\n\n"
-        "Would you have fifteen minutes in the next couple of weeks, or could you point me to the "
-        "hiring manager for this role? Thank you for considering it.")
+FACT = company_fact.Fact("Acme helps hospitals triage radiology scans with machine learning.",
+                         "Its Lumen product flags urgent chest X-rays for radiologists.", "https://acme.com")
+BODY_TEXT = ("I finished an MS in CS at State University and am applying for the ML Engineer role at Acme. "
+             "Triage for radiology scans caught my eye, since slow reads delay care at hospitals.\n\n"
+             "I built a voice agent with a tool-calling loop and an evaluation harness, the same careful "
+             "model evaluation that radiology triage needs before it reaches hospitals.\n\n"
+             "Do you have fifteen minutes this week, or could you point me to the right engineer?")
+BODY = "HOOK: agents + model evaluation\n\n" + BODY_TEXT
 
 
 class FakeGmail:
@@ -38,6 +41,7 @@ def profile(monkeypatch):
     monkeypatch.setattr(writer.answer_bank, "load", lambda: bank)
     monkeypatch.setattr(writer, "_identity", lambda: {"summary": "Builds voice agents."})
     monkeypatch.setattr(writer, "_resume", lambda: '')
+    monkeypatch.setattr(pipeline.company_fact, "find", lambda *a, **k: FACT)
 
 
 def _llm(monkeypatch, text):
@@ -62,19 +66,47 @@ def _target(**contact):
 
 def test_email_wraps_llm_body_with_code_greeting_subject_and_signoff(monkeypatch):
     calls = _llm(monkeypatch, BODY)
-    msg = writer.email(_target(), "pat@acme.com")
-    assert msg["subject"] == "ML Engineer — Alex Doe"
-    assert msg["body"].startswith("Hi Pat,\n\nI'm a recent")
-    assert msg["body"].endswith("Best,\nAlex Doe\nhttps://linkedin.com/in/me")
+    msg = writer.email(_target(), "pat@acme.com", fact=FACT)
+    assert msg["subject"] == "ML Engineer — Alex Doe, agents + model evaluation"
+    assert msg["body"].startswith("Hi Pat,\n\nI finished")
+    assert msg["body"].endswith("Best,\nAlex Doe\nlinkedin.com/in/me")
     assert calls[0]["task"] == "outreach_email"
-    assert "Strong match" in calls[0]["content"]
+    assert "Strong match" in calls[0]["content"] and "Lumen product flags urgent" in calls[0]["content"]
     assert "sponsorship" not in calls[0]["content"] and "555" not in calls[0]["content"]
 
 
-@pytest.mark.parametrize("bad", ["Hi Pat, " + BODY, BODY + "\n\nBest,", "Too short.", BODY.replace("Acme", "[Company]")])
+def test_signature_has_linkedin_and_github(monkeypatch):
+    bank = {"answers": {"first_name": "Alex", "last_name": "Doe", "linkedin": "https://www.linkedin.com/in/me/",
+                        "github": "https://github.com/alexdoe"}}
+    assert writer.signature(bank) == "Alex Doe\nlinkedin.com/in/me | github.com/alexdoe"
+
+
+@pytest.mark.parametrize("bad", [
+    "HOOK: agents + model evaluation\n\nHi Pat, " + BODY_TEXT,                    # its own greeting
+    BODY + "\n\nBest,",                                                            # its own sign-off
+    "HOOK: agents + evals\n\nToo short.",
+    BODY.replace("the ML Engineer role at Acme", "the [Role] role"),               # placeholder
+    BODY_TEXT,                                                                     # no HOOK line
+    BODY.replace("I finished an MS", "I am reaching out to express my interest. I finished an MS"),  # filler
+    BODY.replace("an evaluation harness", "an evaluation harness used by 50,000 people"),          # made-up number
+    "HOOK: agents + evals\n\n" + BODY_TEXT.replace("Triage for radiology scans caught my eye, since slow "
+                                                    "reads delay care at hospitals.", "")
+    .replace("that radiology triage needs before it reaches hospitals", "any team needs"),         # generic
+])
 def test_email_rejects_invalid_bodies(monkeypatch, bad):
     _llm(monkeypatch, bad)
-    assert writer.email(_target(), "pat@acme.com") is None
+    assert writer.email(_target(), "pat@acme.com", fact=FACT) is None
+
+
+def test_email_keeps_numbers_that_are_on_the_resume(monkeypatch):
+    monkeypatch.setattr(writer, "_resume", lambda: "Cut deploys by 75% (from 40 minutes to 10 minutes).")
+    _llm(monkeypatch, BODY.replace("an evaluation harness", "an evaluation harness, and cut deploys 75%"))
+    assert writer.email(_target(), "pat@acme.com", fact=FACT) is not None
+
+
+def test_no_company_fact_means_no_email(monkeypatch):
+    calls = _llm(monkeypatch, BODY)
+    assert writer.email(_target(), "pat@acme.com") is None and calls == []
 
 
 def test_linkedin_note_respects_the_300_char_cap(monkeypatch):
@@ -188,3 +220,15 @@ def test_outreach_tab_lists_aria_linkedin_notes_with_the_text():
     assert d["linkedin"] == [job]          # listed even before applying
     html = outreach_tab.linkedin_row(job)               # the notes live on the Outreach tab now
     assert "Hi Pat, hello." in html and 'href="https://linkedin.com/in/patlee"' in html
+
+
+def test_pipeline_writes_no_generic_email_without_a_company_fact(monkeypatch):
+    monkeypatch.setattr(pipeline.company_fact, "find", lambda *a, **k: None)
+    calls = _llm(monkeypatch, BODY)
+    t = _target()
+    t.channel = pipeline.channel.EMAIL
+    t.contact.email = "pat@acme.com"
+    gmail = FakeGmail()
+    from aria.observability import run_log
+    assert pipeline.draft(t, run_log.start("test"), gmail) == ""
+    assert gmail.drafts == [] and calls == [] and "nothing specific" in t.outcome

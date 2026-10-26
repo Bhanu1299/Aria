@@ -23,8 +23,11 @@ One run, all code until the email body:
   5. draft     rows with Confidence verified|pattern, at most CONTACTS_PER_COMPANY per
                company, numbered by Wave in sheet order (a person listed twice: the
                company address over a personal one). A wave is drafted only once every
-               earlier wave at that company is sent. The LLM (gateway, task outreach_email)
-               writes the body from Tracked role + the Job URL page; code does the rest.
+               earlier wave at that company is sent. First what the company solves
+               (company_fact: the Source page, homepage, posting; once per company) — no
+               fact = the row is held with a Notes line, never drafted generic. Then the
+               LLM (gateway, task outreach_email) writes the body from that fact, Tracked
+               role, the Job URL page and the resume; code does the rest.
                Gmail DRAFT in the jobs account, only if it is OUTREACH_FROM →
                Draft status drafted, Gmail draft link, Updated.
 Every step goes to step_fn (one line each) and the run log.
@@ -41,6 +44,7 @@ from urllib.parse import urlparse
 
 import aria.core.config as config
 from aria.dashboard.model import company_slug, emails_in, is_company_address, norm_text
+from aria.features.outreach import company_fact
 from aria.features.outreach import contacts as finder
 from aria.features.outreach import writer
 from aria.integrations import coldstart_client as cs
@@ -323,11 +327,23 @@ def sender_problem(gmail) -> str:
     return ""
 
 
-def compose(rec: dict, posting: str) -> Optional[dict]:
+def company_domain(rec: dict) -> str:
+    """The row's company domain: the Domain cell, else its address's domain."""
+    email = first_email(rec)
+    return _clean_domain(get(rec, DOMAIN)) or (_clean_domain(email.split("@")[1]) if email else "")
+
+
+def fact_for(rec: dict) -> Optional[company_fact.Fact]:
+    """What the row's company solves, from its own pages (Source page, homepage, posting)."""
+    return company_fact.find(re.sub(r"\(.*?\)", " ", get(rec, COMPANY)).strip(), company_domain(rec),
+                             source=get(rec, SOURCE), job_url=get(rec, JOB_URL))
+
+
+def compose(rec: dict, posting: str, fact) -> Optional[dict]:
     """{to, subject, body} from the gateway LLM, or None if its output failed checks."""
     t = _Target(company=get(rec, COMPANY), jobs=[{"role": get(rec, ROLE), "fields": {}}],
                 contact=finder.Person(get(rec, PERSON), get(rec, TITLE)))
-    return writer.email(t, first_email(rec), posting=posting)
+    return writer.email(t, first_email(rec), posting=posting, fact=fact)
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +356,7 @@ class Report:
     errors: list = field(default_factory=list)      # (row, why) lookups
     draft_errors: list = field(default_factory=list)  # (row, why)
     drafted: list = field(default_factory=list)     # (row, link)
+    held: list = field(default_factory=list)        # rows with no company fact
     stopped: list = field(default_factory=list)     # rows set to "no reply"
     skipped: list = field(default_factory=list)     # (row, why)
 
@@ -353,6 +370,9 @@ class Report:
         if self.draft_errors:
             k = len(self.draft_errors)
             parts.append(f"{k} draft{'s' if k != 1 else ''} not created (see Notes)")
+        if self.held:
+            k = len(self.held)
+            parts.append(f"{k} held: nothing specific found on the company's pages")
         if self.drafted:
             parts.append(f"{len(self.drafted)} draft{'s' if len(self.drafted) != 1 else ''} in the jobs Gmail")
         if self.stopped:
@@ -383,6 +403,7 @@ def run(
     gmail=None,
     search_fn=None,
     posting_fn: Optional[Callable[[str], str]] = None,
+    fact_fn: Optional[Callable[[dict], Optional[company_fact.Fact]]] = None,
     limit: Optional[int] = None,
     draft: bool = True,
     step_fn: Optional[Callable[[str], None]] = None,
@@ -394,6 +415,7 @@ def run(
     sheet = sheet or HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_CONTACTS_TAB, writable=WRITABLE)
     client = client or cs.ColdstartClient()
     posting_fn = posting_fn or posting_text
+    fact_fn = fact_fn or fact_for
     write = _Writer(sheet, say)
     rep = Report()
     log = run_log.start("contacts")
@@ -450,10 +472,11 @@ def run(
             s.detail = f"{len(rep.found)} found, {len(rep.errors)} errors; {client.calls} Coldstart calls"
 
         if draft:
-            _draft_all(records, todo if limit is not None else None, limit, gmail, posting_fn, write, rep, say, log)
+            _draft_all(records, todo if limit is not None else None, limit, gmail, posting_fn, fact_fn,
+                       write, rep, say, log)
         summary = rep.summary()
         log.finish("ok" if rep.found or rep.drafted or rep.stopped
-                   else ("error" if rep.errors or rep.draft_errors else "no change"), summary)
+                   else ("error" if rep.errors or rep.draft_errors or rep.held else "no change"), summary)
         say(f"done: {summary}")
         return summary
     except SheetError as exc:
@@ -467,7 +490,7 @@ def run(
         return "The Contacts run failed; nothing was sent."
 
 
-def _draft_all(records, only, limit, gmail, posting_fn, write, rep, say, log) -> None:
+def _draft_all(records, only, limit, gmail, posting_fn, fact_fn, write, rep, say, log) -> None:
     queue, waves = draft_queue(records)
     if only is not None:
         rows = {r[ROW] for r in only} or {r[ROW] for r in queue[:limit]}     # nothing looked up: the next draft(s)
@@ -487,13 +510,26 @@ def _draft_all(records, only, limit, gmail, posting_fn, write, rep, say, log) ->
         say(f"  no drafts: {problem}")
         log.skip("draft", problem)
         return
+    facts: dict = {}
     with log.step("draft") as s:
         for rec in queue:
             wave = waves.get(rec[ROW]) or get(rec, WAVE)
+            key = company_key(get(rec, COMPANY))
+            if key not in facts:
+                facts[key] = fact_fn(rec)
+            fact = facts[key]
+            say(f"  row {rec[ROW]}: {get(rec, PERSON)} at {get(rec, COMPANY)} — what they solve: "
+                + (f"{fact.problem} | {fact.detail} ({fact.url})" if fact else "nothing specific found"))
+            if fact is None:
+                why = "held: nothing specific on the company's pages (Source page, homepage, posting); add a Source URL"
+                write(rec, {WAVE: str(wave), UPDATED: _now(),
+                            NOTES: get(rec, NOTES) if why in get(rec, NOTES) else add_note(get(rec, NOTES), why)})
+                rep.held.append(rec[ROW])
+                continue
             posting = posting_fn(get(rec, JOB_URL))
-            say(f"  row {rec[ROW]}: {get(rec, PERSON)} <{first_email(rec)}>, wave {wave}, "
+            say(f"  <{first_email(rec)}>, wave {wave}, "
                 f"posting {'read (' + str(len(posting)) + ' chars)' if posting else 'unavailable'}")
-            msg = compose(rec, posting)
+            msg = compose(rec, posting, fact)
             if msg is None:
                 say("  the LLM draft failed (error or checks; see the log); no draft")
                 write(rec, {WAVE: str(wave), UPDATED: _now(),

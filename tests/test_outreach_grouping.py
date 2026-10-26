@@ -49,7 +49,7 @@ def test_one_draft_names_every_role_and_siblings_point_to_it(monkeypatch):
     out = pipeline.run_outreach(sheet=JobSheet("s", "Sheet1", service=svc, today=lambda: date(2026, 10, 20)),
                                 search_fn=lambda q: [], gmail_data={}, gmail=gmail)
     assert out.startswith("Outreach: 1 email draft")
-    assert len(gmail.drafts) == 1 and gmail.drafts[0]["subject"] == "ML Engineer and AI Engineer — Alex Doe"
+    assert len(gmail.drafts) == 1 and gmail.drafts[0]["subject"] == "ML Engineer and AI Engineer — Alex Doe, agents + model evaluation"
     assert "Role(s): ML Engineer and AI Engineer" in calls[0]["content"]
     w = svc.written()
     assert w["'Sheet1'!K2"].startswith("Email draft ready — Pat Lee")

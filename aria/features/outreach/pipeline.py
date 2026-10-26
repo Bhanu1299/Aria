@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from aria.dashboard.model import company_slug, contact_name, emails_in, is_company_address
-from aria.features.outreach import channel, feedback, writer
+from aria.features.outreach import channel, company_fact, feedback, writer
 from aria.features.outreach import contacts as finder
 from aria.integrations import google_auth, sheets
 from aria.llm import context as llm_context
@@ -218,8 +218,13 @@ def outreach_cell(t: Target, note: str = "") -> str:
 def draft(t: Target, run: run_log.Run, gmail) -> str:
     """Write the email draft or LinkedIn note. Returns the outreach cell text, or "" if nothing was written."""
     with run.step("draft") as s:
+        fact = company_fact.find(t.company, t.domain, job_url=t.primary.get("post_link") or "")
         if t.channel == channel.EMAIL:
-            msg = writer.email(t, channel.email_of(t.contact))
+            if fact is None:
+                s.status, s.detail = "skipped", "nothing specific on the company's pages; no generic email"
+                t.outcome = "not written: nothing specific found about the company"
+                return ""
+            msg = writer.email(t, channel.email_of(t.contact), fact=fact)
             if msg is None:
                 s.status, s.detail, t.outcome = "error", "the email didn't pass checks; no draft", "not written: email failed checks"
                 return ""
@@ -229,7 +234,7 @@ def draft(t: Target, run: run_log.Run, gmail) -> str:
                 return ""
             s.detail, t.outcome, t.message = f"Gmail draft (jobs account) to {msg['to']}: {msg['subject']}", "drafted", msg
             return outreach_cell(t)
-        note = writer.linkedin_note(t)
+        note = writer.linkedin_note(t, fact=fact)
         if note is None:
             s.status, s.detail, t.outcome = "error", "the LinkedIn note didn't pass checks", "not written: note failed checks"
             return ""

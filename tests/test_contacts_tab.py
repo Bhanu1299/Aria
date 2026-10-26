@@ -19,7 +19,10 @@ HEADERS = ["Company", "Tracked role", "Person", "Title", "Email", "Source", "Con
            "Job URL", "Domain", "Email pattern", "Find status", "Draft status", "Gmail draft link", "Wave",
            "Updated", "Notes"]
 
-BODY = ("I'm a recent MS CS graduate who has shipped a voice agent with a tool-calling loop and "
+FACT = ct.company_fact.Fact("Acme builds evaluation tooling for production language models.",
+                            "Its Gauge product scores model answers for enterprise teams.", "https://acme.com")
+BODY = ("HOOK: voice agents + evals\n\n"
+        "I'm a recent MS CS graduate who has shipped a voice agent with a tool-calling loop and "
         "an evaluation harness, and the Founding Engineer role at Acme lines up closely with that work. "
         "I'd love to hear how the team thinks about evaluation for production models.\n\n"
         "Would you have fifteen minutes in the next couple of weeks, or could you point me to the "
@@ -142,6 +145,7 @@ def llm(monkeypatch):
 def run(sheet, client, gmail=None, **kw):
     lines = []
     kw.setdefault("posting_fn", lambda url: "Founding Engineer. Python, LLM agents, evals." if url else "")
+    kw.setdefault("fact_fn", lambda rec: FACT)
     out = ct.run(sheet=sheet, client=client, gmail=gmail or FakeGmail(), step_fn=lines.append, **kw)
     return out, lines
 
@@ -403,7 +407,7 @@ def test_background_run_reports_when_done(llm):
     done = threading.Event()
     got = []
     assert ct.start_background(done_fn=lambda s: (got.append(s), done.set()), sheet=sheet, client=client,
-                               gmail=FakeGmail(), posting_fn=lambda u: "")
+                               gmail=FakeGmail(), posting_fn=lambda u: "", fact_fn=lambda rec: FACT)
     assert done.wait(5) and "1 draft" in got[0]
 
 
@@ -428,3 +432,31 @@ def test_writer_reads_the_real_identity_and_resume_helpers(monkeypatch):
     """The env fixture mocks writer._identity; this calls the real one (its import had gone stale)."""
     monkeypatch.undo()
     assert isinstance(writer._identity(), dict) and isinstance(writer._resume(), str)
+
+
+def test_no_company_fact_holds_the_row_with_a_note(llm):
+    sheet, svc = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", find="done"))
+    gmail = FakeGmail()
+    out, _ = run(sheet, coldstart({})[0], gmail, fact_fn=lambda rec: None)
+    assert gmail.drafts == [] and llm == [] and svc.cell(2, "Draft status") == ""
+    assert "held: nothing specific" in svc.cell(2, "Notes") and "1 held" in out
+    run(sheet, coldstart({})[0], gmail, fact_fn=lambda rec: None)       # the note isn't repeated
+    assert svc.cell(2, "Notes").count("held:") == 1
+
+
+def test_company_fact_is_read_once_per_company(llm):
+    sheet, _ = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", find="done"),
+                        r("Beta", "Ana Diaz", email="ana@beta.com", confidence="verified", find="done"))
+    asked = []
+    run(sheet, coldstart({})[0], fact_fn=lambda rec: asked.append(rec["Company"]) or FACT)
+    assert asked == ["Acme", "Beta"]
+
+
+def test_fact_for_reads_the_source_page_on_the_company_domain(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ct.company_fact, "find", lambda company, domain, source="", job_url="": seen.update(
+        company=company, domain=domain, source=source) or FACT)
+    rec = _recs(r("Aurelian (YC)", "Max Keenan", email="max@aurelian.io",
+                  source="Published on aurelian.com/studies/macc-911"))[0]
+    assert ct.fact_for(rec) is FACT
+    assert seen == {"company": "Aurelian", "domain": "aurelian.io", "source": "Published on aurelian.com/studies/macc-911"}

@@ -37,7 +37,7 @@ def test_dry_run_writes_nothing_and_reports_everything(monkeypatch, tmp_path):
     [report] = list(tmp_path.glob("dry-run-*.md"))
     text = report.read_text()
     for want in ("## Acme", "row 2 ML Engineer (fit 5), row 3 AI Engineer (fit 4)", "Pat Lee (Recruiter) via email",
-                 "**Subject:** ML Engineer and AI Engineer — Alex Doe", "Hi Pat,",
+                 "**Subject:** ML Engineer and AI Engineer — Alex Doe, agents + model evaluation", "Hi Pat,",
                  "row 2 Outreach_2: 'Email draft ready — Pat Lee (Recruiter), pat@acme.com'",
                  "row 3 Outreach_2: 'Outreach via row 2 (ML Engineer)'", "- pat@acme.com: replied",
                  "- ana@globex.com: bounced"):
