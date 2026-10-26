@@ -694,10 +694,12 @@ class ApplyPlugin(_plugin_base.PluginBase):
         return ToolDescriptor(
             name="job_contacts",
             description=(
-                "Work through the Contacts tab of the user's job sheet in the background: look up "
-                "emails for pending people with Coldstart, then write Gmail DRAFTS (jobs account) "
-                "for verified or pattern addresses. Never sends. Use for 'find emails for my "
-                "contacts', 'run Coldstart', 'draft emails for my contacts'."
+                "THE outreach-email tool. Works through the Contacts tab of the user's job sheet in the "
+                "background: first researches applied jobs Muse left blank, then looks up emails for "
+                "pending people with Coldstart and writes Gmail DRAFTS (jobs account) from the research. "
+                "Never sends. Use for any request to email or draft outreach for jobs the user applied "
+                "to: 'draft emails to the jobs I applied to (today)', 'find emails for my contacts', "
+                "'run Coldstart', 'draft emails for my contacts'."
             ),
             input_schema={"type": "object", "properties": {}, "required": []},
             execute=execute,
@@ -715,10 +717,11 @@ class ApplyPlugin(_plugin_base.PluginBase):
         return ToolDescriptor(
             name="job_outreach",
             description=(
-                "Run job-search outreach over the user's job sheet: for jobs with fit 3+ and no "
-                "contact, find recruiters / hiring managers, look up their emails, and write Gmail "
-                "DRAFTS (jobs account) or LinkedIn notes into the sheet. Never sends anything. Use for "
-                "'do my outreach', 'find recruiters for my jobs', 'draft outreach for the sheet'. "
+                "The OLD sheet outreach loop: for job-sheet rows with fit 3+ and no contact, find "
+                "recruiters / hiring managers and write LinkedIn notes into the sheet. It does NOT "
+                "draft emails and does not cover applied jobs — emails for applied jobs are "
+                "job_contacts. Use only for 'do my outreach', 'find recruiters for my jobs', "
+                "'LinkedIn notes for the sheet'. "
                 "dry_run=true does everything but write drafts, the sheet or Coldstart feedback, and "
                 "saves a report instead ('dry run my outreach', 'preview outreach')."
             ),

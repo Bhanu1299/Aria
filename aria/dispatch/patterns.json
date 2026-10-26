@@ -69,7 +69,7 @@
     {"id": "job_outreach", "tool": "job_outreach", "params": {},
      "regex": "(?:do|run|start) (?:my |the )?(?:job )?outreach(?: (?:for|on) (?:my jobs|the sheet|muse))?|find (?:recruiters|contacts|people to contact) for (?:my jobs|the sheet|muse)"},
     {"id": "job_contacts", "tool": "job_contacts", "params": {},
-     "regex": "(?:run coldstart|(?:find|look up|get) (?:the )?emails? for (?:my |the )?contacts|(?:draft|write) (?:the )?emails? (?:for|to) (?:my |the )?contacts|(?:do|run|work through) (?:my |the )?contacts(?: tab)?)"},
+     "regex": "(?:run coldstart|(?:find|look up|get) (?:the )?emails? for (?:my |the )?contacts|(?:draft|write) (?:the )?emails? (?:for|to) (?:my |the )?contacts|(?:do|run|work through) (?:my |the )?contacts(?: tab)?|(?:draft|write|do|send|make) (?:the |some |my |cold )?(?:outreach )?(?:emails?|outreach) (?:for|to) (?:the |my |all )?(?:jobs?|companies|roles|ones|places) (?:that )?(?:we |i |we've |i've )?(?:just |already )?(?:applied|have applied)(?: (?:to|for|at))?(?: (?:them|today|this week|yesterday))?)"},
     {"id": "next_job_from_sheet", "tool": "job_from_sheet", "params": {},
      "regex": "(?:(?:what's|what is|whats|get|get me|give me|show me|read me|pull up|tell me) )?(?:the )?next job(?: (?:from|on|in) (?:muse|the muse sheet|my (?:job )?(?:list|sheet)|the sheet))?"},
 

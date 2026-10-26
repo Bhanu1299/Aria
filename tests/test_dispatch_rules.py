@@ -87,6 +87,9 @@ def rules():
     ("find emails for my contacts", "job_contacts", {}),
     ("run coldstart", "job_contacts", {}),
     ("draft emails for my contacts", "job_contacts", {}),
+    ("draft emails to the jobs we applied today", "job_contacts", {}),     # live 2026-10-26: went to the old loop
+    ("draft emails for the jobs I applied to", "job_contacts", {}),
+    ("write outreach to the companies I've applied", "job_contacts", {}),
 ])
 def test_direct_routes(rules, utterance, tool, params):
     m = rules.match(utterance)
