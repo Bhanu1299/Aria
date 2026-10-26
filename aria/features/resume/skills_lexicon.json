@@ -577,13 +577,6 @@
     "Ansible": [
       "ansible"
     ],
-    "CI/CD": [
-      "ci/cd",
-      "cicd",
-      "continuous integration",
-      "continuous delivery",
-      "continuous deployment"
-    ],
     "GitHub Actions": [
       "github actions"
     ],
@@ -642,10 +635,6 @@
     "OpenTelemetry": [
       "opentelemetry",
       "otel"
-    ],
-    "Observability": [
-      "observability",
-      "monitoring and alerting"
     ],
     "Infrastructure as Code": [
       "infrastructure as code",
@@ -808,6 +797,17 @@
     "Fault Tolerance": [
       "fault tolerance",
       "fault-tolerant"
+    ],
+    "Observability": [
+      "observability",
+      "monitoring and alerting"
+    ],
+    "CI/CD": [
+      "ci/cd",
+      "cicd",
+      "continuous integration",
+      "continuous delivery",
+      "continuous deployment"
     ]
   },
   "Tools": {

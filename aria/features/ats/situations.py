@@ -31,6 +31,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from aria.features.ats import untrusted
+
 logger = logging.getLogger(__name__)
 
 STOPS = ("closed", "already_applied", "email_only", "assessment")
@@ -163,7 +165,7 @@ _SYSTEM = (
     '"click": <number of the control to click, only for kind=click>, "why": "<few words>"}. '
     "Use kind=click only when clicking one listed control clearly leads toward this job's application "
     "form (an Apply button, the job's own link in a list, Continue on a notice). Never pick a control "
-    "that submits, sends, pays, deletes or signs out. If unsure, kind=other."
+    "that submits, sends, pays, deletes or signs out. If unsure, kind=other. " + untrusted.RULE
 )
 
 
@@ -175,9 +177,10 @@ def ask(snap: dict, job: dict) -> Optional[Situation]:
     buttons = [c for c in _visible_buttons(snap) if not NEVER_CLICK.search(c["text"])][:60]
     listing = "\n".join(f"[{c['i']}] {c['tag']}: {c['text']}" for c in buttons)
     allowed = {c["i"] for c in buttons}
-    prompt = (f"Job: {job.get('role') or '?'} at {job.get('company') or '?'}\n"
-              f"Page: {snap.get('title') or ''} — {snap.get('url') or ''}\n\n"
-              f"Page text (start):\n{(snap.get('text') or '')[:2500]}\n\nClickable controls:\n{listing or '(none)'}")
+    page, _flags = untrusted.guard(f"Page: {snap.get('title') or ''} — {snap.get('url') or ''}\n\n"
+                                   f"Page text (start):\n{(snap.get('text') or '')[:2500]}\n\n"
+                                   f"Clickable controls:\n{listing or '(none)'}", "Web page")
+    prompt = f"Job: {job.get('role') or '?'} at {job.get('company') or '?'}\n\n{page}"
 
     def validate(raw: str):
         try:

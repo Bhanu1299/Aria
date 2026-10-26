@@ -37,8 +37,19 @@ class Skill:
 
     @property
     def text(self) -> str:
-        """What goes on the resume: the JD's wording when there is one."""
+        """What goes in a bullet: the JD's wording when there is one."""
         return self.wording or self.name
+
+    @property
+    def label(self) -> str:
+        """What goes on a skill line: the JD's wording, a plain lowercase phrase capitalised
+        ("distributed systems" → "Distributed Systems")."""
+        w = self.text
+        if w.islower() and not any(c in w for c in "./+#") and len(w) > 4:
+            return " ".join(x.capitalize() for x in w.split())
+        if w.islower() and len(w) <= 4 and w.isalpha():
+            return self.name
+        return w
 
 
 def _alias_regex(alias: str) -> re.Pattern:
@@ -124,15 +135,12 @@ def extract(jd_text: str) -> list:
 
 
 def _wording(hit: str, skill: Skill) -> str:
-    """The JD's spelling, tidied: all-lowercase hits ("kubernetes", "postgres") take the
-    canonical's capitalisation when they are the same word, else title case for plain words."""
+    """The JD's spelling with whitespace tidied; a lowercase hit of a proper name
+    ("kubernetes", "postgresql") takes the canonical's capitalisation."""
     hit = " ".join(hit.split())
-    if _norm(hit) == _norm(skill.name):
+    if _norm(hit) == _norm(skill.name) and hit.islower() and not skill.name.islower() \
+            and skill.category != "Practices":
         return skill.name
-    if hit.islower() and len(hit) <= 4:
-        return hit.upper() if hit.isalpha() and len(hit) <= 3 else hit
-    if hit.islower():
-        return " ".join(w if any(c in w for c in "./+#") else w.capitalize() for w in hit.split())
     return hit
 
 

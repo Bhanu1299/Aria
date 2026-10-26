@@ -21,6 +21,7 @@ import re
 from typing import Callable, Optional
 
 from aria.features.answer_bank import choose_option
+from aria.features.ats import untrusted
 from aria.llm import llm_client
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,8 @@ _GUESS_SYSTEM = (
     "- If a question lists options, the answer must be exactly one of those options, copied verbatim.\n"
     f"- If the profile does not clearly support an answer, answer {UNKNOWN}. Never guess personal "
     "facts (dates, numbers, names, legal or visa status, criminal history, demographics).\n"
-    "- Return a single JSON object mapping each question id to its answer. No prose, no markdown."
+    "- Return a single JSON object mapping each question id to its answer. No prose, no markdown.\n"
+    f"- {untrusted.RULE}"
 )
 
 _DRAFT_SYSTEM = (
@@ -42,7 +44,7 @@ _DRAFT_SYSTEM = (
     "candidate profile and resume (projects, employers, numbers, skills) and the job description — "
     "never invent a project, employer, number, credential or opinion the resume doesn't support. "
     "Name a real project or result from the resume when the question allows it. Answer exactly "
-    "what was asked."
+    "what was asked. " + untrusted.RULE
 )
 _UNKNOWN_RULE = (f"If this asks for a personal fact the profile doesn't state (a name, date, place, number), "
                  f"reply with exactly {UNKNOWN}.")
@@ -98,7 +100,8 @@ def guess_short(questions: list[dict], profile: str) -> dict[str, str]:
         {"id": q["name"], "question": q["label"], **({"options": q["options"]} if q.get("options") else {})}
         for q in questions
     ]
-    user = f"Candidate profile:\n{profile}\n\nQuestions:\n{json.dumps(listing, indent=1)}"
+    questions_block, _flags = untrusted.guard(json.dumps(listing, indent=1), "Questions from the form")
+    user = f"Candidate profile:\n{profile}\n\n{questions_block}"
     try:
         _resp, answers = llm_client.complete_checked(
             "form_short_answer",
@@ -141,8 +144,10 @@ def draft_long(label: str, job_text: str, profile: str, max_chars: int = 0, shor
     """allow_unknown: the label may be a personal fact in a text box ("High School Name") —
     the model may answer UNKNOWN. Otherwise it must write an answer from the resume."""
     rule = _UNKNOWN_RULE if allow_unknown else _ALWAYS_ANSWER
+    question, _qflags = untrusted.guard(label, "Question from the form")
+    job_block, _jflags = untrusted.guard(job_text[:6000], "Job")
     user = (
-        f"Question: {label}\n{_length_rule(max_chars, short)}\n{rule}\n\nJob:\n{job_text[:6000]}\n\n"
+        f"{question}\n{_length_rule(max_chars, short)}\n{rule}\n\n{job_block}\n\n"
         f"Candidate profile and resume:\n{profile}"
     )
     try:

@@ -66,6 +66,12 @@ TASK_TIERS: dict[str, str] = {
     "outreach_angle_judge": SMALL,        # features/outreach/writer.py — Muse's Angle: company fact or analogy?
     "outreach_email": STRONG,             # features/outreach/writer.py — cold email subject + 3 lines
     "outreach_linkedin_note": STRONG,     # features/outreach/writer.py — LinkedIn connection note
+    # job prep (docs/job-prep-design.md)
+    "resume_skills_extract": SMALL,       # features/resume/tailor.py — JD hard skills the lexicon misses
+    "resume_tailor": STRONG,              # features/resume/tailor.py — bullets reworded in the JD's terms
+    "cover_letter_write": STRONG,         # features/resume/cover_letter.py — one-page cover letter
+    "answer_fix": STRONG,                 # features/ats/answer_check.py — one rewrite without the violations
+    "reply_classify": SMALL,              # features/jobprep/replies.py — employer reply the rules can't tell
 }
 
 
