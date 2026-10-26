@@ -11,11 +11,20 @@ tab; Aria never looks anything up. A Brief carries what the email may talk about
     Signal            something recent (a launch, a post, a hire)   optional
     Person type       generic inbox | hiring (recruiter / manager) | engineer
 
-The email draws on ONE piece of the candidate's work, picked by code (work_for): the
-project or job the Angle names, else the one that fits the role — voice → Aria, ML / data
-→ AppsTek, AI / LLM / agents → LLM Gateway, frontend / full-stack / product → Draw.AI,
-anything else (backend, general SWE) → Appetit — from the answer bank's Experience and
-Projects lists. The LLM sees only that entry, never the whole resume.
+The email draws on ONE piece of the candidate's work (plan → Plan), from the answer
+bank's Experience and Projects lists. The role's pick (role_work) is code: voice → Aria,
+ML / data → AppsTek, AI / LLM / agents → LLM Gateway, frontend / full-stack / product →
+Draw.AI, anything else (backend, general SWE) → Appetit. Muse's Angle usually names a
+project ("Aria: …"); the user's rule when the two differ:
+
+    Muse wins only when its Angle ties the project to a CONCRETE fact about the company
+    (CarMax runs voice agents → Aria). An analogy ("plan-act-verify is like flight
+    software") → the role wins, Muse's Angle is left out of the email, and the Contacts
+    row's Notes get "angle: role override". Rows are never held for this.
+
+Concrete vs analogy is judged by the small tier (task outreach_angle_judge); a "concrete"
+verdict counts only when the fact it quotes is in Muse's research (Problem / Signal /
+Signal source). The LLM writing the email sees only the chosen entry, never the resume.
 
 missing(brief) names a required input that is blank or "unknown": no email then (the
 caller writes "needs research"). The LLM writes the subject and three lines — they
@@ -76,8 +85,9 @@ _EMAIL_SYSTEM = (
     "Line 1: show you understand what they're solving, in your own words. Use the Signal if it "
     "fits. Never restate their marketing copy. If the recipient is a recruiter or manager, talk "
     "about the team's problem, not the company mission.\n"
-    "Line 2: the Angle — what the candidate built and the specific part that overlaps with "
-    "their problem. Concrete and honest: what it does, what was hard.\n"
+    "Line 2: the Angle (or, when there's none, the candidate's work given below) — what the "
+    "candidate built and the specific part that overlaps with their problem. Concrete and "
+    "honest: what it does, what was hard.\n"
     "Line 3: one genuine sentence on why this problem pulls the candidate in, tied to the "
     "candidate's work given below, not passion.\n\n"
     "Lines 1-3 together are 30-60 words. The greeting, \"I applied for the role. Resume "
@@ -107,6 +117,7 @@ class Brief:
     person: str = ""            # the recipient's name; "" for a generic inbox
     title: str = ""
     person_type: str = ""       # GENERIC | HIRING | ENGINEER ("" → from person/title)
+    signal_source: str = ""
 
     @property
     def kind(self) -> str:
@@ -273,19 +284,26 @@ def _named(entry: dict, text: str) -> bool:
     return bool(short) and re.search(r"(?i)(?<![a-z])" + re.escape(short) + r"(?![a-z])", text or "") is not None
 
 
-def work_for(brief: Brief) -> Optional[dict]:
-    """The one job or project the email talks about: the one the Angle names, else the one
-    that fits the role (and, for voice, the company's problem). None with no history."""
+@dataclass
+class Plan:
+    """What the email is about: one work entry, and whether Muse's Angle is used for it."""
+    work: Optional[dict]
+    use_angle: bool = True
+    override: bool = False      # Muse named another project by analogy only: the role's pick won
+    why: str = ""
+
+
+def angle_work(brief: Brief) -> Optional[dict]:
+    """The job or project Muse's Angle names, if any."""
+    return next((e for e in _history() if _named(e, brief.angle)), None)
+
+
+def role_work(brief: Brief) -> Optional[dict]:
+    """The job or project that fits the role (and, for voice, the company's problem)."""
     history = _history()
     if not history:
         return None
-    named = next((e for e in history if _named(e, brief.angle)), None)
-    if named:
-        return named
-    if _VOICE.search(f"{brief.role} {brief.problem}"):
-        rules = (("any", None, ("aria",)),) + _WORK_RULES
-    else:
-        rules = _WORK_RULES
+    rules = ((("any", None, ("aria",)),) if _VOICE.search(f"{brief.role} {brief.problem}") else ()) + _WORK_RULES
     for where, pattern, keys in rules:
         text = {"role": brief.role, "problem": brief.problem}.get(where, "")
         if pattern is None or pattern.search(text):
@@ -296,21 +314,91 @@ def work_for(brief: Brief) -> Optional[dict]:
     return history[0]
 
 
-def _input(brief: Brief) -> str:
+_JUDGE_SYSTEM = (
+    "You check one line of job-outreach research. The Angle links one of the candidate's "
+    "projects to a company. Decide: does it rest on a CONCRETE fact about this company — "
+    "something the company actually does, ships, runs, announced or credits (e.g. \"CarMax "
+    "runs voice agents for inbound calls\") — or only on an ANALOGY (\"plan-act-verify is like "
+    "flight software\", \"the same pattern applied to travel\")? A generic description of "
+    "the industry is an analogy. Reply with JSON only: "
+    '{"concrete": true, "fact": "<the company fact, quoted from the research>"} or '
+    '{"concrete": false}.'
+)
+
+
+def _judge_validator(research: str):
+    def check(text: str):
+        m = re.search(r"\{.*\}", text or "", re.S)
+        try:
+            data = json.loads(m.group(0)) if m else None
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("concrete"), bool):
+            return None
+        if not data["concrete"]:
+            return (False, "")
+        fact = str(data.get("fact") or "").strip()
+        claimed, have = words(fact), words(research)
+        if len(claimed) < 2 or sum(1 for w in claimed if w in have) / len(claimed) < 0.6:
+            return None                             # the "fact" isn't in Muse's research
+        return (True, fact)
+    return check
+
+
+def angle_is_concrete(brief: Brief) -> tuple:
+    """(True, the fact) when the Angle rests on a concrete company fact, else (False, '').
+    A judge that fails twice counts as an analogy (the role's pick is the safe one)."""
+    research = f"{brief.problem} {brief.signal} {brief.signal_source}"
+    text = (f"Company: {bare_company(brief.company)}\nRole: {brief.role}\n\nResearch:\n"
+            f"Problem: {brief.problem}\nSignal: {brief.signal}\nSignal source: {brief.signal_source}\n\n"
+            f"Angle: {brief.angle}")
+    try:
+        _resp, out = llm_client.complete_checked(
+            "outreach_angle_judge", [{"role": "user", "content": text}],
+            validate=_judge_validator(research), system=_JUDGE_SYSTEM, max_tokens=200)
+    except Exception as exc:
+        logger.error("outreach: angle judge for %s failed: %s", brief.company, exc)
+        return False, ""
+    return out or (False, "")
+
+
+def plan(brief: Brief) -> Plan:
+    """Which work the email is about (the user's rule; see the module docstring)."""
+    named, fits = angle_work(brief), role_work(brief)
+    if named is None:
+        return Plan(fits, why="the Angle names no project; the role's pick")
+    if fits is None or named is fits:
+        return Plan(named, why="Muse's pick fits the role")
+    concrete, fact = angle_is_concrete(brief)
+    if concrete:
+        return Plan(named, why=f"Muse's pick, tied to a company fact: {fact}")
+    return Plan(fits, use_angle=False, override=True,
+                why=f"Muse's {named['label']} rests on an analogy; the role fits {fits['label']}")
+
+
+def work_for(brief: Brief) -> Optional[dict]:
+    """The one job or project the email talks about."""
+    return plan(brief).work
+
+
+def _input(brief: Brief, p: Plan) -> str:
     who = "a generic company inbox" if brief.kind == GENERIC else \
         f"{brief.person}, {brief.title or 'works there'}" + (" (recruiter / manager)" if brief.kind == HIRING else "")
-    text = (f"Company: {bare_company(brief.company)}\nRole: {brief.role}\nRecipient: {who}\n\n"
-            f"Company problem: {brief.problem}\nAngle (the only experience you may claim): {brief.angle}\n")
+    text = f"Company: {bare_company(brief.company)}\nRole: {brief.role}\nRecipient: {who}\n\nCompany problem: {brief.problem}\n"
+    if p.use_angle:
+        text += f"Angle (the only experience you may claim): {brief.angle}\n"
     if not _blank(brief.signal):
         text += f"Signal: {brief.signal}\n"
-    work = work_for(brief)
-    if work:
-        text += f"\nThe candidate's work for this role (the only project to talk about): {work['label']}\n{work['text']}"
+    if p.work:
+        text += f"\nThe candidate's work for this role (the only project to talk about): {p.work['label']}\n{p.work['text']}"
+        if not p.use_angle:
+            text += "\n(There's no Angle for this one: line 2 is this work and what was hard in it.)"
     return text
 
 
-def _validator(brief: Brief):
+def _validator(brief: Brief, p: Plan):
     """(subject, [line1, line2, line3]) when the output passes every check, else None."""
+    built = brief.angle if p.use_angle or not p.work else f"{p.work['label']} {p.work['text']}"
     theirs = f"{brief.company} {brief.problem} {brief.signal}"
     allowed = _numbers(theirs)
     copied = _runs(f"{brief.problem} {brief.signal}")
@@ -334,7 +422,7 @@ def _validator(brief: Brief):
         if _runs(prose) & copied:
             return None                             # their marketing copy, restated
         if len(words(lines[0]) & words(f"{brief.problem} {brief.signal}")) < 2 or \
-                len(words(lines[1]) & words(brief.angle)) < 2:
+                len(words(lines[1]) & words(built)) < 2:
             return None                             # could go to another company
         if not EMAIL_WORDS[0] <= len(f"{fixed} {prose}".split()) <= EMAIL_WORDS[1]:
             return None
@@ -342,16 +430,18 @@ def _validator(brief: Brief):
     return check
 
 
-def email(brief: Brief, to: str) -> Optional[dict]:
+def email(brief: Brief, to: str, p: Optional[Plan] = None) -> Optional[dict]:
     """{to, subject, body} for one Contacts row. None when a required input is missing or
-    the LLM output failed the checks (nothing is drafted then)."""
+    the LLM output failed the checks (nothing is drafted then). p: plan(brief), if the
+    caller already has it."""
     if missing(brief):
         logger.info("outreach: %s needs research (%s)", brief.company, ", ".join(missing(brief)))
         return None
+    p = p or plan(brief)
     try:
         _resp, out = llm_client.complete_checked(
-            "outreach_email", [{"role": "user", "content": _input(brief)}],
-            validate=_validator(brief), system=_EMAIL_SYSTEM, max_tokens=500)
+            "outreach_email", [{"role": "user", "content": _input(brief, p)}],
+            validate=_validator(brief, p), system=_EMAIL_SYSTEM, max_tokens=500)
     except Exception as exc:
         logger.error("outreach: email for %s failed: %s", brief.company, exc)
         return None

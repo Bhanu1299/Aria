@@ -166,19 +166,87 @@ def test_role_phrase(role, phrase):
     ("Founding Engineer", "Freight pricing takes days", "", "Appetit"),
     ("Junior Forward Deployed Engineer", "", "", "Appetit"),
     ("Backend Engineer", "Our API calls time out under load", "", "Appetit"),        # "calls" isn't voice
-    ("AI Engineer", "", "Built Draw.AI, where users sketch and speak at once", "Draw.AI"),  # the Angle names it
-    ("Backend Engineer", "", "At AppsTek I built Spark pipelines", "AppsTek"),
 ])
-def test_the_email_is_about_the_work_that_fits_the_role(role, problem, angle, work):
-    assert work in writer.work_for(brief(role=role, problem=problem, angle=angle))["label"]
+def test_the_role_picks_the_work_that_fits_it(role, problem, angle, work):
+    assert work in writer.role_work(brief(role=role, problem=problem, angle=angle))["label"]
 
 
 def test_the_llm_sees_only_the_chosen_work_never_the_whole_history(monkeypatch):
     calls = _llm(monkeypatch, OUT)
-    writer.email(brief(role="Backend Engineer", problem=PROBLEM, angle="Loyalty tables at Appetit"), "x@y.io")
-    c = calls[0]["content"]
+    writer.email(brief(role="Backend Engineer", problem="Checkout APIs slow down under load",
+                       angle="Appetit: loyalty tables"), "x@y.io")
+    c = calls[-1]["content"]
+    assert calls[-1]["task"] == "outreach_email"
     assert "Software Engineer Intern at Appetit" in c and "Loyalty tables, CI/CD." in c
     assert "LLM Gateway" not in c and "Draw.AI" not in c and "AppsTek" not in c
+
+
+def _judge(monkeypatch, verdict, email_out=OUT):
+    """The judge answers `verdict` (a dict, or raw text); the email writer answers email_out."""
+    import json
+    calls = []
+
+    def complete_checked(task, messages, validate, system=None, max_tokens=1024):
+        calls.append({"task": task, "content": messages[0]["content"]})
+        text = (verdict if isinstance(verdict, str) else json.dumps(verdict)) if task == "outreach_angle_judge" \
+            else email_out
+        return SimpleNamespace(text=text, stop_reason="end_turn"), validate(text)
+    monkeypatch.setattr(writer.llm_client, "complete_checked", complete_checked)
+    return calls
+
+
+CARMAX = dict(company="CarMax", role="Analyst Rotation Program",
+              problem="Helps car buyers skip haggling by selling inspected used cars at fixed prices.",
+              signal="August 2026: Announced Sierra AI voice agents for inbound sales calls.",
+              angle="Aria: CarMax is scaling voice agents for inbound calls, which is Aria's territory.")
+ROCKET = dict(company="Rocket Lab", role="Flight Software Engineer I",
+              problem="Helps customers get satellites into orbit by building rockets and spacecraft.",
+              signal="August 2026: The U.S. Space Force awarded Rocket Lab a contract.",
+              angle="Aria: Aria's plan-act-verify loop maps to flight software's core discipline.")
+
+
+def test_same_project_as_the_role_needs_no_judge(monkeypatch):
+    calls = _judge(monkeypatch, {"concrete": False})
+    p = writer.plan(brief(role="AI Engineer", problem="Teams overpay for frontier models on easy prompts",
+                          angle="LLM Gateway: they route between models"))
+    assert "LLM Gateway" in p.work["label"] and p.use_angle and not p.override and calls == []
+
+
+def test_muse_wins_when_its_angle_rests_on_a_concrete_company_fact(monkeypatch):
+    calls = _judge(monkeypatch, {"concrete": True, "fact": "Sierra AI voice agents for inbound sales calls"})
+    p = writer.plan(brief(**CARMAX))
+    assert "Aria" in p.work["label"] and p.use_angle and not p.override
+    assert calls[0]["task"] == "outreach_angle_judge" and "Angle: Aria: CarMax" in calls[0]["content"]
+
+
+def test_an_analogy_loses_to_the_role(monkeypatch):
+    _judge(monkeypatch, {"concrete": False})
+    p = writer.plan(brief(**ROCKET))
+    assert "Appetit" in p.work["label"] and not p.use_angle and p.override
+
+
+def test_a_concrete_verdict_needs_the_fact_to_be_in_the_research(monkeypatch):
+    _judge(monkeypatch, {"concrete": True, "fact": "Rocket Lab flies an AI copilot on every launch"})
+    assert writer.plan(brief(**ROCKET)).override              # an invented fact counts as no verdict
+
+
+def test_judge_down_means_the_role_wins(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("gateway down")
+    monkeypatch.setattr(writer.llm_client, "complete_checked", boom)
+    assert writer.plan(brief(**ROCKET)).override
+
+
+def test_on_override_the_email_leaves_muses_angle_out(monkeypatch):
+    lines = ("Getting a satellite to orbit means every rocket and spacecraft step has to hold up the first time.\n\n"
+             "At Appetit I built the loyalty tables and the CI/CD pipeline. The hard part was keeping redemptions "
+             "consistent across services.\n\n"
+             "Software that can't be patched after launch is the kind I want to learn to write.")
+    calls = _judge(monkeypatch, {"concrete": False}, email_out="SUBJECT: getting satellites to orbit\n\n" + lines)
+    msg = writer.email(brief(**ROCKET), "brad@rocketlabusa.com")
+    c = calls[-1]["content"]
+    assert msg is not None and "Angle" not in c.split("The candidate's work")[0]
+    assert "plan-act-verify" not in c and "Software Engineer Intern at Appetit" in c
 
 
 def test_no_history_means_no_work_line(monkeypatch):

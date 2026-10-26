@@ -494,3 +494,14 @@ def test_brief_comes_from_the_research_columns():
     assert (b.company, b.role, b.problem, b.angle, b.signal, b.person, b.kind) == (
         "Aurelian (YC)", "Software Engineer (New Grad)", PROBLEM, ANGLE, "MACC 911 automated its non-emergency line",
         "Max Keenan", writer.ENGINEER)
+
+
+def test_role_override_is_noted_and_the_row_is_still_drafted(llm, monkeypatch):
+    monkeypatch.setattr(writer, "plan", lambda brief: writer.Plan(
+        {"label": "Eval harness", "key": "eval harness", "text": "Eval harness for a voice agent; grading open-ended answers."},
+        use_angle=False, override=True, why="analogy"))
+    sheet, svc = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="pattern", find="done"))
+    run(sheet, coldstart({})[0])
+    assert svc.cell(2, "Draft status") == "drafted"
+    notes = svc.cell(2, "Notes").splitlines()
+    assert [n.split(": ", 1)[1] for n in notes] == ["pattern guess", "angle: role override"]

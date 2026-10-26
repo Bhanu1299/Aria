@@ -63,6 +63,7 @@ TASK_TIERS: dict[str, str] = {
     "form_field_match": SMALL,            # features/answer_bank.py — which bank KEY a question means
     "apply_page_situation": SMALL,        # features/ats/situations.py — what a non-form page is, what to click
     "form_free_text": STRONG,             # features/ats/answers.py — "why us" answers
+    "outreach_angle_judge": SMALL,        # features/outreach/writer.py — Muse's Angle: company fact or analogy?
     "outreach_email": STRONG,             # features/outreach/writer.py — cold email subject + 3 lines
     "outreach_linkedin_note": STRONG,     # features/outreach/writer.py — LinkedIn connection note
 }

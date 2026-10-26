@@ -28,7 +28,9 @@ One run, all code until the email body:
                company is sent; a row with a Gmail draft link is never drafted again.
                Muse's research columns feed the email (writer.email, the user's spec v2):
                Company problem + Angle required, else Notes "needs research" and no draft;
-               Signal optional; Person type (else from Person/Title). The LLM writes the
+               Signal optional; Person type (else from Person/Title). Which work the email
+               is about: writer.plan (Muse's project only when tied to a concrete company
+               fact, else the role's; "angle: role override" in Notes). The LLM writes the
                subject and three lines; code checks them and adds the rest. Gmail DRAFT in
                the jobs account (only if it is OUTREACH_FROM), resume PDF attached →
                Draft status drafted, Gmail draft link, Updated; "pattern guess" in Notes
@@ -61,7 +63,7 @@ COMPANY, ROLE, PERSON, TITLE = "Company", "Tracked role", "Person", "Title"
 LINKEDIN, JOB_URL, DOMAIN = "LinkedIn URL", "Job URL", "Domain"
 EMAIL, SOURCE, CONFIDENCE, PATTERN, FIND_STATUS = "Email", "Source", "Confidence", "Email pattern", "Find status"
 DRAFT_STATUS, DRAFT_LINK, WAVE, UPDATED, NOTES = "Draft status", "Gmail draft link", "Wave", "Updated", "Notes"
-PROBLEM, SIGNAL, ANGLE, PERSON_TYPE = "Company problem", "Signal", "Angle", "Person type"
+PROBLEM, SIGNAL, SIGNAL_SOURCE, ANGLE, PERSON_TYPE = "Company problem", "Signal", "Signal source", "Angle", "Person type"
 WRITABLE = (DOMAIN, EMAIL, SOURCE, CONFIDENCE, PATTERN, FIND_STATUS, DRAFT_STATUS, DRAFT_LINK, WAVE, UPDATED, NOTES)
 
 FIND_PENDING, FIND_DONE, FIND_ERROR = "pending", "done", "error"
@@ -71,7 +73,7 @@ _IN_FLIGHT = {DRAFTED, APPROVED, SENT, REPLIED}          # counts toward the per
 _WAVE_CLEARED = {SENT, NO_REPLY}                        # a later wave may start after these
 _NOT_A_PERSON = {"", "—", "–", "-", "n/a", "na", "none", "?"}
 _GENERIC_INBOX = {"—", "–", "-"}
-NEEDS_RESEARCH, PATTERN_GUESS = "needs research", "pattern guess"
+NEEDS_RESEARCH, PATTERN_GUESS, ROLE_OVERRIDE = "needs research", "pattern guess", "angle: role override"
 
 
 def _now() -> str:
@@ -314,14 +316,14 @@ def brief_of(rec: dict) -> writer.Brief:
     """The email's inputs from one row: Muse's research columns + who it's to."""
     who = get(rec, PERSON)
     return writer.Brief(company=get(rec, COMPANY), role=get(rec, ROLE), problem=get(rec, PROBLEM),
-                        angle=get(rec, ANGLE), signal=get(rec, SIGNAL),
+                        angle=get(rec, ANGLE), signal=get(rec, SIGNAL), signal_source=get(rec, SIGNAL_SOURCE),
                         person="" if is_generic_inbox(who) else who, title=get(rec, TITLE),
                         person_type=get(rec, PERSON_TYPE))
 
 
-def compose(rec: dict) -> Optional[dict]:
+def compose(rec: dict, p: Optional[writer.Plan] = None) -> Optional[dict]:
     """{to, subject, body} from the gateway LLM, or None if its output failed checks."""
-    return writer.email(brief_of(rec), first_email(rec))
+    return writer.email(brief_of(rec), first_email(rec), p)
 
 
 def resume_pdf() -> str:
@@ -506,16 +508,17 @@ def _draft_all(records, only, limit, gmail, resume, write, rep, say, log) -> Non
         for rec in queue:
             wave = waves.get(rec[ROW]) or get(rec, WAVE)
             brief = brief_of(rec)
-            work = writer.work_for(brief)
             say(f"  row {rec[ROW]}: {get(rec, PERSON)} <{first_email(rec)}> at {get(rec, COMPANY)}, "
-                f"wave {wave}, {brief.kind}, about: {work['label'] if work else 'no history'}")
+                f"wave {wave}, {brief.kind}")
             gaps = writer.missing(brief)
             if gaps:
                 say(f"  needs research: {' and '.join(gaps)} blank or unknown; no draft")
                 write(rec, {WAVE: str(wave), UPDATED: _now(), NOTES: _note_once(rec, NEEDS_RESEARCH)})
                 rep.held.append(rec[ROW])
                 continue
-            msg = compose(rec)
+            p = writer.plan(brief)
+            say(f"  about: {p.work['label'] if p.work else 'no history'} — {p.why}")
+            msg = compose(rec, p)
             if msg is None:
                 say("  the LLM draft failed (error or checks; see the log); no draft")
                 write(rec, {WAVE: str(wave), UPDATED: _now(), NOTES: add_note(get(rec, NOTES), "LLM draft failed; not created")})
@@ -533,6 +536,9 @@ def _draft_all(records, only, limit, gmail, resume, write, rep, say, log) -> Non
             fields = {DRAFT_STATUS: DRAFTED, DRAFT_LINK: res.get("link", ""), WAVE: str(wave), UPDATED: _now()}
             if status(rec, CONFIDENCE) == cs.PATTERN:
                 fields[NOTES] = _note_once(rec, PATTERN_GUESS)
+            if p.override:
+                rec[NOTES] = fields.get(NOTES, get(rec, NOTES))
+                fields[NOTES] = _note_once(rec, ROLE_OVERRIDE)
             write(rec, fields)
             rep.drafted.append((rec[ROW], res.get("link", "")))
         s.detail = f"{len(rep.drafted)} drafted"
