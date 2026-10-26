@@ -5,8 +5,11 @@ import base64
 import email as _email_lib
 import logging
 import re
+from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from pathlib import Path
+from typing import Sequence
 
 from aria.integrations import google_auth
 
@@ -199,9 +202,11 @@ class GmailClient:
         """Save a draft in Gmail. Never sends. reply_to_id threads it as a reply to that email."""
         return self.save_draft(to, subject, body, cc, reply_to_id)["message"]
 
-    def save_draft(self, to: str, subject: str, body: str, cc: str = "", reply_to_id: str = "") -> dict:
+    def save_draft(self, to: str, subject: str, body: str, cc: str = "", reply_to_id: str = "",
+                   attachments: Sequence[str] = ()) -> dict:
         """create_draft with the result: {"ok", "message", "draft_id", "message_id", "link"}. Never sends.
-        link opens the draft in Gmail's web UI, in this account (u/<address>)."""
+        link opens the draft in Gmail's web UI, in this account (u/<address>).
+        attachments: file paths attached as-is (e.g. the resume PDF)."""
         out = {"ok": False, "message": "", "draft_id": "", "message_id": "", "link": ""}
         if not self.is_configured():
             return {**out, "message": self._not_setup_msg}
@@ -210,6 +215,14 @@ class GmailClient:
             return {**out, "message": self._auth_expired_msg}
         try:
             msg = MIMEText(body)
+            if attachments:
+                outer = MIMEMultipart()
+                outer.attach(msg)
+                for path in attachments:
+                    part = MIMEApplication(Path(path).read_bytes(), Name=Path(path).name)
+                    part["Content-Disposition"] = f'attachment; filename="{Path(path).name}"'
+                    outer.attach(part)
+                msg = outer
             message: dict = {}
             if reply_to_id:
                 orig = svc.users().messages().get(

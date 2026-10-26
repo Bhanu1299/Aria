@@ -1,20 +1,28 @@
-"""features/outreach/writer.py — the outreach text. The LLM writes the body; code does the rest.
+"""features/outreach/writer.py — the outreach text. The LLM writes the lines; code does the rest.
 
-    email(target, to, posting="", fact=None) → {"to", "subject", "body"} | None   task outreach_email
-    linkedin_note(target, fact=None) → str | None                  task outreach_linkedin_note
+    email(brief, to) → {"to", "subject", "body"} | None          task outreach_email
+    linkedin_note(target) → str | None                         task outreach_linkedin_note
 
-Every email is about the company: `fact` (company_fact.Fact — what they solve, read off
-their own pages) is REQUIRED, and the body ties it to the candidate's closest project or
-job. No fact → None (the caller holds the draft; a generic email is worse than none).
+The email follows the user's spec (v2). Muse researches each company into the Contacts
+tab; Aria never looks anything up. A Brief carries what the email may talk about:
 
-Code owns the subject ("<Role> — <Name>, <hook>": the dashboard links the thread to its
-job by the part before " — "; the LLM writes only the short hook), greeting, sign-off
-(name, LinkedIn | GitHub) and the checks; the LLM writes the hook and the middle from
-the outreach profile (today's date, education, experience, the resume text, the sheet's
-fit notes), the roles and the fact. The profile never includes legal or demographic
-facts. Output is dropped — never sent anywhere — when it fails a check: length, a
-placeholder, its own greeting or sign-off, a filler opener, no mention of the company's
-problem, or a number that isn't in the profile, resume, fact or posting.
+    Company problem   what they're solving        REQUIRED
+    Angle             what the candidate built that overlaps with it, and what was hard   REQUIRED
+    Signal            something recent (a launch, a post, a hire)   optional
+    Person type       generic inbox | hiring (recruiter / manager) | engineer
+
+missing(brief) names a required input that is blank or "unknown": no email then (the
+caller writes "needs research"). The LLM writes the subject and three lines — they
+understand the problem, the Angle, why it pulls the candidate in. Code adds the greeting
+("Hi {first}," / "Hi {company} team,"), the fixed "I applied… Resume attached." ask, the
+sign-off, and drops output that fails a check:
+
+    60-100 words (greeting to ask), three lines, no greeting / sign-off / placeholder of
+    its own, subject under 45 chars without "application", no banned word, no number
+    unless it's in the company's own name / problem / signal (a "911", never a metric),
+    no 6-word run copied from the problem or signal (no restated marketing copy), line 1
+    shares 2+ words with the problem or signal and line 2 with the Angle (it can't go to
+    another company).
 """
 from __future__ import annotations
 
@@ -22,16 +30,18 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 from aria.features import answer_bank
-from aria.features.outreach.company_fact import words as _words
 from aria.llm import llm_client
 
 logger = logging.getLogger(__name__)
 
 NOTE_LIMIT = 300                 # LinkedIn's connection-note cap
-EMAIL_WORDS = (60, 125)          # aim ~90: founders skim
+EMAIL_WORDS = (60, 100)          # greeting to the ask, signature not counted
+SUBJECT_CHARS = 45
+GENERIC, HIRING, ENGINEER = "generic inbox", "hiring", "engineer"
 _PROFILE_KEYS = ("preferred_name", "first_name", "last_name", "school", "degree", "grad_date",
                  "years_experience", "current_company", "location", "linkedin", "github")
 _IDENTITY_KEYS = ("summary", "skills", "experience", "education", "target_roles", "projects")
@@ -39,28 +49,37 @@ RESUME_CHARS = 5000             # resume text the writer sees (the facts it may 
 _PLACEHOLDER = re.compile(r"\[[^\]]*\]|\{[^}]*\}|<[^>]+>|\bTODO\b|lorem ipsum", re.I)
 _GREETING = re.compile(r"(?i)^\s*(hi|hello|hey|dear)\b")
 _SIGNOFF = re.compile(r"(?im)^\s*(best|thanks|thank you|regards|cheers|sincerely)[,!.]?\s*$")
+_BANNED = re.compile(
+    r"(?i)hope this (?:email |message )?finds you|passion|excit|reaching out|strong fit|leverag"
+    r"|innovat|revolutioni[sz]|great addition|amazing|impressive|impressed")
+_HIRING_TITLE = re.compile(r"(?i)recruit|talent|hiring|people|\bhr\b|human resources|manager|head of|director|vp\b")
+_NUMBER = re.compile(r"\d[\d,.]*")
+_WORD = re.compile(r"[a-z0-9][a-z0-9'-]{3,}")
+_STOP = {"that", "with", "from", "they", "their", "them", "this", "these", "into", "about", "while",
+         "which", "where", "when", "have", "help", "helps", "more", "than", "over", "every", "each",
+         "built", "build", "builds", "company", "platform", "teams", "using", "used", "what", "your"}
 
 _EMAIL_SYSTEM = (
-    "You write a short cold email from a job candidate to someone at a company they want to "
-    "work at. Output exactly this:\n"
-    "HOOK: <3-6 words on what the candidate brings that fits THIS company; lowercase except "
-    "acronyms like LLM>\n"
-    "<blank line>\n"
-    "<the body>\n\n"
-    "The body is plain text, first person, about 90 words (never over 115), three short "
-    "paragraphs:\n"
-    "1. One sentence: who the candidate is (degree, school, when it ended; use today's date "
-    "for tense) and that they're applying for the role. Then one sentence on the problem the company is solving, from "
-    "the company fact, and why it caught the candidate's eye.\n"
-    "2. The candidate's one or two projects or jobs closest to that problem, from the resume "
-    "only, each with how it connects to what the company does. At most one number per item, "
-    "copied exactly from the resume.\n"
-    "3. One easy ask: 15 minutes this week, or a pointer to the right engineer.\n\n"
-    "Never open with filler (\"I am reaching out\", \"express my interest\", \"I hope this "
-    "finds you\", \"My name is\"). Never invent projects, employers, numbers, credentials, or "
-    "anything about the company beyond the company fact. Never mention visa, sponsorship, age "
-    "or other personal facts. No greeting, sign-off, subject line or placeholders — the "
-    "greeting and signature are added for you."
+    "You write a short cold email from an engineer who just applied for a role, to someone at "
+    "that company. Write like one engineer to another: short sentences, contractions fine, "
+    "curious not flattering, specific not impressive. Output exactly:\n"
+    "SUBJECT: <under 45 characters, lowercase is fine. Name THEIR problem, not the candidate "
+    "(e.g. \"triaging 911 surges\", \"acme's routing layer\", \"re: <signal topic>\"). Never "
+    "the word application.>\n\n"
+    "<line 1>\n\n<line 2>\n\n<line 3>\n\n"
+    "Line 1: show you understand what they're solving, in your own words. Use the Signal if it "
+    "fits. Never restate their marketing copy. If the recipient is a recruiter or manager, talk "
+    "about the team's problem, not the company mission.\n"
+    "Line 2: the Angle — what the candidate built and the specific part that overlaps with "
+    "their problem. Concrete and honest: what it does, what was hard.\n"
+    "Line 3: one genuine sentence on why this problem pulls the candidate in, tied to something "
+    "real from the resume (Aria or another project), not passion.\n\n"
+    "Lines 1-3 together are 30-60 words. The greeting, \"I applied for the role. Resume "
+    "attached.\", the ask and the signature are added for you: never write them. Never claim "
+    "experience beyond the Angle. No numbers or metrics. Never: hope this finds you well, "
+    "passionate, excited, reaching out, strong fit, leverage, innovative, revolutionize, great "
+    "addition, amazing, impressive. If it could go to another company by changing the name, "
+    "rewrite it."
 )
 _NOTE_SYSTEM = (
     "You write a LinkedIn connection note from a job candidate to someone at a company. Plain "
@@ -68,6 +87,43 @@ _NOTE_SYSTEM = (
     "candidate fits from the profile only, and a light ask. No greeting (it's added for you), no "
     "sign-off, no hashtags, no emoji, no placeholders, never invent facts."
 )
+
+
+@dataclass
+class Brief:
+    """One email's inputs, from a Contacts row (Muse's research columns)."""
+    company: str
+    role: str
+    problem: str
+    angle: str
+    signal: str = ""
+    person: str = ""            # the recipient's name; "" for a generic inbox
+    title: str = ""
+    person_type: str = ""       # GENERIC | HIRING | ENGINEER ("" → from person/title)
+
+    @property
+    def kind(self) -> str:
+        return person_type(self.person, self.title, self.person_type)
+
+
+def person_type(person: str, title: str = "", given: str = "") -> str:
+    """The sheet's Person type when set, else: no name → generic inbox; a recruiter /
+    manager / head-of title → hiring; anyone else → engineer."""
+    g = (given or "").strip().lower()
+    if g:
+        return GENERIC if "generic" in g or "inbox" in g else HIRING if _HIRING_TITLE.search(g) or "big" in g else ENGINEER
+    if not (person or "").strip() or person.strip() in ("—", "–", "-"):
+        return GENERIC
+    return HIRING if _HIRING_TITLE.search(title or "") else ENGINEER
+
+
+def _blank(value: str) -> bool:
+    return (value or "").strip().lower() in ("", "unknown", "n/a", "na", "?", "—", "-", "tbd")
+
+
+def missing(brief: Brief) -> list:
+    """The required inputs that are blank or "unknown"."""
+    return [name for name, v in (("Company problem", brief.problem), ("Angle", brief.angle)) if _blank(v)]
 
 
 def _identity() -> dict:
@@ -91,13 +147,22 @@ def sender_name(bank: Optional[dict] = None) -> str:
     return " ".join(x for x in (first, a.get("last_name") or "") if x).strip()
 
 
+def signature(bank: Optional[dict] = None) -> str:
+    """'Thanks,' / first name / 'linkedin.com/in/x | github.com/y' (whichever the bank has)."""
+    a = (bank or answer_bank.load())["answers"]
+    me = first_name(a.get("preferred_name") or a.get("first_name") or "")
+    links = " | ".join(re.sub(r"^https?://(www\.)?", "", str(a[k])).rstrip("/")
+                       for k in ("linkedin", "github") if a.get(k) and not str(a[k]).startswith("<"))
+    return "\n".join(x for x in ("Thanks,", me if me != "there" else "", links) if x)
+
+
 def outreach_profile(target) -> str:
-    """Facts the LLM may use: today's date, education/experience basics, identity summary,
-    the resume, fit notes."""
+    """Facts the LinkedIn note may use: today's date, education/experience basics, identity
+    summary, the resume, fit notes."""
     bank = answer_bank.load()
     lines = [f"today: {time.strftime('%Y-%m-%d')}"]
     lines += [f"{k}: {bank['answers'][k]}" for k in _PROFILE_KEYS
-             if bank["answers"].get(k) not in (None, "") and not str(bank["answers"][k]).startswith("<")]
+              if bank["answers"].get(k) not in (None, "") and not str(bank["answers"][k]).startswith("<")]
     ident = _identity()
     for k in _IDENTITY_KEYS:
         if ident.get(k):
@@ -119,81 +184,121 @@ def roles_text(target) -> str:
     return ", ".join(roles[:-1]) + " and " + roles[-1]
 
 
-def _brief(target, posting: str = "", fact=None) -> str:
+def _brief(target) -> str:
     p = target.contact
-    text = (f"Company: {target.company}\nRole(s): {roles_text(target)}\n"
+    return (f"Company: {target.company}\nRole(s): {roles_text(target)}\n"
             f"Recipient: {p.name}, {p.title or 'works there'}\n\nCandidate profile:\n{outreach_profile(target)}")
-    if fact is not None:
-        text += f"\n\nCompany fact (from their own page, {fact.url}):\n{fact.problem}\n{fact.detail}"
-    if posting:
-        text += f"\n\nJob posting (for what the role needs; quote nothing):\n{posting}"
-    return text
 
 
 def first_name(name: str) -> str:
-    return (name or "").split()[0] if name else "there"
+    return (name or "").split()[0] if (name or "").strip() else "there"
+
+
+def bare_company(company: str) -> str:
+    """'Brainbase Labs (YC W24)' → 'Brainbase Labs'."""
+    return re.sub(r"\s*\(.*?\)\s*", " ", company or "").strip()
 
 
 def _clean(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", (text or "").strip().strip('"').strip())
 
 
-def _valid_body(text: str) -> Optional[str]:
-    text = _clean(text)
-    words = len(text.split())
-    if not EMAIL_WORDS[0] <= words <= EMAIL_WORDS[1] or _PLACEHOLDER.search(text):
-        return None
-    if _GREETING.match(text) or _SIGNOFF.search(text) or re.match(r"(?i)subject:", text):
-        return None
-    return text
-
-
-_FILLER = re.compile(r"(?i)\b(?:i am|i'm) (?:reaching|writing) out|express(?:ing)? my (?:\w+ )?interest"
-                     r"|i hope (?:this|you)|\bmy name is\b")
-_HOOK = re.compile(r"(?i)^\s*hook:\s*(.+?)\s*$")
-_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
-_ASK = re.compile(r"(?i)\b\d+[- ]?min(?:ute)?s?\b")
+def words(text: str) -> set:
+    """Content words (4+ letters, common filler dropped), lowercased."""
+    return {w for w in _WORD.findall((text or "").lower()) if w not in _STOP}
 
 
 def _numbers(text: str) -> set:
-    return {n.replace(",", "").rstrip(".") for n in _NUMBER.findall(_ASK.sub(" ", text or ""))}
+    return {n.replace(",", "").rstrip(".,") for n in _NUMBER.findall(text or "")}
 
 
-def _email_validator(brief: str, fact, company: str):
-    """(hook, body) when the output passes every check, else None."""
-    known = _numbers(brief)
+def _runs(text: str, n: int = 6) -> set:
+    w = re.findall(r"[a-z0-9']+", (text or "").lower())
+    return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+def greeting(brief: Brief) -> str:
+    return f"Hi {bare_company(brief.company)} team," if brief.kind == GENERIC else f"Hi {first_name(brief.person)},"
+
+
+def role_phrase(role: str) -> str:
+    """'Software Engineer (New Grad)' → 'Software Engineer (New Grad) role'; '… role' stays as is."""
+    role = (role or "").strip() or "open"
+    return role if re.search(r"(?i)\b(role|position)$", role) else f"{role} role"
+
+
+def ask(brief: Brief) -> str:
+    role = role_phrase(brief.role)
+    if brief.kind == GENERIC:
+        return f"I applied for the {role}. Resume attached. Could you pass this to whoever is hiring for the {role}?"
+    return (f"I applied for the {role}. Resume attached. Would you be open to 15 minutes, "
+            "or could you point me to the right person on the team?")
+
+
+def _input(brief: Brief) -> str:
+    who = "a generic company inbox" if brief.kind == GENERIC else \
+        f"{brief.person}, {brief.title or 'works there'}" + (" (recruiter / manager)" if brief.kind == HIRING else "")
+    text = (f"Company: {bare_company(brief.company)}\nRole: {brief.role}\nRecipient: {who}\n\n"
+            f"Company problem: {brief.problem}\nAngle (the only experience you may claim): {brief.angle}\n")
+    if not _blank(brief.signal):
+        text += f"Signal: {brief.signal}\n"
+    resume = _resume()
+    if resume:
+        text += f"\nResume (for line 3's reason only; claim nothing from it beyond the Angle):\n{resume}"
+    return text
+
+
+def _validator(brief: Brief):
+    """(subject, [line1, line2, line3]) when the output passes every check, else None."""
+    theirs = f"{brief.company} {brief.problem} {brief.signal}"
+    allowed = _numbers(theirs)
+    copied = _runs(f"{brief.problem} {brief.signal}")
+    fixed = f"{greeting(brief)} {ask(brief)}"
 
     def check(text: str):
-        lines = _clean(text).split("\n", 1)
-        m = _HOOK.match(lines[0]) if lines else None
-        if not m or len(lines) < 2:
+        parts = [p.strip() for p in _clean(text).split("\n\n") if p.strip()]
+        m = re.match(r"(?i)^subject:\s*(.+)$", parts[0]) if parts else None
+        if not m or len(parts) != 4:
             return None
-        hook = m.group(1).strip().rstrip(".").strip('"')
-        body = _valid_body(lines[1])
-        if not body or not (2 <= len(hook.split()) <= 7) or len(hook) > 45 or _PLACEHOLDER.search(hook):
+        subject, lines = m.group(1).strip().strip('"'), parts[1:]
+        prose = " ".join(lines)
+        if not subject or len(subject) >= SUBJECT_CHARS or "application" in subject.lower():
             return None
-        if _FILLER.search(body):
+        if any(_GREETING.match(l) or _SIGNOFF.search(l) for l in lines) or _PLACEHOLDER.search(prose + subject):
             return None
-        if any(n not in known and len(n) > 1 for n in _numbers(body)):
-            return None                         # a number the candidate never wrote
-        if not _mentions(body, fact, company):
+        if _BANNED.search(prose + " " + subject) or re.search(r"(?i)\bresume attached|\bI applied\b", prose):
             return None
-        return hook, body
+        if any(n not in allowed for n in _numbers(prose + " " + subject)):
+            return None                             # a number or metric
+        if _runs(prose) & copied:
+            return None                             # their marketing copy, restated
+        if len(words(lines[0]) & words(f"{brief.problem} {brief.signal}")) < 2 or \
+                len(words(lines[1]) & words(brief.angle)) < 2:
+            return None                             # could go to another company
+        if not EMAIL_WORDS[0] <= len(f"{fixed} {prose}".split()) <= EMAIL_WORDS[1]:
+            return None
+        return subject, lines
     return check
 
 
-def _mentions(body: str, fact, company: str) -> bool:
-    """The body names the company's problem: at least two of the fact's content words."""
-    want = _words(f"{fact.problem} {fact.detail}") - _words(company)
-    return len(want & _words(body)) >= 2
-
-
-def signature(bank: Optional[dict] = None) -> str:
-    """Name, then 'linkedin.com/in/x | github.com/y' (whichever the bank has)."""
-    a = (bank or answer_bank.load())["answers"]
-    links = " | ".join(re.sub(r"^https?://(www\.)?", "", str(a[k])).rstrip("/")
-                       for k in ("linkedin", "github") if a.get(k) and not str(a[k]).startswith("<"))
-    return "\n".join(x for x in (sender_name({"answers": a}), links) if x)
+def email(brief: Brief, to: str) -> Optional[dict]:
+    """{to, subject, body} for one Contacts row. None when a required input is missing or
+    the LLM output failed the checks (nothing is drafted then)."""
+    if missing(brief):
+        logger.info("outreach: %s needs research (%s)", brief.company, ", ".join(missing(brief)))
+        return None
+    try:
+        _resp, out = llm_client.complete_checked(
+            "outreach_email", [{"role": "user", "content": _input(brief)}],
+            validate=_validator(brief), system=_EMAIL_SYSTEM, max_tokens=500)
+    except Exception as exc:
+        logger.error("outreach: email for %s failed: %s", brief.company, exc)
+        return None
+    if not out:
+        return None
+    subject, lines = out
+    body = "\n\n".join([greeting(brief), *lines, ask(brief), signature()])
+    return {"to": to, "subject": subject, "body": body}
 
 
 def _note_validator(prefix: str):
@@ -206,34 +311,11 @@ def _note_validator(prefix: str):
     return check
 
 
-def email(target, to: str, posting: str = "", fact=None) -> Optional[dict]:
-    """Draft for the target's contact, about `fact` (what the company solves). None when
-    there is no fact or the LLM output didn't pass the checks.
-    posting: text of the job page, so the email speaks to that role's needs."""
-    if fact is None:
-        logger.info("outreach: no company fact for %s; no email", target.company)
-        return None
-    brief = _brief(target, posting, fact)
-    try:
-        _resp, out = llm_client.complete_checked(
-            "outreach_email", [{"role": "user", "content": brief}],
-            validate=_email_validator(brief, fact, target.company), system=_EMAIL_SYSTEM, max_tokens=600)
-    except Exception as exc:
-        logger.error("outreach: email for %s failed: %s", target.company, exc)
-        return None
-    if not out:
-        return None
-    hook, body = out
-    me = sender_name()
-    full = f"Hi {first_name(target.contact.name)},\n\n{body}\n\nBest,\n{signature()}".rstrip()
-    return {"to": to, "subject": f"{roles_text(target)} — {me or target.company}, {hook}", "body": full}
-
-
-def linkedin_note(target, fact=None) -> Optional[str]:
+def linkedin_note(target) -> Optional[str]:
     prefix = f"Hi {first_name(target.contact.name)}, "
     try:
         _resp, note = llm_client.complete_checked(
-            "outreach_linkedin_note", [{"role": "user", "content": _brief(target, fact=fact)}],
+            "outreach_linkedin_note", [{"role": "user", "content": _brief(target)}],
             validate=_note_validator(prefix), system=_NOTE_SYSTEM, max_tokens=200)
     except Exception as exc:
         logger.error("outreach: LinkedIn note for %s failed: %s", target.company, exc)

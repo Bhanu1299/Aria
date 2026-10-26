@@ -15,7 +15,8 @@ already has outreach, an address, or a contact the user named.
 Per company:
   1. contacts.find_people() → 1–3 people → "Who to contact" (placeholder kept after them)
   2. Coldstart find_emails (cache-first by domain) → channel.choose(): one contact + channel
-  3. email    → writer.email() → Gmail DRAFT in the jobs account → outreach column
+  3. email    → needs Muse's research (Company problem + Angle, Contacts tab): without it,
+                "needs research" and no draft (writer.email, the user's spec v2)
                 "Email draft ready — Name (Title), address"
      linkedin → writer.linkedin_note() → outreach column "LinkedIn (Aria): Name (Title) —
                 profile\\nNote: …" (the dashboard's Today tab lists it to send by hand)
@@ -31,7 +32,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from aria.dashboard.model import company_slug, contact_name, emails_in, is_company_address
-from aria.features.outreach import channel, company_fact, feedback, writer
+from aria.features.outreach import channel, feedback, writer
 from aria.features.outreach import contacts as finder
 from aria.integrations import google_auth, sheets
 from aria.llm import context as llm_context
@@ -48,6 +49,9 @@ DRY_RUN_DIR = Path.home() / ".aria" / "outreach"
 _WHO_PERSON = re.compile(r"^\s*(?P<name>[^()]+?)\s*(?:\((?P<title>[^)]*)\))?\s*$")
 
 
+NEEDS_RESEARCH = "needs research"     # an email target: no Company problem / Angle (spec v2)
+
+
 @dataclass
 class Target:
     """One outreach unit: a company and the sheet rows it covers."""
@@ -59,7 +63,7 @@ class Target:
     contact: object = None          # the one Person this company's outreach goes to
     channel: str = ""               # channel.EMAIL | channel.LINKEDIN
     why: str = ""
-    outcome: str = ""               # drafted | noted | no contact | not written: …
+    outcome: str = ""               # drafted | noted | no contact | needs research | not written: …
     message: dict = field(default_factory=dict)   # the email {to, subject, body} or {"note": …}
 
     @property
@@ -216,25 +220,13 @@ def outreach_cell(t: Target, note: str = "") -> str:
 
 
 def draft(t: Target, run: run_log.Run, gmail) -> str:
-    """Write the email draft or LinkedIn note. Returns the outreach cell text, or "" if nothing was written."""
+    """Write the LinkedIn note (emails: the Contacts tab). Returns the outreach cell text, or "" if nothing was written."""
     with run.step("draft") as s:
-        fact = company_fact.find(t.company, t.domain, job_url=t.primary.get("post_link") or "")
-        if t.channel == channel.EMAIL:
-            if fact is None:
-                s.status, s.detail = "skipped", "nothing specific on the company's pages; no generic email"
-                t.outcome = "not written: nothing specific found about the company"
-                return ""
-            msg = writer.email(t, channel.email_of(t.contact), fact=fact)
-            if msg is None:
-                s.status, s.detail, t.outcome = "error", "the email didn't pass checks; no draft", "not written: email failed checks"
-                return ""
-            result = gmail.create_draft(msg["to"], msg["subject"], msg["body"])
-            if not result.startswith("Draft saved"):
-                s.status, s.detail, t.outcome = "error", result, f"not written: {result}"
-                return ""
-            s.detail, t.outcome, t.message = f"Gmail draft (jobs account) to {msg['to']}: {msg['subject']}", "drafted", msg
-            return outreach_cell(t)
-        note = writer.linkedin_note(t, fact=fact)
+        if t.channel == channel.EMAIL:          # emails need Muse's research, which lives in the Contacts tab
+            s.status, s.detail = "skipped", "needs research: emails are drafted from the Contacts tab"
+            t.outcome = NEEDS_RESEARCH
+            return ""
+        note = writer.linkedin_note(t)
         if note is None:
             s.status, s.detail, t.outcome = "error", "the LinkedIn note didn't pass checks", "not written: note failed checks"
             return ""
@@ -294,7 +286,7 @@ def process(t: Target, sheet: sheets.JobSheet, gmail, search_fn=None, client=Non
         ok = t.outcome in ("drafted", "noted")
         how = f"{t.outcome}" + (f" via {t.channel}" if t.channel else "")
         flight_recorder.record_job(j["row"], t.company, j["role"], trigger, "", meter.since(before), ok, how)
-        run.finish("ok" if ok else ("no change" if t.outcome == "no contact" else "error"), how)
+        run.finish("ok" if ok else ("no change" if t.outcome in ("no contact", NEEDS_RESEARCH) else "error"), how)
 
 
 class DrySheet:
@@ -438,6 +430,7 @@ def finish(run: run_log.Run, todo: list, dry_run: bool = False) -> str:
     drafted = [t for t in todo if t.outcome == "drafted"]
     noted = [t for t in todo if t.outcome == "noted"]
     nobody = [t for t in todo if t.outcome == "no contact"]
+    research = [t for t in todo if t.outcome == NEEDS_RESEARCH]
     failed = [t for t in todo if t.outcome.startswith("not written")]
     parts = []
     if drafted:
@@ -448,6 +441,9 @@ def finish(run: run_log.Run, todo: list, dry_run: bool = False) -> str:
                      + ("written, not saved" if dry_run else "in the sheet"))
     if nobody:
         parts.append(f"nobody found at {_plural(len(nobody))}")
+    if research:
+        parts.append(f"{_plural(len(research))} need{'s' if len(research) == 1 else ''} research for an email "
+                     f"({', '.join(t.company for t in research[:3])}; emails come from the Contacts tab)")
     if failed:
         parts.append(f"{len(failed)} failed ({', '.join(t.company for t in failed[:3])})")
     summary = ("Outreach dry run: " if dry_run else "Outreach: ") + "; ".join(parts) + (

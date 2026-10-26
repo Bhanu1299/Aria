@@ -73,6 +73,8 @@ COLDSTART_TIMEOUT: float = float(os.getenv("COLDSTART_TIMEOUT", "90"))
 COLDSTART_MIN_INTERVAL: float = float(os.getenv("COLDSTART_MIN_INTERVAL", "2"))
 CONTACTS_PER_COMPANY: int = int(os.getenv("CONTACTS_PER_COMPANY", "3"))
 OUTREACH_FROM: str = os.getenv("OUTREACH_FROM", "") or GOOGLE_JOBS_ACCOUNT
+# The PDF attached to every Contacts draft (blank = resume_path from the answer bank).
+OUTREACH_RESUME: str = os.path.expanduser(os.getenv("OUTREACH_RESUME", ""))
 
 # ---------------------------------------------------------------------------
 # Coder — agentic code execution

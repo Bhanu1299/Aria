@@ -17,19 +17,22 @@ from aria.integrations.sheets import SheetError, col_letter
 # The real Contacts header (its order differs from the spec's — code must not care).
 HEADERS = ["Company", "Tracked role", "Person", "Title", "Email", "Source", "Confidence", "LinkedIn URL",
            "Job URL", "Domain", "Email pattern", "Find status", "Draft status", "Gmail draft link", "Wave",
-           "Updated", "Notes"]
+           "Updated", "Notes", "Company problem", "Signal", "Signal source", "Angle", "Added by"]
 
-FACT = ct.company_fact.Fact("Acme builds evaluation tooling for production language models.",
-                            "Its Gauge product scores model answers for enterprise teams.", "https://acme.com")
-BODY = ("HOOK: voice agents + evals\n\n"
-        "I'm a recent MS CS graduate who has shipped a voice agent with a tool-calling loop and "
-        "an evaluation harness, and the Founding Engineer role at Acme lines up closely with that work. "
-        "I'd love to hear how the team thinks about evaluation for production models.\n\n"
-        "Would you have fifteen minutes in the next couple of weeks, or could you point me to the "
-        "hiring manager for this role? Thank you for considering it.")
+# Muse's research, filled on every row unless a test says otherwise.
+PROBLEM = "Teams can't tell which LLM answers are wrong until customers complain."
+ANGLE = "Built an eval harness for a voice agent; the hard part was grading open-ended answers."
+BODY = ("SUBJECT: catching wrong LLM answers\n\n"
+        "You're trying to catch wrong answers before customers complain, which is mostly a grading problem.\n\n"
+        "I built an eval harness for my voice agent. Grading open-ended answers was the hard part, since "
+        "there's rarely one right string.\n\n"
+        "I keep running into this while building Aria, so I'd like to work on it full time.")
+RESUME = "/r/resume.pdf"
 
 
 def r(company, person, **kw):
+    kw.setdefault("problem", PROBLEM)
+    kw.setdefault("angle", ANGLE)
     cells = {"Company": company, "Person": person}
     cells.update({MAP[k]: v for k, v in kw.items()})
     out = [""] * len(HEADERS)
@@ -42,7 +45,8 @@ def r(company, person, **kw):
 
 MAP = {"role": "Tracked role", "title": "Title", "email": "Email", "confidence": "Confidence",
        "linkedin": "LinkedIn URL", "job_url": "Job URL", "domain": "Domain", "pattern": "Email pattern",
-       "find": "Find status", "draft": "Draft status", "wave": "Wave", "notes": "Notes", "source": "Source"}
+       "find": "Find status", "draft": "Draft status", "wave": "Wave", "notes": "Notes", "source": "Source",
+       "link": "Gmail draft link", "problem": "Company problem", "signal": "Signal", "angle": "Angle"}
 
 
 class LiveSheet:
@@ -108,8 +112,8 @@ class FakeGmail:
     def __init__(self, ok=True):
         self.ok, self.drafts = ok, []
 
-    def save_draft(self, to, subject, body, cc="", reply_to_id=""):
-        self.drafts.append({"to": to, "subject": subject, "body": body})
+    def save_draft(self, to, subject, body, cc="", reply_to_id="", attachments=()):
+        self.drafts.append({"to": to, "subject": subject, "body": body, "attachments": list(attachments)})
         if not self.ok:
             return {"ok": False, "message": "Gmail is rate-limited."}
         n = len(self.drafts)
@@ -144,8 +148,7 @@ def llm(monkeypatch):
 
 def run(sheet, client, gmail=None, **kw):
     lines = []
-    kw.setdefault("posting_fn", lambda url: "Founding Engineer. Python, LLM agents, evals." if url else "")
-    kw.setdefault("fact_fn", lambda rec: FACT)
+    kw.setdefault("resume", RESUME)
     out = ct.run(sheet=sheet, client=client, gmail=gmail or FakeGmail(), step_fn=lines.append, **kw)
     return out, lines
 
@@ -285,9 +288,12 @@ def test_thin_slice_one_contact_end_to_end(llm):
     assert svc.cell(2, "Updated")
     assert svc.cell(3, "Find status") == "" and svc.cell(3, "Email") == ""    # limit=1 left row 3 alone
     d = gmail.drafts[0]
-    assert d["to"] == "pat.lee@acme.com" and d["body"].startswith("Hi Pat,") and "Founding Engineer" in d["subject"]
-    assert llm[0]["task"] == "outreach_email" and "Python, LLM agents" in llm[0]["content"]
-    assert "resume:\nVoice agent with a tool-calling loop" in llm[0]["content"] and "today: 20" in llm[0]["content"]
+    assert d["to"] == "pat.lee@acme.com" and d["subject"] == "catching wrong LLM answers"
+    assert d["body"].startswith("Hi Pat,\n\nYou're trying") and d["attachments"] == [RESUME]
+    assert "I applied for the Founding Engineer role. Resume attached." in d["body"]
+    assert d["body"].endswith("Thanks,\nBhanu\nlinkedin.com/in/me")
+    assert llm[0]["task"] == "outreach_email"
+    assert f"Company problem: {PROBLEM}" in llm[0]["content"] and f"Angle (the only experience you may claim): {ANGLE}" in llm[0]["content"]
     assert [l.split(":")[0] for l in lines if l[:1].isdigit()] == ["1. read", "2. stop on reply", "3. pending",
                                                                   "4. find row 2", "5. draft"]
     assert out == "Contacts: 1 verified, 0 pattern, 0 not found; 1 draft in the jobs Gmail. Nothing was sent."
@@ -407,7 +413,7 @@ def test_background_run_reports_when_done(llm):
     done = threading.Event()
     got = []
     assert ct.start_background(done_fn=lambda s: (got.append(s), done.set()), sheet=sheet, client=client,
-                               gmail=FakeGmail(), posting_fn=lambda u: "", fact_fn=lambda rec: FACT)
+                               gmail=FakeGmail(), resume=RESUME)
     assert done.wait(5) and "1 draft" in got[0]
 
 
@@ -434,29 +440,55 @@ def test_writer_reads_the_real_identity_and_resume_helpers(monkeypatch):
     assert isinstance(writer._identity(), dict) and isinstance(writer._resume(), str)
 
 
-def test_no_company_fact_holds_the_row_with_a_note(llm):
+@pytest.mark.parametrize("cells", [{"problem": ""}, {"angle": "unknown"}, {"problem": "Unknown", "angle": ""}])
+def test_no_problem_or_angle_means_needs_research_and_no_draft(llm, cells):
+    sheet, svc = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", find="done", **cells))
+    gmail = FakeGmail()
+    out, _ = run(sheet, coldstart({})[0], gmail)
+    assert gmail.drafts == [] and llm == [] and svc.cell(2, "Draft status") == ""
+    assert svc.cell(2, "Notes").endswith("needs research") and "1 needs research" in out
+    run(sheet, coldstart({})[0], gmail)                        # the note isn't repeated
+    assert svc.cell(2, "Notes").count("needs research") == 1
+
+
+def test_generic_inbox_is_drafted_to_the_team(llm):
+    sheet, svc = sheet_of(r("Acme (YC W24)", "—", role="AI Engineer", email="team@acme.com", confidence="verified",
+                            find="done"),
+                          r("Acme (YC W24)", "—", role="AI Engineer", email="hello@acme.com", confidence="verified",
+                            find="done"))                       # one inbox per company
+    gmail = FakeGmail()
+    run(sheet, coldstart({})[0], gmail)
+    [d] = gmail.drafts
+    assert d["to"] == "team@acme.com" and d["body"].startswith("Hi Acme team,")
+    assert "Could you pass this to whoever is hiring for the AI Engineer role?" in d["body"]
+    assert "a generic company inbox" in llm[0]["content"]
+
+
+def test_pattern_address_gets_a_pattern_guess_note(llm):
+    sheet, svc = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="pattern", find="done"))
+    run(sheet, coldstart({})[0])
+    assert svc.cell(2, "Draft status") == "drafted" and svc.cell(2, "Notes").endswith("pattern guess")
+
+
+def test_a_row_with_a_draft_link_is_never_drafted_again(llm):
+    sheet, _ = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", draft="none",
+                          link="https://mail.google.com/mail/u/x/#drafts?compose=m9"))
+    gmail = FakeGmail()
+    run(sheet, coldstart({})[0], gmail)
+    assert gmail.drafts == []
+
+
+def test_no_resume_pdf_means_no_drafts(llm):
     sheet, svc = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", find="done"))
     gmail = FakeGmail()
-    out, _ = run(sheet, coldstart({})[0], gmail, fact_fn=lambda rec: None)
-    assert gmail.drafts == [] and llm == [] and svc.cell(2, "Draft status") == ""
-    assert "held: nothing specific" in svc.cell(2, "Notes") and "1 held" in out
-    run(sheet, coldstart({})[0], gmail, fact_fn=lambda rec: None)       # the note isn't repeated
-    assert svc.cell(2, "Notes").count("held:") == 1
+    _, lines = run(sheet, coldstart({})[0], gmail, resume="")
+    assert gmail.drafts == [] and any("no resume PDF" in l for l in lines)
 
 
-def test_company_fact_is_read_once_per_company(llm):
-    sheet, _ = sheet_of(r("Acme", "Pat Lee", email="pat@acme.com", confidence="verified", find="done"),
-                        r("Beta", "Ana Diaz", email="ana@beta.com", confidence="verified", find="done"))
-    asked = []
-    run(sheet, coldstart({})[0], fact_fn=lambda rec: asked.append(rec["Company"]) or FACT)
-    assert asked == ["Acme", "Beta"]
-
-
-def test_fact_for_reads_the_source_page_on_the_company_domain(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(ct.company_fact, "find", lambda company, domain, source="", job_url="": seen.update(
-        company=company, domain=domain, source=source) or FACT)
-    rec = _recs(r("Aurelian (YC)", "Max Keenan", email="max@aurelian.io",
-                  source="Published on aurelian.com/studies/macc-911"))[0]
-    assert ct.fact_for(rec) is FACT
-    assert seen == {"company": "Aurelian", "domain": "aurelian.io", "source": "Published on aurelian.com/studies/macc-911"}
+def test_brief_comes_from_the_research_columns():
+    rec = _recs(r("Aurelian (YC)", "Max Keenan", title="CEO / co-founder", role="Software Engineer (New Grad)",
+                  signal="MACC 911 automated its non-emergency line"))[0]
+    b = ct.brief_of(rec)
+    assert (b.company, b.role, b.problem, b.angle, b.signal, b.person, b.kind) == (
+        "Aurelian (YC)", "Software Engineer (New Grad)", PROBLEM, ANGLE, "MACC 911 automated its non-emergency line",
+        "Max Keenan", writer.ENGINEER)

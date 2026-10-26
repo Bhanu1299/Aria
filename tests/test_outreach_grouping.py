@@ -7,7 +7,7 @@ from aria.dashboard import model as m
 from aria.dashboard.sources import Source
 from aria.features.outreach import pipeline
 from aria.integrations.sheets import JobSheet
-from tests.test_outreach_pipeline import BODY, FakeGmail, _llm, _people, profile  # noqa: F401 (fixture)
+from tests.test_outreach_pipeline import NOTE, FakeGmail, _llm, _people, profile  # noqa: F401 (fixture)
 from tests.test_sheets import HEADERS, FakeSheetsService
 
 
@@ -41,18 +41,17 @@ def test_aria_named_rows_do_not_count_as_contacted():
     assert [p.name for p in t.people] == ["Pat Lee"] and len(t.jobs) == 2
 
 
-def test_one_draft_names_every_role_and_siblings_point_to_it(monkeypatch):
-    _people(monkeypatch, {"email": "pat@acme.com", "status": "valid", "confidence": 0.97})
-    calls = _llm(monkeypatch, BODY)
+def test_one_note_names_every_role_and_siblings_point_to_it(monkeypatch):
+    _people(monkeypatch, {"email": "pat@acme.com", "status": "invalid", "confidence": 0.0})
+    calls = _llm(monkeypatch, NOTE)
     svc = FakeSheetsService([HEADERS, _row("Acme", "ML Engineer", fit="5"), _row("Acme", "AI Engineer", fit="4")])
     gmail = FakeGmail()
     out = pipeline.run_outreach(sheet=JobSheet("s", "Sheet1", service=svc, today=lambda: date(2026, 10, 20)),
                                 search_fn=lambda q: [], gmail_data={}, gmail=gmail)
-    assert out.startswith("Outreach: 1 email draft")
-    assert len(gmail.drafts) == 1 and gmail.drafts[0]["subject"] == "ML Engineer and AI Engineer — Alex Doe, agents + model evaluation"
+    assert out.startswith("Outreach: 1 LinkedIn note") and gmail.drafts == []
     assert "Role(s): ML Engineer and AI Engineer" in calls[0]["content"]
     w = svc.written()
-    assert w["'Sheet1'!K2"].startswith("Email draft ready — Pat Lee")
+    assert w["'Sheet1'!K2"].startswith("LinkedIn (Aria): Pat Lee")
     assert w["'Sheet1'!K3"] == "Outreach via row 2 (ML Engineer)"
     assert w["'Sheet1'!H2"] == w["'Sheet1'!H3"] == "Pat Lee (Recruiter) | Via Greenhouse"
 

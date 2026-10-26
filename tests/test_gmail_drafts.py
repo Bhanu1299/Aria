@@ -127,3 +127,18 @@ def test_save_draft_returns_a_link_to_the_draft_in_that_account():
     assert out["ok"] and out["draft_id"] == "r-1" and out["message_id"] == "18f2a"
     assert out["link"] == "https://mail.google.com/mail/u/candidate@example.com/#drafts?compose=18f2a"
     assert not svc.users().messages().send.called
+
+
+def test_save_draft_attaches_files_as_they_are(tmp_path):
+    pdf = tmp_path / "Resume.pdf"
+    pdf.write_bytes(b"%PDF-1.4 resume bytes")
+    svc = MagicMock()
+    client = _client(svc)
+    with patch.object(client, "is_configured", return_value=True):
+        out = client.save_draft("pat@acme.com", "triaging 911 surges", "Hi Pat,\n\nBody.", attachments=[str(pdf)])
+    assert out["ok"] and not svc.users().messages().send.called
+    msg = _raw(svc.users().drafts().create.call_args)
+    assert (msg["to"], msg["subject"]) == ("pat@acme.com", "triaging 911 surges") and msg.is_multipart()
+    text, att = msg.get_payload()
+    assert "Body." in text.get_payload()
+    assert att.get_filename() == "Resume.pdf" and att.get_payload(decode=True) == b"%PDF-1.4 resume bytes"

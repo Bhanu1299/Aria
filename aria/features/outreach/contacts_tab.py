@@ -5,6 +5,7 @@
 
 Columns are read and written by header name (integrations/header_sheet.py):
   the user's      Company, Tracked role, Person, Title, LinkedIn URL, Job URL, Domain
+  Muse's          Company problem, Signal, Angle, Person type (optional)
   Coldstart's     Email, Source, Confidence, Email pattern, Find status
   Aria's          Draft status, Gmail draft link, Wave, Updated, Notes
 Aria writes Domain only when it was blank. Draft status "approved", "sent" and "replied"
@@ -20,16 +21,18 @@ One run, all code until the email body:
                Email, Source, Confidence, Email pattern, Find status done|error, Updated.
                "not found" is done with a Notes line; an error is "error" with a Notes
                line. Neither is retried — set Find status back to "pending" to retry.
-  5. draft     rows with Confidence verified|pattern, at most CONTACTS_PER_COMPANY per
-               company, numbered by Wave in sheet order (a person listed twice: the
-               company address over a personal one). A wave is drafted only once every
-               earlier wave at that company is sent. First what the company solves
-               (company_fact: the Source page, homepage, posting; once per company) — no
-               fact = the row is held with a Notes line, never drafted generic. Then the
-               LLM (gateway, task outreach_email) writes the body from that fact, Tracked
-               role, the Job URL page and the resume; code does the rest.
-               Gmail DRAFT in the jobs account, only if it is OUTREACH_FROM →
-               Draft status drafted, Gmail draft link, Updated.
+  5. draft     rows with Confidence verified|pattern — a person, or a generic inbox
+               (Person "—", one per company) — at most CONTACTS_PER_COMPANY per company,
+               numbered by Wave in sheet order (a person listed twice: the company address
+               over a personal one). A wave is drafted only once every earlier wave at that
+               company is sent; a row with a Gmail draft link is never drafted again.
+               Muse's research columns feed the email (writer.email, the user's spec v2):
+               Company problem + Angle required, else Notes "needs research" and no draft;
+               Signal optional; Person type (else from Person/Title). The LLM writes the
+               subject and three lines; code checks them and adds the rest. Gmail DRAFT in
+               the jobs account (only if it is OUTREACH_FROM), resume PDF attached →
+               Draft status drafted, Gmail draft link, Updated; "pattern guess" in Notes
+               when Confidence is pattern.
 Every step goes to step_fn (one line each) and the run log.
 """
 from __future__ import annotations
@@ -44,7 +47,6 @@ from urllib.parse import urlparse
 
 import aria.core.config as config
 from aria.dashboard.model import company_slug, emails_in, is_company_address, norm_text
-from aria.features.outreach import company_fact
 from aria.features.outreach import contacts as finder
 from aria.features.outreach import writer
 from aria.integrations import coldstart_client as cs
@@ -59,6 +61,7 @@ COMPANY, ROLE, PERSON, TITLE = "Company", "Tracked role", "Person", "Title"
 LINKEDIN, JOB_URL, DOMAIN = "LinkedIn URL", "Job URL", "Domain"
 EMAIL, SOURCE, CONFIDENCE, PATTERN, FIND_STATUS = "Email", "Source", "Confidence", "Email pattern", "Find status"
 DRAFT_STATUS, DRAFT_LINK, WAVE, UPDATED, NOTES = "Draft status", "Gmail draft link", "Wave", "Updated", "Notes"
+PROBLEM, SIGNAL, ANGLE, PERSON_TYPE = "Company problem", "Signal", "Angle", "Person type"
 WRITABLE = (DOMAIN, EMAIL, SOURCE, CONFIDENCE, PATTERN, FIND_STATUS, DRAFT_STATUS, DRAFT_LINK, WAVE, UPDATED, NOTES)
 
 FIND_PENDING, FIND_DONE, FIND_ERROR = "pending", "done", "error"
@@ -67,7 +70,8 @@ ARIA_DRAFT_STATUSES = {NONE, DRAFTED, NO_REPLY}          # everything else is th
 _IN_FLIGHT = {DRAFTED, APPROVED, SENT, REPLIED}          # counts toward the per-company cap
 _WAVE_CLEARED = {SENT, NO_REPLY}                        # a later wave may start after these
 _NOT_A_PERSON = {"", "—", "–", "-", "n/a", "na", "none", "?"}
-POSTING_CHARS = 3000
+_GENERIC_INBOX = {"—", "–", "-"}
+NEEDS_RESEARCH, PATTERN_GUESS = "needs research", "pattern guess"
 
 
 def _now() -> str:
@@ -82,6 +86,11 @@ def is_person(name: str) -> bool:
     """A name Coldstart can look up: not "—" and not a placeholder like "(hiring contact)"."""
     name = (name or "").strip()
     return name.lower() not in _NOT_A_PERSON and not name.startswith("(")
+
+
+def is_generic_inbox(name: str) -> bool:
+    """Person "—": the row is a company inbox (team@, contact@), written to as "Hi <company> team,"."""
+    return (name or "").strip() in _GENERIC_INBOX
 
 
 def company_key(company: str) -> str:
@@ -167,8 +176,8 @@ def stop_updates(records: list[dict]) -> list[tuple[dict, dict]]:
 def draft_queue(records: list[dict], cap: Optional[int] = None) -> tuple[list[dict], dict]:
     """(rows to draft now, {row number: wave to write}). Pure.
 
-    Draftable: a real person, an address, Confidence verified|pattern, no reply yet at the
-    company; a person listed twice counts once. Waves 1..cap go to the company's draftable rows in sheet order (rows already in
+    Draftable: a real person or a generic inbox, an address, Confidence verified|pattern, no
+    reply yet at the company, no Gmail draft link yet; a person listed twice counts once. Waves 1..cap go to the company's draftable rows in sheet order (rows already in
     flight keep theirs and count toward the cap). The active wave is the lowest one not yet
     cleared (sent / no reply); only its undrafted rows are drafted."""
     cap = config.CONTACTS_PER_COMPANY if cap is None else cap
@@ -179,7 +188,8 @@ def draft_queue(records: list[dict], cap: Optional[int] = None) -> tuple[list[di
             continue
         ok: list = []
         for r in rows:                          # one row per person: the first, or the one in flight
-            if not (is_person(get(r, PERSON)) and first_email(r) and status(r, DRAFT_STATUS) != NO_REPLY
+            who = get(r, PERSON)
+            if not ((is_person(who) or is_generic_inbox(who)) and first_email(r) and status(r, DRAFT_STATUS) != NO_REPLY
                     and status(r, CONFIDENCE) in (cs.VERIFIED, cs.PATTERN)):
                 continue
             key = dedupe_key(r)
@@ -207,7 +217,8 @@ def draft_queue(records: list[dict], cap: Optional[int] = None) -> tuple[list[di
         if not open_waves:
             continue
         active = min(open_waves)
-        queue += [r for r in slotted if wave_of[r[ROW]] == active and status(r, DRAFT_STATUS) in ("", NONE)]
+        queue += [r for r in slotted if wave_of[r[ROW]] == active and status(r, DRAFT_STATUS) in ("", NONE)
+                  and not get(r, DRAFT_LINK).strip()]
     queue.sort(key=lambda r: r[ROW])
     return queue, waves
 
@@ -288,34 +299,6 @@ def find_fields(lk: cs.Lookup, notes: str) -> dict:
 # drafting
 # ---------------------------------------------------------------------------
 
-@dataclass
-class _Target:
-    """What writer.email needs, from one Contacts row."""
-    company: str
-    jobs: list
-    contact: object
-
-
-def posting_text(url: str, client=None) -> str:
-    """Visible text of the job page, trimmed. '' when it can't be fetched."""
-    if not (url or "").startswith("http"):
-        return ""
-    import httpx
-    own = client is None
-    http = client or httpx.Client()
-    try:
-        r = http.get(url, headers={"User-Agent": finder._UA}, timeout=10.0, follow_redirects=True)
-        if r.status_code != 200:
-            return ""
-        return " ".join(finder.page_lines(r.text))[:POSTING_CHARS]
-    except Exception as exc:
-        logger.info("contacts: couldn't read the posting %s: %s", url, exc)
-        return ""
-    finally:
-        if own:
-            http.close()
-
-
 def sender_problem(gmail) -> str:
     """'' when the jobs Gmail is OUTREACH_FROM, else why no draft may be made there."""
     want = (config.OUTREACH_FROM or "").strip().lower()
@@ -327,23 +310,32 @@ def sender_problem(gmail) -> str:
     return ""
 
 
-def company_domain(rec: dict) -> str:
-    """The row's company domain: the Domain cell, else its address's domain."""
-    email = first_email(rec)
-    return _clean_domain(get(rec, DOMAIN)) or (_clean_domain(email.split("@")[1]) if email else "")
+def brief_of(rec: dict) -> writer.Brief:
+    """The email's inputs from one row: Muse's research columns + who it's to."""
+    who = get(rec, PERSON)
+    return writer.Brief(company=get(rec, COMPANY), role=get(rec, ROLE), problem=get(rec, PROBLEM),
+                        angle=get(rec, ANGLE), signal=get(rec, SIGNAL),
+                        person="" if is_generic_inbox(who) else who, title=get(rec, TITLE),
+                        person_type=get(rec, PERSON_TYPE))
 
 
-def fact_for(rec: dict) -> Optional[company_fact.Fact]:
-    """What the row's company solves, from its own pages (Source page, homepage, posting)."""
-    return company_fact.find(re.sub(r"\(.*?\)", " ", get(rec, COMPANY)).strip(), company_domain(rec),
-                             source=get(rec, SOURCE), job_url=get(rec, JOB_URL))
-
-
-def compose(rec: dict, posting: str, fact) -> Optional[dict]:
+def compose(rec: dict) -> Optional[dict]:
     """{to, subject, body} from the gateway LLM, or None if its output failed checks."""
-    t = _Target(company=get(rec, COMPANY), jobs=[{"role": get(rec, ROLE), "fields": {}}],
-                contact=finder.Person(get(rec, PERSON), get(rec, TITLE)))
-    return writer.email(t, first_email(rec), posting=posting, fact=fact)
+    return writer.email(brief_of(rec), first_email(rec))
+
+
+def resume_pdf() -> str:
+    """The resume attached to every draft: OUTREACH_RESUME, else the answer bank's resume_path."""
+    from pathlib import Path
+    from aria.features.ats import planner
+    path = config.OUTREACH_RESUME or planner.resume_path() or ""
+    return str(Path(path).expanduser()) if path and Path(path).expanduser().is_file() else ""
+
+
+def _note_once(rec: dict, line: str) -> str:
+    """Notes with `line` added, unless it's already there."""
+    notes = get(rec, NOTES)
+    return notes if line in notes else add_note(notes, line)
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +348,7 @@ class Report:
     errors: list = field(default_factory=list)      # (row, why) lookups
     draft_errors: list = field(default_factory=list)  # (row, why)
     drafted: list = field(default_factory=list)     # (row, link)
-    held: list = field(default_factory=list)        # rows with no company fact
+    held: list = field(default_factory=list)        # rows that need research (no problem / angle)
     stopped: list = field(default_factory=list)     # rows set to "no reply"
     skipped: list = field(default_factory=list)     # (row, why)
 
@@ -372,7 +364,7 @@ class Report:
             parts.append(f"{k} draft{'s' if k != 1 else ''} not created (see Notes)")
         if self.held:
             k = len(self.held)
-            parts.append(f"{k} held: nothing specific found on the company's pages")
+            parts.append(f"{k} need{'s' if k == 1 else ''} research (Company problem / Angle)")
         if self.drafted:
             parts.append(f"{len(self.drafted)} draft{'s' if len(self.drafted) != 1 else ''} in the jobs Gmail")
         if self.stopped:
@@ -402,20 +394,18 @@ def run(
     client: Optional[cs.ColdstartClient] = None,
     gmail=None,
     search_fn=None,
-    posting_fn: Optional[Callable[[str], str]] = None,
-    fact_fn: Optional[Callable[[dict], Optional[company_fact.Fact]]] = None,
+    resume: Optional[str] = None,
     limit: Optional[int] = None,
     draft: bool = True,
     step_fn: Optional[Callable[[str], None]] = None,
 ) -> str:
-    """One pass over the Contacts tab. limit: look up at most this many pending rows, and
+    """One pass over the Contacts tab. resume: the PDF to attach (default resume_pdf()).
+    limit: look up at most this many pending rows, and
     draft only rows looked up in this run — or, when none were pending, the first `limit`
     rows ready to draft (the thin slice: limit=1). Never raises."""
     say = _safe(step_fn)
     sheet = sheet or HeaderSheet(config.MUSE_SHEET_ID, config.MUSE_CONTACTS_TAB, writable=WRITABLE)
     client = client or cs.ColdstartClient()
-    posting_fn = posting_fn or posting_text
-    fact_fn = fact_fn or fact_for
     write = _Writer(sheet, say)
     rep = Report()
     log = run_log.start("contacts")
@@ -472,8 +462,7 @@ def run(
             s.detail = f"{len(rep.found)} found, {len(rep.errors)} errors; {client.calls} Coldstart calls"
 
         if draft:
-            _draft_all(records, todo if limit is not None else None, limit, gmail, posting_fn, fact_fn,
-                       write, rep, say, log)
+            _draft_all(records, todo if limit is not None else None, limit, gmail, resume, write, rep, say, log)
         summary = rep.summary()
         log.finish("ok" if rep.found or rep.drafted or rep.stopped
                    else ("error" if rep.errors or rep.draft_errors or rep.held else "no change"), summary)
@@ -490,7 +479,7 @@ def run(
         return "The Contacts run failed; nothing was sent."
 
 
-def _draft_all(records, only, limit, gmail, posting_fn, fact_fn, write, rep, say, log) -> None:
+def _draft_all(records, only, limit, gmail, resume, write, rep, say, log) -> None:
     queue, waves = draft_queue(records)
     if only is not None:
         rows = {r[ROW] for r in only} or {r[ROW] for r in queue[:limit]}     # nothing looked up: the next draft(s)
@@ -506,38 +495,33 @@ def _draft_all(records, only, limit, gmail, posting_fn, fact_fn, write, rep, say
         from aria.plugins.productivity.gmail import GmailClient
         gmail = GmailClient(google_auth.JOBS)
     problem = sender_problem(gmail)
+    resume = resume if resume is not None else resume_pdf()
+    if not problem and not resume:
+        problem = "no resume PDF to attach (set resume_path in My answers, or OUTREACH_RESUME)"
     if problem:
         say(f"  no drafts: {problem}")
         log.skip("draft", problem)
         return
-    facts: dict = {}
     with log.step("draft") as s:
         for rec in queue:
             wave = waves.get(rec[ROW]) or get(rec, WAVE)
-            key = company_key(get(rec, COMPANY))
-            if key not in facts:
-                facts[key] = fact_fn(rec)
-            fact = facts[key]
-            say(f"  row {rec[ROW]}: {get(rec, PERSON)} at {get(rec, COMPANY)} — what they solve: "
-                + (f"{fact.problem} | {fact.detail} ({fact.url})" if fact else "nothing specific found"))
-            if fact is None:
-                why = "held: nothing specific on the company's pages (Source page, homepage, posting); add a Source URL"
-                write(rec, {WAVE: str(wave), UPDATED: _now(),
-                            NOTES: get(rec, NOTES) if why in get(rec, NOTES) else add_note(get(rec, NOTES), why)})
+            brief = brief_of(rec)
+            say(f"  row {rec[ROW]}: {get(rec, PERSON)} <{first_email(rec)}> at {get(rec, COMPANY)}, "
+                f"wave {wave}, {brief.kind}")
+            gaps = writer.missing(brief)
+            if gaps:
+                say(f"  needs research: {' and '.join(gaps)} blank or unknown; no draft")
+                write(rec, {WAVE: str(wave), UPDATED: _now(), NOTES: _note_once(rec, NEEDS_RESEARCH)})
                 rep.held.append(rec[ROW])
                 continue
-            posting = posting_fn(get(rec, JOB_URL))
-            say(f"  <{first_email(rec)}>, wave {wave}, "
-                f"posting {'read (' + str(len(posting)) + ' chars)' if posting else 'unavailable'}")
-            msg = compose(rec, posting, fact)
+            msg = compose(rec)
             if msg is None:
                 say("  the LLM draft failed (error or checks; see the log); no draft")
-                write(rec, {WAVE: str(wave), UPDATED: _now(),
-                            NOTES: add_note(get(rec, NOTES), "LLM draft failed; not created")})
+                write(rec, {WAVE: str(wave), UPDATED: _now(), NOTES: add_note(get(rec, NOTES), "LLM draft failed; not created")})
                 rep.draft_errors.append((rec[ROW], "LLM draft failed"))
                 continue
             say(f"  subject: {msg['subject']}")
-            res = gmail.save_draft(msg["to"], msg["subject"], msg["body"])
+            res = gmail.save_draft(msg["to"], msg["subject"], msg["body"], attachments=[resume])
             if not res.get("ok"):
                 say(f"  gmail: {res.get('message')}")
                 write(rec, {WAVE: str(wave), UPDATED: _now(),
@@ -545,7 +529,10 @@ def _draft_all(records, only, limit, gmail, posting_fn, fact_fn, write, rep, say
                 rep.draft_errors.append((rec[ROW], res.get("message", "")))
                 continue
             say(f"  gmail draft: {res.get('link') or res.get('draft_id')}")
-            write(rec, {DRAFT_STATUS: DRAFTED, DRAFT_LINK: res.get("link", ""), WAVE: str(wave), UPDATED: _now()})
+            fields = {DRAFT_STATUS: DRAFTED, DRAFT_LINK: res.get("link", ""), WAVE: str(wave), UPDATED: _now()}
+            if status(rec, CONFIDENCE) == cs.PATTERN:
+                fields[NOTES] = _note_once(rec, PATTERN_GUESS)
+            write(rec, fields)
             rep.drafted.append((rec[ROW], res.get("link", "")))
         s.detail = f"{len(rep.drafted)} drafted"
 
