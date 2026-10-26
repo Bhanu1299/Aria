@@ -194,7 +194,7 @@ def headline(base: dict, title: str, wanted: list) -> str:
     if not t:
         return base["headline"]
     text = model.plain_text(base)
-    have = [s.text for s in wanted if s.category and skills.present(s, text)]
+    have = [s.name for s in wanted if s.category and skills.present(s, text)]      # "LLMs", not "large language models"
     parts = [t] + have[:2]
     out = " | ".join(parts)
     while render.width(out, render.BOLD) > render.RIGHT - render.LEFT and len(parts) > 1:

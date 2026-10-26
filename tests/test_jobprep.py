@@ -298,3 +298,8 @@ def test_dashboard_post_route_needs_the_token():
     assert status == 200 and "Initech" in out["message"]
     status, out = dash.settings_action("/api/jobprep", {"op": "dna_add", "text": ""})
     assert status == 400
+
+
+def test_unfortunately_with_an_interview_is_an_interview():
+    assert replies.classify("Re: interview", "Unfortunately we need to reschedule your interview to Friday.",
+                            "hr@acme.com", use_llm=False) == ("interview", "rules")

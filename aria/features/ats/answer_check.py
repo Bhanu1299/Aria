@@ -45,7 +45,8 @@ _BREAK = re.compile(r"(?<=[.!?])[\"')\]]*\s+(?=[A-Z0-9\"(])|\n+")
 _ABBREV = re.compile(r"(?:[A-Za-z]\.){1,3}|(?:Dr|Mr|Ms|Mrs|Jr|Sr|St|Inc|Co|Corp|Ltd|vs|etc|e\.g|i\.e|approx|No)\.",
                      re.I)
 _NAME = r"([A-Z][\w&.'-]*(?:\s+(?:of\s+|&\s+)?[A-Z][\w&.'-]*){0,3})"
-_EMPLOYER_CUE = re.compile(r"\b(?:at|for|joined|with the team at|interned at|worked at|employed by|company)\s+" + _NAME)
+_EMPLOYER_CUE = re.compile(r"\b(?P<cue>(?i:at|for|joined|with the team at|interned at|worked at|employed by|company))\s+"
+                           + _NAME)
 _EMPLOYER_VERB = re.compile(r"\b(?:worked|interned|served|employed|engineer|developer|intern)\b", re.I)
 _PROJECT_CUE = re.compile(r"\b(?:built|created|launched|shipped|developed|project(?:\s+called|\s+named)?|called|named)\s+"
                           + _NAME)
@@ -123,16 +124,23 @@ def check(answer: str, resume: dict, jd_text: str = "", company: str = "") -> li
             school_spans = [sm.span() for sm in _SCHOOL.finditer(s)]
             for cue, kind in ((_EMPLOYER_CUE, "employer"), (_PROJECT_CUE, "project")):
                 for nm in cue.finditer(s):
-                    if any(a <= nm.start(1) < b for a, b in school_spans):
+                    if any(a <= nm.start(nm.lastindex) < b for a, b in school_spans):
                         continue
-                    if kind == "employer" and not _EMPLOYER_VERB.search(s):
+                    opens = kind == "employer" and nm.start() == 0 and nm.group("cue").lower() == "at"
+                    if kind == "employer" and not opens and not _EMPLOYER_VERB.search(s):
                         continue
-                    if not _name_known(nm.group(1), k):
-                        out.append(Violation(kind, nm.group(1), s))
+                    name = nm.group(nm.lastindex).rstrip(".,'’")
+                    if not _name_known(name, k):
+                        out.append(Violation(kind, name, s))
             for sk in skills.extract(s):
                 if not skills.present(sk, k["text"]) and not skills.present(sk, jd_text or ""):
                     out.append(Violation("skill", sk.text, s))
-        return out
+        unique, seen = [], set()
+        for v in out:
+            if (v.kind, v.text, v.sentence) not in seen:
+                seen.add((v.kind, v.text, v.sentence))
+                unique.append(v)
+        return unique
     except Exception as exc:
         logger.warning("answer_check.check failed: %s", exc)
         return []

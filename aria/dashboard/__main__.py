@@ -41,7 +41,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 HOST = "127.0.0.1"
-MAX_BODY = 16 * 1024
+MAX_BODY = 64 * 1024        # the base resume JSON (My answers) is the largest body
 
 
 def render_page(token: str = "") -> str:
@@ -73,7 +73,7 @@ def page_from(srcs: dict, now=None, token: str = "", calls: Optional[dict] = Non
     questions = answers.open_count(srcs.get("reviews"))
     guard("today", lambda: today.render(mdl, questions) + _jobprep(mdl) + render.today_extras(mdl))
     guard("outreach", lambda: outreach.render(mdl))
-    guard("answers", lambda: answers.render(srcs.get("reviews")))
+    guard("answers", lambda: answers.render(srcs.get("reviews")) + _base_resume())
     guard("sheet", sheet_tab.render)
     guard("applications", lambda: applications.render(mdl) + render.funnel_details(mdl) + render.all_jobs_table(mdl))
     guard("health", lambda: health.render(mdl))
@@ -96,6 +96,15 @@ def _jobprep(mdl: dict) -> str:
         return jobprep.render(mdl)
     except Exception:
         logger.exception("dashboard: job prep cards failed")
+        return ""
+
+
+def _base_resume() -> str:
+    from aria.dashboard import jobprep
+    try:
+        return jobprep.base_resume_card()
+    except Exception:
+        logger.exception("dashboard: base resume card failed")
         return ""
 
 

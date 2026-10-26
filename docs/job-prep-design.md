@@ -122,3 +122,17 @@ later); interview prep; portal scanning.
 pytest green; ATS acceptance numbers above met and pasted into the PR/notes; ARCHITECTURE.md
 updated (storage + flow); .claude/project-state.md Status/Next updated; branch committed,
 not merged.
+
+## Build status (branch `feat/job-prep`, 2026-10-26)
+Built: §5 (resume model, lexicon, renderer, strict ATS check, tailoring, per-job folder, cover
+letters, fills upload the job's resume, base resume editor on My answers), §3 answer check, §4
+untrusted posting text, §6 follow-ups + reply suggestions (Approve/Dismiss), §7 reposts +
+do-not-apply. Acceptance gate passes on the code-only path (see the final commit message for the
+table). `.claude/project-state.md` is local (gitignored): copy this section's Status / Next there.
+
+Next:
+- Point the answer bank's `resume_path` at the new resume PDF; the first prepared job builds
+  `~/.aria/resume_base.json` from it — check it on My answers (Base resume).
+- Run `python scripts/manual_ats_test.py --llm` with GateLLM up, and once with
+  `--resume ~/.aria/resume_base.json`, to see the live rewrite on the real resume.
+- Watch the first real batch: `changes.md` per job, the `prepare resume` step in Live run.

@@ -8,6 +8,8 @@ Approve, reposted postings, and the do-not-apply list (docs/job-prep-design.md �
         approve_reply {id}                    the suggested Status → the sheet (the ONLY sheet write here)
         dismiss_reply {id}
         dna_add {text, reason}  dna_remove {text}
+        save_base {json}                      the base resume (My answers), validated
+        rebuild_base                          rebuild it from the resume PDF (old one → resume_base.prev.json)
     applied_from(mdl) → [(job dict, applied date)]   the model's Applied jobs, for followups.sync
 
 Rendering never raises out (the page guards it); act raises JobPrepError for bad input.
@@ -103,6 +105,51 @@ def _dna_card() -> str:
             '<button class="btn jp" data-op="dna_add">Add</button><span class="result small"></span></div></section>')
 
 
+def base_resume_card() -> str:
+    """My answers: the base resume every tailored resume starts from, as editable JSON."""
+    import json
+    from aria.features.resume import model as rm
+    d = rm.load_base()
+    body = json.dumps(rm.strip_ids(d), indent=2, ensure_ascii=False) if d else ""
+    hint = ("every tailored resume starts here; employers, dates and numbers are never changed per job"
+            if d else "not built yet — it's made from your resume PDF the first time a job is prepared")
+    return (f'<section class="card" id="jp-base">{label("Base resume", hint)}'
+            f'<textarea class="base-json" rows="18" spellcheck="false" style="width:100%;font:12px/1.45 var(--mono)">'
+            f'{e(body)}</textarea><div class="lactions">'
+            '<button class="btn primary jp" data-op="save_base">Save base resume</button>'
+            '<button class="btn jp" data-op="rebuild_base">Rebuild from my resume PDF</button>'
+            '<span class="result small"></span></div></section>')
+
+
+def _save_base(text: str) -> dict:
+    import json
+    from aria.features.resume import model as rm
+    try:
+        got = json.loads(text or "")
+    except ValueError as exc:
+        raise JobPrepError(f"That isn't valid JSON: {exc}")
+    d = rm.normalize(got)
+    if not d["name"] or not (d["experience"] or d["projects"]):
+        raise JobPrepError("A base resume needs a name and at least one job or project.")
+    rm.save_base(d)
+    return {"message": "Saved. Jobs prepared from now on use it."}
+
+
+def _rebuild_base() -> dict:
+    from aria.features.ats import planner
+    from aria.features.resume import model as rm
+    pdf = planner.resume_path()
+    if not pdf:
+        raise JobPrepError("No resume_path in your answer bank (or the file is missing).")
+    if rm.BASE_PATH.is_file():
+        rm.BASE_PATH.replace(rm.BASE_PATH.with_name("resume_base.prev.json"))
+    got = rm.ensure_base(pdf)
+    if not got:
+        raise JobPrepError("Couldn't read that PDF (is poppler installed?).")
+    return {"message": f"Rebuilt from {pdf}: {len(got['experience'])} jobs, {len(got['projects'])} projects. "
+                       "Reload to see it."}
+
+
 def render(mdl: dict) -> str:
     from aria.features.jobprep import followups
     parts = []
@@ -141,6 +188,10 @@ def act(body: dict) -> dict:
             return {"message": replies.approve(sid)}
         except ValueError as exc:
             raise JobPrepError(str(exc))
+    if op == "save_base":
+        return _save_base(str(body.get("json") or ""))
+    if op == "rebuild_base":
+        return _rebuild_base()
     if op == "dna_add":
         try:
             got = blocklist.add(str(body.get("text") or ""), str(body.get("reason") or ""))
@@ -170,6 +221,7 @@ JS = r"""
 document.addEventListener('click',function(ev){var t=ev.target.closest('.jp');if(!t)return;ev.preventDefault();
 var body={op:t.dataset.op};if(t.dataset.id)body.id=parseInt(t.dataset.id,10);if(t.dataset.text)body.text=t.dataset.text;
 var card=t.closest('section');if(body.op==='dna_add'){body.text=card.querySelector('.dna-text').value;body.reason=card.querySelector('.dna-reason').value}
+if(body.op==='save_base'){body.json=card.querySelector('.base-json').value}
 var out=(t.closest('.row,.lactions,.kv')||card).querySelector('.result')||card.querySelector('.result');t.disabled=true;
 if(out){out.textContent='Working…';out.className='result small'}
 fetch('/api/jobprep',{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':tok},body:JSON.stringify(body)})

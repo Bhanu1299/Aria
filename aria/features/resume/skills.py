@@ -45,6 +45,8 @@ class Skill:
         """What goes on a skill line: the JD's wording, a plain lowercase phrase capitalised
         ("distributed systems" → "Distributed Systems")."""
         w = self.text
+        if self.category and _norm(w) == _norm(self.name):         # "pgvector", "kubernetes" → as the lexicon spells it
+            return self.name
         if w.islower() and not any(c in w for c in "./+#") and len(w) > 4:
             small = {"and", "or", "of", "as", "for", "to", "in", "on", "with", "the", "a"}
             return " ".join(x if k and x in small else x.capitalize() for k, x in enumerate(w.split()))

@@ -2,7 +2,7 @@
 
 classify(subject, snippet, sender) → (kind, by)
     kind: interview | rejected | offer | noise | None. Rules first (offer, rejected,
-    interview, noise — in that order); only when no rule can tell, one small-tier LLM call
+    interview, a bare "unfortunately", noise — in that order); only when no rule can tell, one small-tier LLM call
     (task reply_classify) validated to one of the four kinds. None = couldn't tell.
 scan(messages, jobs) → [new suggestion]
     messages: the jobs Gmail's recent inbound mail ({id, from, subject, snippet}); each one
@@ -33,10 +33,11 @@ STATUS = {"interview": "Interview", "rejected": "Rejected", "offer": "Offer"}
 
 _OFFER = re.compile(r"\boffer letter\b|\bpleased to (?:extend|offer)\b|\bextend (?:you )?an offer\b|"
                     r"\boffer of employment\b|\bverbal offer\b|\bjob offer\b", re.I)
-_REJECTED = re.compile(r"\bunfortunately\b|\bnot (?:to )?(?:be )?mov(?:e|ing) forward\b|\bdecided to (?:pursue|move forward with) "
+_REJECTED = re.compile(r"\bnot (?:to )?(?:be )?mov(?:e|ing) forward\b|\bdecided to (?:pursue|move forward with) "
                        r"other\b|\bother candidates\b|\bposition has been filled\b|\bnot (?:been )?selected\b|"
                        r"\bregret to inform\b|\bwill not be (?:moving|proceeding)\b|\bno longer (?:being )?considered\b|"
                        r"\bnot a (?:fit|match) at this time\b", re.I)
+_UNFORTUNATELY = re.compile(r"\bunfortunately\b", re.I)      # a rejection only when nothing says interview
 _INTERVIEW = re.compile(r"\binterview\w*\b|\bschedul\w+ (?:a |some )?(?:call|time|chat|conversation)\b|"
                         r"\byour availability\b|\bphone screen\b|\bnext steps?\b|\bcalendly\.com\b|\btechnical screen\b|"
                         r"\bonsite\b|\bmeet (?:with )?(?:the|our) team\b|\bhiring manager would like\b", re.I)
@@ -59,6 +60,8 @@ def classify(subject: str, snippet: str = "", sender: str = "", use_llm: bool = 
         return "rejected", "rules"
     if _INTERVIEW.search(text) and not _NOISE.search(subject or ""):
         return "interview", "rules"
+    if _UNFORTUNATELY.search(text):
+        return "rejected", "rules"
     if _NOISE.search(text) or _AUTO_SENDER.search(sender or ""):
         return "noise", "rules"
     if not use_llm:

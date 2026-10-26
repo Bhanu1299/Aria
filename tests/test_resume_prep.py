@@ -367,3 +367,41 @@ def test_cleanup_keeps_applied_and_recent_jobs(tmp_path):
     gone = prepare.cleanup({"J-1": "Applied", "J-2": "Skipped"})
     assert gone == ["J-2-globex"]
     assert {p.name for p in prepare.JOBS_DIR.iterdir()} == {"J-1-acme", "J-3-initech"}
+
+
+# ---------------------------------------------------------------------------
+# the base resume: built from the PDF, rebuilt when the PDF changes, editable
+# ---------------------------------------------------------------------------
+
+@needs_poppler
+def test_base_is_built_once_and_rebuilt_for_a_new_pdf(tmp_path, monkeypatch):
+    import os
+    from aria.features.ats import resume_text
+    monkeypatch.setattr(resume_text, "CACHE", tmp_path / "resume.txt")
+    v1 = model.normalize(json.loads((DATA / "resume_fixture.json").read_text()))
+    v2 = json.loads(json.dumps(v1))
+    v2["experience"][0]["bullets"].append("Led the on-call rotation for four services")
+    pdf = tmp_path / "resume.pdf"
+    render.render(v1, pdf)
+    assert model.ensure_base(str(pdf)) == v1 and model.BASE_PATH.is_file()
+    edited = json.loads(json.dumps(v1))
+    edited["headline"] = "Edited by hand"
+    model.save_base(edited)
+    assert model.ensure_base(str(pdf))["headline"] == "Edited by hand"        # same PDF: edits stay
+    render.render(v2, pdf)
+    os.utime(pdf, (1, 1))                                                     # a different file
+    got = model.ensure_base(str(pdf))
+    assert got["experience"][0]["bullets"][-1] == "Led the on-call rotation for four services"
+    assert json.loads(model.BASE_PATH.with_name("resume_base.prev.json").read_text())["headline"] == "Edited by hand"
+
+
+def test_dashboard_base_resume_editor(base):
+    from aria.dashboard import jobprep
+    assert "not built yet" in jobprep.base_resume_card()
+    with pytest.raises(jobprep.JobPrepError):
+        jobprep.act({"op": "save_base", "json": "{not json"})
+    with pytest.raises(jobprep.JobPrepError):
+        jobprep.act({"op": "save_base", "json": json.dumps({"name": "X"})})
+    assert jobprep.act({"op": "save_base", "json": json.dumps(base)})["message"].startswith("Saved")
+    assert model.load_base() == base
+    assert "Jordan A. Rivera" in jobprep.base_resume_card()

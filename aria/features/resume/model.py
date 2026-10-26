@@ -133,22 +133,52 @@ def save_base(d: dict) -> None:
     save(d, BASE_PATH)
 
 
+def _source_path():
+    return BASE_PATH.with_name("resume_base.source.json")
+
+
+def _pdf_stamp(pdf_path: str) -> dict:
+    st = Path(pdf_path).expanduser().stat()
+    return {"path": str(Path(pdf_path).expanduser()), "mtime": st.st_mtime, "size": st.st_size}
+
+
 def ensure_base(pdf_path: Optional[str]) -> Optional[dict]:
-    """The base resume: ~/.aria/resume_base.json, else built once from the PDF (and saved)."""
+    """The base resume: ~/.aria/resume_base.json, built from the PDF at resume_path the first
+    time — and rebuilt when resume_path points at a different or changed PDF (a new resume
+    version). The replaced base is kept as resume_base.prev.json. Edits to the JSON stay
+    until the PDF itself changes."""
     d = load_base()
+    stamp = None
+    if pdf_path:
+        try:
+            stamp = _pdf_stamp(pdf_path)
+        except OSError:
+            stamp = None
     if d is not None:
+        try:
+            old = json.loads(_source_path().read_text())
+        except (OSError, ValueError):
+            old = None
+        if stamp is None or old is None or old == stamp:
+            if stamp is not None and old is None:              # adopt a base built before stamps existed
+                _source_path().write_text(json.dumps(stamp))
+            return d
+    if stamp is None:
         return d
-    if not pdf_path:
-        return None
     try:
         from aria.features.ats import resume_text
         built = build_from_text(resume_text.text(pdf_path))
         if built["experience"] or built["projects"]:
+            if d is not None:
+                BASE_PATH.with_name("resume_base.prev.json").write_text(json.dumps(d, indent=2, ensure_ascii=False))
+                logger.info("resume.model: %s changed — base resume rebuilt (old one in resume_base.prev.json)",
+                            pdf_path)
             save_base(built)
+            _source_path().write_text(json.dumps(stamp))
             return built
     except Exception as exc:
         logger.warning("resume.model: building the base resume from %s failed: %s", pdf_path, exc)
-    return None
+    return d
 
 
 # ---------------------------------------------------------------------------
