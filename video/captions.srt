@@ -1,0 +1,43 @@
+1
+00:00:03,833 --> 00:00:05,053
+I got tired of this.
+
+2
+00:00:05,700 --> 00:00:09,070
+So I combined three of my projects to automate my job search.
+
+3
+00:00:09,967 --> 00:00:11,797
+Aria, run the job pipeline.
+
+4
+00:00:13,500 --> 00:00:17,590
+Every 24 hours, Aria fills the new postings. Best fit first.
+
+5
+00:00:18,633 --> 00:00:21,093
+Coldstart finds the right person to email.
+
+6
+00:00:22,167 --> 00:00:24,357
+And drafts it. Never sent without me.
+
+7
+00:00:24,633 --> 00:00:28,643
+And every AI call goes through GateLLM. Cheapest model first.
+
+8
+00:00:29,633 --> 00:00:33,853
+Everything waits for me. Drafts in my inbox. Filled tabs in my browser.
+
+9
+00:00:34,633 --> 00:00:39,363
+Same 87 tasks. Claude: $3.01. GateLLM: $0.21.
+
+10
+00:00:39,567 --> 00:00:40,667
+It never submits.
+
+11
+00:00:40,767 --> 00:00:41,427
+I do.
