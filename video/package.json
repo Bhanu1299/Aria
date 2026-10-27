@@ -1,0 +1,27 @@
+{
+  "name": "aria-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "\"I stopped applying to jobs by hand\": a ~47s motion-graphics video made entirely in code with Remotion.",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "npm run render:vertical && npm run render:landscape",
+    "render:vertical": "remotion render Vertical out/aria-vertical.mp4",
+    "render:landscape": "remotion render Landscape out/aria-landscape.mp4",
+    "stills": "node scripts/stills.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.539",
+    "@remotion/cli": "4.0.539",
+    "@remotion/fonts": "4.0.539",
+    "@remotion/renderer": "4.0.539",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.539"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.8",
+    "typescript": "5.8.3"
+  }
+}
