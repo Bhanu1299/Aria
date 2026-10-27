@@ -1,12 +1,12 @@
 import React from 'react';
 import {AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
-import {COLORS, COMPANIES, TEXT} from '../config';
+import {COLORS, COMPANIES, POSTINGS_BY_FIT, TEXT} from '../config';
 import {barGeom, useLayout} from '../layout';
 import {FONT, headline} from '../theme';
 import {ChromeWindow, Tab} from '../ui/ChromeWindow';
 import {JobForm} from '../ui/JobForm';
 import {AriaGlyph, GlyphState, glyphCenter, MacTopBar} from '../ui/MacTopBar';
-import {CameraPush, clamp, ease, enterAt, Reveal, Transcript} from '../ui/motion';
+import {CameraPush, Check, clamp, ease, enterAt, Reveal, Transcript} from '../ui/motion';
 
 // Beats inside this 10 s scene (frames).
 const T = {
@@ -21,12 +21,12 @@ const T = {
   why: 200,
   whyLen: 36,
   done: 246,
-  caption1: 206,
-  caption2: 232,
+  caption1: 188,
+  caption2: 218,
   toast: 252,
 };
 
-export const S04Voice: React.FC = () => {
+export const S05Voice: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const L = useLayout();
@@ -53,7 +53,14 @@ export const S04Voice: React.FC = () => {
     : {x: 860, y: 110, w: 960, h: 900};
   const formW = v ? 870 : 860;
 
-  const tabs: Tab[] = COMPANIES.map((c, i) => ({title: c.name, color: c.color, letter: c.letter, appearAt: T.tabs[i]}));
+  // Tabs open best fit first, the order the feed was sorted in.
+  const tabs: Tab[] = POSTINGS_BY_FIT.map((p, i) => {
+    const c = COMPANIES[p.company];
+    return {title: c.name, color: c.color, letter: c.letter, appearAt: T.tabs[i]};
+  });
+  const front = COMPANIES[POSTINGS_BY_FIT[0].company];
+  // The pipeline's three parts run side by side; each ticks when it's done.
+  const stepsDone = [T.done, 214, 236];
 
   const fields = t.fields;
   const progress = fields.map((_, i) =>
@@ -88,20 +95,61 @@ export const S04Voice: React.FC = () => {
           <div style={{...headline(spokenSize), color: COLORS.text, fontWeight: 700}}>
             <Transcript text={`“${t.spoken}”`} delay={T.words} perWord={6} />
           </div>
-          <div
-            style={{
-              marginTop: interpolate(move, [0, 1], [34, 14]),
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 12,
-              fontSize: v ? 28 : 24,
-              color: COLORS.secondary,
-              fontWeight: 500,
-              opacity: interpolate(frame, [T.words + 10, T.words + 20], [0, 1], clamp),
-            }}
-          >
-            <AriaGlyph state={frame < T.think ? 'listening' : 'idle'} size={v ? 34 : 30} color={COLORS.secondary} />
-            {t.sttNote}
+          <div style={{position: 'relative', marginTop: interpolate(move, [0, 1], [34, 16]), height: v ? 56 : 50}}>
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                justifyContent: v ? 'center' : 'flex-start',
+                alignItems: 'center',
+                gap: 12,
+                fontSize: v ? 28 : 24,
+                color: COLORS.secondary,
+                fontWeight: 500,
+                opacity: interpolate(frame, [T.words + 10, T.words + 20], [0, 1], clamp) * (1 - move),
+              }}
+            >
+              <AriaGlyph state={frame < T.think ? 'listening' : 'idle'} size={v ? 34 : 30} color={COLORS.secondary} />
+              {t.sttNote}
+            </div>
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                justifyContent: v ? 'center' : 'flex-start',
+                flexWrap: v ? 'nowrap' : 'wrap',
+                alignItems: 'center',
+                gap: v ? 12 : 10,
+                opacity: move,
+              }}
+            >
+              {t.steps.map((step, i) => {
+                const done = interpolate(frame, [stepsDone[i], stepsDone[i] + 8], [0, 1], clamp);
+                return (
+                  <div
+                    key={step}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      fontSize: v ? 24 : 22,
+                      fontWeight: 600,
+                      color: done > 0.5 ? COLORS.text : COLORS.secondary,
+                      background: COLORS.surface,
+                      border: `1.5px solid ${done > 0.5 ? 'rgba(48,209,88,0.5)' : 'rgba(255,255,255,0.1)'}`,
+                      borderRadius: 999,
+                      padding: v ? '9px 16px 9px 12px' : '7px 14px 7px 10px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {done > 0 ? <Check progress={done} size={v ? 26 : 24} /> : <AriaGlyph state="thinking" size={v ? 26 : 24} color={COLORS.secondary} />}
+                    {step}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
 
@@ -119,9 +167,9 @@ export const S04Voice: React.FC = () => {
             <div style={{position: 'absolute', left: (win.w - formW) / 2, top: 0}}>
               <JobForm
                 width={formW}
-                company={COMPANIES[0]}
+                company={front}
                 title={TEXT.hook.formTitle}
-                role={t.role}
+                role={POSTINGS_BY_FIT[0].role}
                 fields={fields}
                 progress={progress}
                 checks={checks}
@@ -145,7 +193,7 @@ export const S04Voice: React.FC = () => {
             width: v ? L.box.w : 700,
             top: v ? win.y + win.h + 40 : 560,
             textAlign: v ? 'center' : 'left',
-            ...headline(v ? 54 : 60),
+            ...headline(v ? 50 : 56),
             fontWeight: 600,
           }}
         >

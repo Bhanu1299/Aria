@@ -1,18 +1,20 @@
-"""Synthesize public/music.mp3: a 47.5 s, 120 BPM score cut to the video's scenes.
+"""Synthesize public/music.mp3: a 120 BPM score cut to the video's scenes.
 
 Made entirely in code (numpy additive synthesis, no samples), so it's royalty-free.
     pip install numpy soundfile
     python scripts/make-music.py
 
-Section map (seconds) follows SCENE_SECONDS in src/config.ts:
-    0-2.5   hook       ticking 16ths, tension
-    2.5-5   tired      low boom, drone
-    5-37    build      pad chords, soft kick, plucked arpeggio
-    37-41   numbers    one hit per number
-    41-44   never      everything stops; "I do." gets one warm chord
-    44-47.5 end card   pad resolves and fades
+Sections follow timeline.json, so re-run this after changing scene lengths:
+    hook       ticking 16ths, tension
+    tired      low boom as the monitor goes dark, drone
+    combine    pad chords enter, a pluck per tile
+    feed       light ticks as postings land
+    voice ...  kick and arpeggio join (through system)
+    numbers    one hit per number
+    never      everything stops; "I do." gets one warm chord
+    endcard    plucks over the chord, fade
 """
-import subprocess, tempfile
+import json, subprocess, tempfile
 from pathlib import Path
 
 import numpy as np
@@ -20,8 +22,14 @@ import soundfile as sf
 
 SR = 44100
 BEAT = 0.5  # 120 BPM
-LEN = 47.5
 root = Path(__file__).resolve().parent.parent
+_scenes = json.loads((root / "timeline.json").read_text())["scenes"]
+START, DUR = {}, {}
+_t = 0.0
+for _s in _scenes:
+    START[_s["id"]], DUR[_s["id"]] = _t, _s["seconds"]
+    _t += _s["seconds"]
+LEN = _t
 rng = np.random.default_rng(7)
 mix = np.zeros((int(SR * (LEN + 3)), 2))
 
@@ -109,55 +117,66 @@ def boom(gain=0.7):
     return np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t * 2.2) * gain
 
 
-# --- 0-2.5 hook: 16th ticks, speeding feel via rising pitch of a blip -------------------
-for k in range(20):
+# --- hook: 16th ticks over a sub pulse --------------------------------------------------
+hook_beats = int(DUR["hook"] / BEAT)
+for k in range(hook_beats * 4):
     t = k * BEAT / 4
     add(tick(0.06 if k % 4 == 0 else 0.035), t, pan=0.3 if k % 2 else -0.3)
     if k % 2 == 0:
         add(pluck(81 + (k // 2) % 4 * 2, 0.15, 0.03), t, pan=0.2)
-for k in range(5):
-    add(sub(33, BEAT * 0.9, 0.14), k * BEAT)
+for k in range(hook_beats):
+    add(sub(33, BEAT * 0.9, 0.1 + 0.08 * k / hook_beats), k * BEAT)
 
-# --- 2.5-5 tired: boom, then a low drone --------------------------------------------------
-add(boom(), 2.5)
-add(pad([45, 52], 2.6, 0.06), 2.5)
+# --- tired: boom, then a low drone --------------------------------------------------------
+add(boom(), START["tired"])
+add(pad([45, 52], DUR["tired"] + 0.3, 0.06), START["tired"])
 
-# --- 5-37 build ----------------------------------------------------------------------------
+# --- combine -> system: chords every 2 bars ----------------------------------------------------
 chords = [
     ([53, 57, 60, 64], 41),  # Fmaj7
     ([57, 60, 64, 67], 45),  # Am7
     ([55, 60, 64, 67], 48),  # C
     ([55, 59, 62, 67], 43),  # G
 ]
-t0 = 5.0
-for c in range(8):
+t0 = START["combine"]
+build_end = START["numbers"]
+kick_from = START["voice"]
+hats_from = START["resume"]
+c = 0
+while t0 + c * 4 < build_end - 0.01:
     notes, bass = chords[c % 4]
     start = t0 + c * 4
-    add(pad(notes, 4.4, 0.055), start, pan=-0.15)
-    add(pad([n + 12 for n in notes[1:3]], 4.4, 0.02), start, pan=0.25)
-    add(sub(bass - 12 + 12, 4.0, 0.12), start)
-    for b in range(8):
+    length = min(4.0, build_end - start)
+    add(pad(notes, length + 0.4, 0.055), start, pan=-0.15)
+    add(pad([n + 12 for n in notes[1:3]], length + 0.4, 0.02), start, pan=0.25)
+    add(sub(bass, length, 0.12), start)
+    for b in range(int(length / BEAT)):
         bt = start + b * BEAT
-        if bt >= 8.0:  # kick enters with the voice scene
+        if bt >= kick_from:
             add(kick(0.42 if b % 2 == 0 else 0.3), bt)
-        if bt >= 18.0:
+        if bt >= hats_from or START["feed"] <= bt < kick_from:
             add(tick(0.025), bt + BEAT / 2, pan=0.4)
-        if bt >= 8.0:
+        if bt >= kick_from:
             arp = notes + [notes[0] + 12, notes[2] + 12]
             for e in range(2):
                 m = arp[(b * 2 + e) % len(arp)] + 12
                 add(pluck(m, 0.5, 0.05), bt + e * BEAT / 2, pan=-0.35 if e else 0.35)
+    c += 1
+
+# one pluck per tile in "combine"
+for k, m in enumerate([72, 76, 79]):
+    add(pluck(m, 0.9, 0.07), START["combine"] + (14 + k * 8) / 30, pan=-0.3 + k * 0.3)
 
 # lift into the numbers
 riser_n = int(1.0 * SR)
 riser = rng.standard_normal(riser_n)
 riser = lowpass(riser, 3000) * np.linspace(0, 1, riser_n) ** 2 * 0.06
-add(riser, 36.0)
+add(riser, START["numbers"] - 1.0)
 
-# --- 37-41 numbers: four hits ---------------------------------------------------------------
+# --- numbers: four hits ----------------------------------------------------------------------
 stabs = [[57, 60, 64], [53, 57, 60], [55, 60, 64], [55, 59, 62, 67]]
 for k in range(4):
-    ht = 37 + k
+    ht = START["numbers"] + k * DUR["numbers"] / 4
     add(kick(0.7, 0.6), ht)
     add(boom(0.25), ht)
     for m in stabs[k]:
@@ -166,17 +185,17 @@ for k in range(4):
     for b in range(1, 4):
         add(tick(0.03), ht + b * BEAT / 2, pan=0.3)
 
-# --- 41-44 never: silence, then one warm chord on "I do." ------------------------------------
-add(sub(36, 1.2, 0.06), 41.0)
-ido = 41 + 36 / 30
-add(pad([48, 55, 60, 64, 71], 6.0, 0.075), ido)  # Cmaj7(add9)
-add(sub(36, 5.0, 0.12), ido)
+# --- never: silence, then one warm chord on "I do." ------------------------------------------
+add(sub(36, 1.2, 0.06), START["never"])
+ido = START["never"] + 36 / 30
+add(pad([48, 55, 60, 64, 71], LEN - ido + 1, 0.075), ido)  # Cmaj7(add9)
+add(sub(36, LEN - ido, 0.12), ido)
 for k, m in enumerate([72, 76, 79, 83]):
     add(pluck(m, 1.2, 0.05), ido + k * 0.12, pan=-0.3 + k * 0.2)
 
-# --- 44-47.5 end card: gentle plucks over the chord -----------------------------------------
+# --- end card: gentle plucks over the chord -------------------------------------------------
 for k, m in enumerate([76, 79, 74, 72]):
-    add(pluck(m, 1.4, 0.035), 44.0 + k * 1.0, pan=0.25 * (-1) ** k)
+    add(pluck(m, 1.4, 0.035), START["endcard"] + k * 0.8, pan=0.25 * (-1) ** k)
 
 # --- reverb (FFT convolution with a decaying noise tail) + master -------------------------
 ir_n = int(2.2 * SR)

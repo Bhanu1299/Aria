@@ -3,13 +3,12 @@ import {AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig} from 'remoti
 import {COLORS, COMPANIES, PLACEHOLDERS, TEXT} from '../config';
 import {useLayout} from '../layout';
 import {FONT} from '../theme';
+import {DeskScene, deskGeom} from '../ui/DeskScene';
 import {JobForm} from '../ui/JobForm';
 import {clamp, isPlaceholder, Placeholder} from '../ui/motion';
 
 /** Each pass through the form is shorter than the last. */
-const CYCLES = [34, 22, 19];
-
-export const formWidth = (vertical: boolean) => (vertical ? 860 : 760);
+export const CYCLES = [40, 28, 20, 17];
 
 /** The same form, typed by hand, again and again. */
 export const HandForm: React.FC<{cycle: number; local: number; duration: number; width: number}> = ({
@@ -27,7 +26,7 @@ export const HandForm: React.FC<{cycle: number; local: number; duration: number;
   return (
     <JobForm
       width={width}
-      company={COMPANIES[cycle % 3]}
+      company={COMPANIES[cycle % COMPANIES.length]}
       title={t.formTitle}
       role={t.roles[cycle % t.roles.length]}
       fields={t.fields}
@@ -37,62 +36,83 @@ export const HandForm: React.FC<{cycle: number; local: number; duration: number;
       whyLines={[t.whyValue]}
       whyProgress={prog(n - 1)}
       submit={t.submit}
+      compact
     />
   );
 };
 
-export const S01Hook: React.FC = () => {
-  const frame = useCurrentFrame();
-  const {fps} = useVideoConfig();
-  const L = useLayout();
-  const width = formWidth(L.vertical);
+/** The monitor's contents: a plain browser page with the form on it. */
+export const Screen: React.FC<{w: number; h: number; cycle: number; local: number; duration: number}> = ({
+  w,
+  h,
+  cycle,
+  local,
+  duration,
+}) => {
+  const bar = 34;
+  const formW = Math.min(w * 0.72, (h - bar - 16) / 0.86);
+  return (
+    <div style={{width: w, height: h, background: '#F2F2F7', position: 'relative'}}>
+      <div style={{height: bar, background: '#E5E5EA', display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 14}}>
+        {['#FF5F57', '#FEBC2E', '#28C840'].map((c) => (
+          <div key={c} style={{width: 11, height: 11, borderRadius: '50%', background: c}} />
+        ))}
+      </div>
+      <div style={{position: 'absolute', top: bar + 8, left: (w - formW) / 2, borderRadius: 14, overflow: 'hidden'}}>
+        <HandForm cycle={cycle} local={local} duration={duration} width={formW} />
+      </div>
+    </div>
+  );
+};
 
+export const cycleAt = (frame: number) => {
   let start = 0;
   let cycle = 0;
   while (cycle < CYCLES.length - 1 && frame >= start + CYCLES[cycle]) {
     start += CYCLES[cycle];
     cycle++;
   }
-  const local = frame - start;
-  const dur = CYCLES[cycle];
+  return {cycle, local: frame - start, duration: CYCLES[cycle]};
+};
 
-  // Reset jolt: the form snaps up and back when it clears.
-  const jolt = cycle > 0 ? interpolate(local, [0, 2, 7], [0, -26, 0], clamp) : 0;
-  const escalate = 1 + cycle * 0.035;
+/** On the fourth reset I stop typing and give up. */
+export const FACEPALM_AT = 90;
+
+/** Me at the computer, filling the same form again, getting more fed up each time. */
+export const S01Hook: React.FC = () => {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const L = useLayout();
+  const g = deskGeom(L);
+  const c = cycleAt(frame);
+  const {cycle, duration} = c;
+  const local = cycle === CYCLES.length - 1 ? Math.min(c.local, 1) : c.local;
+
+  const annoy = interpolate(frame, [0, CYCLES[0], CYCLES[0] + CYCLES[1] + CYCLES[2]], [0, 0.35, 1], clamp);
+  const facepalm = interpolate(frame, [FACEPALM_AT, FACEPALM_AT + 12], [0, 1], {...clamp, easing: (x) => 1 - (1 - x) ** 3});
+  // A frustrated head jerk on every reset, plus one sigh.
+  const shake = cycle > 0 ? interpolate(local, [0, 2, 5, 9], [0, -5, 3, 0], clamp) * (0.6 + cycle * 0.3) : 0;
+  const sighStart = CYCLES[0] + 6;
+  const sigh = interpolate(frame, [sighStart, sighStart + 8, sighStart + 20], [0, 1, 0], clamp);
+  const flicker = cycle > 0 ? interpolate(local, [0, 2, 5], [1, 0.75, 1], clamp) : 1;
 
   const target = PLACEHOLDERS.JOBS_TRACKED;
   const bump = cycle > 0 ? interpolate(local, [0, 3, 8], [1, 1.18, 1], clamp) : 1;
   const count =
-    typeof target === 'number' ? Math.round(interpolate(frame, [0, fps * 2.2], [0, target], clamp)) : null;
+    typeof target === 'number' ? Math.round(interpolate(frame, [0, fps * 3], [0, target], clamp)) : null;
 
   return (
     <AbsoluteFill style={{background: COLORS.bg, fontFamily: FONT}}>
-      <AbsoluteFill style={{alignItems: 'center', justifyContent: 'center', paddingTop: L.safe.top, paddingBottom: L.safe.bottom}}>
-        <div style={{position: 'relative', transform: `translateY(${jolt}px) scale(${escalate})`}}>
-          {/* Stack of forms already filled by hand */}
-          {Array.from({length: cycle}).map((_, i) => {
-            const depth = cycle - i;
-            return (
-              <div
-                key={i}
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  borderRadius: 30,
-                  background: '#D1D1D6',
-                  transform: `translateY(${-depth * 30}px) scale(${1 - depth * 0.05})`,
-                  opacity: 0.5 / depth,
-                }}
-              />
-            );
-          })}
-          <div style={{borderRadius: 30, overflow: 'hidden', position: 'relative', boxShadow: '0 40px 120px rgba(0,0,0,0.8)'}}>
-            <HandForm cycle={cycle} local={local} duration={dur} width={width} />
-          </div>
-        </div>
-      </AbsoluteFill>
+      <DeskScene
+        L={L}
+        annoy={annoy}
+        facepalm={facepalm}
+        shake={shake}
+        sigh={sigh}
+        glow={flicker}
+        screen={<Screen w={g.screen.w} h={g.screen.h} cycle={cycle} local={local} duration={duration} />}
+      />
 
-      {/* Counter, top-right inside the safe area */}
       <div
         style={{
           position: 'absolute',

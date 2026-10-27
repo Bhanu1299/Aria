@@ -78,14 +78,14 @@ const NodeBox: React.FC<{p: P; name: string; note: string; appear: number; icon:
   </div>
 );
 
-const GateIcon = () => (
+export const GateIcon = () => (
   <svg width={34} height={34} viewBox="0 0 34 34">
     {[6, 15, 24].map((y, i) => (
       <rect key={y} x={4 + i * 3} y={y} width={26 - i * 6} height={5} rx={2.5} fill={COLORS.text} opacity={1 - i * 0.25} />
     ))}
   </svg>
 );
-const ColdIcon = () => (
+export const ColdIcon = () => (
   <svg width={34} height={34} viewBox="0 0 34 34">
     <rect x={3} y={8} width={28} height={19} rx={4} fill="none" stroke={COLORS.text} strokeWidth={2.4} />
     <path d="M4 10 L17 19 L30 10" fill="none" stroke={COLORS.text} strokeWidth={2.4} strokeLinejoin="round" />

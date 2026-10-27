@@ -7,7 +7,7 @@ import {AriaGlyph} from '../ui/MacTopBar';
 import {enterAt, isPlaceholder, Placeholder, Reveal} from '../ui/motion';
 
 /** End card. Everything is in by ~frame 20, then holds. */
-export const S10EndCard: React.FC = () => {
+export const S11EndCard: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const L = useLayout();

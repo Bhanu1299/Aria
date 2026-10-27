@@ -14,7 +14,7 @@ const countUp = (value: string, p: number) =>
   });
 
 /** One huge number per beat, hard cuts between them. */
-export const S08Numbers: React.FC = () => {
+export const S09Numbers: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps, durationInFrames} = useVideoConfig();
   const L = useLayout();

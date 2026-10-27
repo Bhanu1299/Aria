@@ -6,6 +6,7 @@
  * amber placeholder so it can't slip into a final render unnoticed.
  */
 
+import timeline from '../timeline.json';
 import voiceover from '../voiceover.json';
 import voDurations from '../public/vo/durations.json';
 
@@ -49,7 +50,7 @@ export const COLORS = {
  */
 export const BPM = 120;
 export const FIRST_BEAT = 0;
-const TOTAL_GUESS = 1500;
+const TOTAL_GUESS = 3000; // just needs to exceed the video length
 export const BEATS: number[] = Array.from(
   {length: Math.ceil(TOTAL_GUESS / ((60 / BPM) * FPS))},
   (_, i) => Math.round(FIRST_BEAT + i * (60 / BPM) * FPS),
@@ -61,7 +62,8 @@ export const SNAP_CUTS_TO_BEATS = true;
 export type SceneId =
   | 'hook'
   | 'tired'
-  | 'aria'
+  | 'combine'
+  | 'feed'
   | 'voice'
   | 'resume'
   | 'coldstart'
@@ -70,20 +72,8 @@ export type SceneId =
   | 'never'
   | 'endcard';
 
-/** Scene lengths in seconds, in order. */
-export const SCENE_SECONDS: {id: SceneId; seconds: number; still: number}[] = [
-  // `still` = which second inside the scene `npm run stills` captures.
-  {id: 'hook', seconds: 2.5, still: 0.9},
-  {id: 'tired', seconds: 2.5, still: 1.6},
-  {id: 'aria', seconds: 3, still: 2.2},
-  {id: 'voice', seconds: 10, still: 8.2},
-  {id: 'resume', seconds: 8, still: 6.5},
-  {id: 'coldstart', seconds: 6, still: 5.2},
-  {id: 'system', seconds: 5, still: 4.2},
-  {id: 'numbers', seconds: 4, still: 0.6},
-  {id: 'never', seconds: 3, still: 2.4},
-  {id: 'endcard', seconds: 3.5, still: 2.5},
-];
+/** Scene order and lengths live in timeline.json (the music script reads it too). */
+export const SCENE_SECONDS = timeline.scenes.map((s) => ({...s, id: s.id as SceneId}));
 
 const nearestBeat = (f: number) =>
   BEATS.reduce((best, b) => (Math.abs(b - f) < Math.abs(best - f) ? b : best), BEATS[0]);
@@ -138,6 +128,17 @@ export const COMPANIES = [
   {name: 'Umbrella Labs', domain: 'umbrella-labs.example', color: '#FF375F', letter: 'U'},
 ];
 
+/** Fictional postings from the last 24 hours, in arrival order. `fit` is display-only. */
+export const POSTINGS = [
+  {company: 0, role: 'Software Engineer', posted: '2h ago', fit: 96},
+  {company: 1, role: 'AI Engineer', posted: '5h ago', fit: 84},
+  {company: 2, role: 'Backend Engineer', posted: '9h ago', fit: 91},
+  {company: 3, role: 'ML Platform Engineer', posted: '14h ago', fit: 78},
+  {company: 4, role: 'Software Engineer, Agents', posted: '20h ago', fit: 88},
+];
+/** Best fit first: the order Aria opens the tabs in. */
+export const POSTINGS_BY_FIT = [...POSTINGS].sort((a, b) => b.fit - a.fit);
+
 // ---------------------------------------------------------------------------
 // On-screen copy, per scene
 // ---------------------------------------------------------------------------
@@ -161,15 +162,26 @@ export const TEXT = {
   tired: {
     headline: 'I got tired\nof this.',
   },
-  aria: {
-    lead: 'So I built',
-    wordmark: 'Aria',
-    subtitle: 'a voice agent that lives on my Mac',
+  combine: {
+    headline: 'So I combined\nthree of my projects.',
+    subtitle: 'to automate my job search',
+    tiles: [
+      {name: 'Aria', note: 'my voice assistant'},
+      {name: 'Coldstart', note: 'outreach'},
+      {name: 'GateLLM', note: 'LLM gateway'},
+    ],
+  },
+  feed: {
+    headline: 'Every 24 hours:\nnew postings.',
+    listTitle: 'New postings',
+    sortLabel: 'best fit first',
+    fitLabel: 'fit',
   },
   voice: {
-    spoken: 'Aria, let’s apply to some jobs.',
+    spoken: 'Aria, run the job pipeline.',
     sttNote: 'on-device speech-to-text',
-    caption: ['It fills them in the background.', 'My screen never moves.'],
+    caption: ['It fills every application in the background.', 'My screen never moves.'],
+    steps: ['Fill applications', 'Find contact emails', 'Draft emails'],
     backgroundChip: 'background',
     role: 'Software Engineer',
     url: 'jobs.acme-robotics.example/apply',
@@ -187,7 +199,7 @@ export const TEXT = {
       'apply that next.',
     ],
     submit: 'Submit application',
-    waiting: 'Filled. Waiting for you.',
+    waiting: 'Ready for review. Nothing submitted.',
   },
   resume: {
     headline: 'Every job gets\nits own resume.',
@@ -265,7 +277,7 @@ export const AUDIO = {
 export const SFX: {scene: SceneId; at: number; file: string}[] = [
   {scene: 'hook', at: 0, file: 'sfx/type.mp3'},
   {scene: 'tired', at: 0, file: 'sfx/whoosh.mp3'},
-  {scene: 'aria', at: 40, file: 'sfx/tick.mp3'},
+  {scene: 'combine', at: 10, file: 'sfx/tick.mp3'},
   {scene: 'voice', at: 140, file: 'sfx/whoosh.mp3'},
   {scene: 'voice', at: 190, file: 'sfx/tick.mp3'},
   {scene: 'resume', at: 150, file: 'sfx/tick.mp3'},

@@ -5,61 +5,68 @@
     {
       "id": "02-tired",
       "scene": "tired",
-      "at": 6,
+      "at": 10,
       "text": "I got tired of this."
     },
     {
-      "id": "03-aria",
-      "scene": "aria",
-      "at": 4,
-      "text": "So I built Aria. A voice agent that lives on my Mac.",
+      "id": "03-combine",
+      "scene": "combine",
+      "at": 6,
+      "text": "So I combined three of my projects to automate my job search.",
       "speed": 1.1
     },
     {
-      "id": "04-ask",
+      "id": "04-feed",
+      "scene": "feed",
+      "at": 6,
+      "text": "Every twenty-four hours: new postings, best fit first.",
+      "speed": 1.1
+    },
+    {
+      "id": "05-ask",
       "scene": "voice",
       "at": 14,
-      "text": "Aria, let's apply to some jobs."
+      "text": "Aria, run the job pipeline."
     },
     {
-      "id": "04-fills",
+      "id": "05-fills",
       "scene": "voice",
-      "at": 204,
-      "text": "It fills them in the background. My screen never moves.",
-      "speed": 1.05
+      "at": 186,
+      "text": "It fills every application in the background. My screen never moves.",
+      "speed": 1.2
     },
     {
-      "id": "05-resume",
+      "id": "06-resume",
       "scene": "resume",
       "at": 4,
       "text": "Every job gets its own resume."
     },
     {
-      "id": "06-email",
+      "id": "07-email",
       "scene": "coldstart",
       "at": 4,
       "text": "And the right person to email."
     },
     {
-      "id": "06-drafts",
+      "id": "07-drafts",
       "scene": "coldstart",
       "at": 126,
       "text": "Drafts. Never sent without me."
     },
     {
-      "id": "07-system",
+      "id": "08-system",
       "scene": "system",
       "at": 4,
       "text": "Three projects. One system."
     },
     {
-      "id": "09-never",
+      "id": "10-never",
       "scene": "never",
       "at": 2,
       "text": "It never submits."
     },
     {
-      "id": "09-ido",
+      "id": "10-ido",
       "scene": "never",
       "at": 38,
       "text": "I do."

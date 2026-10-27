@@ -12,5 +12,5 @@
     "forceConsistentCasingInFileNames": true,
     "lib": ["DOM", "ES2020"]
   },
-  "include": ["src", "remotion.config.ts", "voiceover.json", "public/vo/durations.json"]
+  "include": ["src", "remotion.config.ts", "voiceover.json", "timeline.json", "public/vo/durations.json"]
 }

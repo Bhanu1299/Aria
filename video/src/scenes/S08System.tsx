@@ -6,7 +6,7 @@ import {FONT, headline} from '../theme';
 import {CameraPush, Reveal} from '../ui/motion';
 import {DIAGRAM_W, SystemDiagram} from '../ui/SystemDiagram';
 
-export const S07System: React.FC = () => {
+export const S08System: React.FC = () => {
   const L = useLayout();
   const v = L.vertical;
   const scale = v ? L.box.w / DIAGRAM_W : 0.86;

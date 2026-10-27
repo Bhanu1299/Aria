@@ -8,7 +8,7 @@ import {CameraPush, Check, clamp, ease, enterAt, Reveal} from '../ui/motion';
 
 const T = {card: 12, flick: 26, perPattern: 5, lock: 54, email: 78, chip: 92, chipLand: 108, body: 110, caption: 128};
 
-export const S06Coldstart: React.FC = () => {
+export const S07Coldstart: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const L = useLayout();

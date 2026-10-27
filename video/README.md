@@ -1,6 +1,6 @@
 # "I stopped applying to jobs by hand": the video
 
-A 47.5-second motion-graphics video, built entirely in code with [Remotion](https://www.remotion.dev)
+A 50-second motion-graphics video, built entirely in code with [Remotion](https://www.remotion.dev)
 (React + TypeScript → MP4), with a score synthesized in code and an offline-TTS voiceover.
 No screen recording, no footage: every frame, including the macOS bar,
 Chrome window, job form, resume, Coldstart card and email draft, is drawn with React, CSS and SVG.
@@ -9,6 +9,22 @@ Chrome window, job form, resume, Coldstart card and email draft, is drawn with R
 |---|---|---|
 | `Vertical` | 1080×1920, 30 fps | Reels / Shorts / LinkedIn mobile |
 | `Landscape` | 1920×1080, 30 fps | X / LinkedIn desktop (re-laid out side by side, not cropped) |
+
+## Story
+
+| # | Scene | What happens |
+|---|---|---|
+| 1 | hook | Me at the desk, seen from behind, typing the same form again and again. Hand goes to head. |
+| 2 | tired | The monitor clicks off. "I got tired of this." |
+| 3 | combine | "So I combined three of my projects": Aria, Coldstart, GateLLM, to automate my job search. |
+| 4 | feed | "Every 24 hours: new postings." They land, then re-sort best fit first. |
+| 5 | voice | "Aria, run the job pipeline." Fill applications / find contact emails / draft emails run side by side; tabs open best fit first and fill in the background. |
+| 6 | resume | Every job gets its own resume, ATS 98. |
+| 7 | coldstart | The right person to email, verified, into a Draft. |
+| 8 | system | Three projects. One system. |
+| 9 | numbers | 2,035 tests · < 2 ms · 5 / 5 sites · 14× cheaper |
+| 10 | never | "It never submits." … "I do." |
+| 11 | endcard | Name, GitHub link, open to roles |
 
 ## Quick start
 
@@ -27,6 +43,7 @@ npm run stills     # writes one PNG per scene per format to out/stills/
 Everything on screen lives in **`src/config.ts`**:
 
 - `TEXT`: every string, per scene. `\n` forces a line break in headlines.
+- `POSTINGS`: the fictional postings in scene 4 (company, role, posted, fit). Tabs in scene 5 open in the same best-fit order.
 - `TEXT.numbers`: the four stats of scene 8. The first number in each value counts up from 0.
 - `PLACEHOLDERS`:
   - `JOBS_TRACKED` is a visible amber `{{JOBS_TRACKED}}` chip in the hook. Set it to a number
@@ -70,12 +87,12 @@ Missing files are skipped.
 
 ## Retime to the beat
 
-1. Scene lengths are in `SCENE_SECONDS`.
+1. Scene order and lengths are in `timeline.json` (read by `src/config.ts` and the music script).
 2. `BEATS` is a list of beat frames (default: a 120 BPM grid, one beat every 15 frames, matching the
    generated music). With `SNAP_CUTS_TO_BEATS = true`, every scene cut moves to the nearest beat.
    For another track, change `BPM` / `FIRST_BEAT`, or paste the exact cut frames into `BEATS`.
-3. If you change scene lengths, update the section times in `scripts/make-music.py` and the `at`
-   frames in `voiceover.json`, then re-run both scripts.
+3. If you change scene lengths, re-run `scripts/make-music.py` (it follows `timeline.json`) and check
+   the `at` frames in `voiceover.json`.
 
 Scene 8's four numbers split their scene evenly, so each lands on every second beat.
 
@@ -88,17 +105,18 @@ src/
   theme.ts         fonts (Inter + JetBrains Mono, bundled in public/fonts)
   Video.tsx        hard cuts between scenes + optional music/SFX
   Root.tsx         Vertical, Landscape, plus every scene as its own composition
-  scenes/          S01Hook … S10EndCard, one component per scene
-  ui/              MacTopBar, ChromeWindow, JobForm, ResumePage, EmailCard, SystemDiagram, motion helpers
+  scenes/          S01Hook … S11EndCard, one component per scene
+  ui/              DeskScene, MacTopBar, ChromeWindow, JobForm, ResumePage, EmailCard, SystemDiagram, motion helpers
 scripts/stills.mjs one PNG per scene
 scripts/make-music.py / make-voice.py   generate public/music.mp3 and public/vo/*.mp3
 voiceover.json     voiceover lines, timing, TTS voice
+timeline.json      scene order and lengths
 ```
 
 ## Rules the code keeps
 
 - **The Submit button never animates.** `SubmitButton` in `src/ui/JobForm.tsx` takes no progress
-  props. Fields fill and tick green around it; the toast says "Filled. Waiting for you."
+  props. Fields fill and tick green around it; the toast says "Ready for review. Nothing submitted."
 - **Email is a Draft.** The `Draft` pill is always visible, and the Send button is grey and static.
 - **Only fictional data:** Jane Doe, `jane@example.com`, a 555-01xx phone number, `*.example` domains,
   Acme Robotics / Northwind / Globex / Initech / Umbrella Labs, lettered tiles instead of logos.

@@ -6,7 +6,7 @@ import {FONT, headline} from '../theme';
 import {Reveal} from '../ui/motion';
 
 /** Full black. Everything stops. The longest hold in the video. */
-export const S09Never: React.FC = () => {
+export const S10Never: React.FC = () => {
   const L = useLayout();
   return (
     <AbsoluteFill

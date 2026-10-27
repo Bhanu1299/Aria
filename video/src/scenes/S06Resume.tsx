@@ -62,7 +62,7 @@ const AtsBadge: React.FC<{size: number; value: number; progress: number; appear:
   );
 };
 
-export const S05Resume: React.FC = () => {
+export const S06Resume: React.FC = () => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const L = useLayout();
@@ -71,12 +71,12 @@ export const S05Resume: React.FC = () => {
 
   const postIn = enterAt(frame, fps, 14, 16);
   const resIn = enterAt(frame, fps, 24, 18);
-  const badgeIn = enterAt(frame, fps, 120, 14);
-  const count = ease(frame, [124, 176], [0, 1]);
+  const badgeIn = enterAt(frame, fps, 96, 14);
+  const count = ease(frame, [100, 146], [0, 1]);
 
   // Each skill lights up in the posting, then in the resume.
-  const hlPost = t.skills.map((_, i) => interpolate(frame, [48 + i * 18, 58 + i * 18], [0, 1], clamp));
-  const hlRes = t.skills.map((_, i) => interpolate(frame, [56 + i * 18, 66 + i * 18], [0, 1], clamp));
+  const hlPost = t.skills.map((_, i) => interpolate(frame, [40 + i * 14, 50 + i * 14], [0, 1], clamp));
+  const hlRes = t.skills.map((_, i) => interpolate(frame, [48 + i * 14, 58 + i * 14], [0, 1], clamp));
 
   const pos = v
     ? {post: {x: 80, y: 470, w: 600}, res: {x: 420, y: 800, w: 580}, badge: {x: 90, y: 1010, size: 300}}

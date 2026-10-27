@@ -1,0 +1,16 @@
+{
+  "_comment": "Scene order and lengths (seconds). `still` = second inside the scene that `npm run stills` captures. Shared by src/config.ts and scripts/make-music.py.",
+  "scenes": [
+    {"id": "hook", "seconds": 3.5, "still": 3.1},
+    {"id": "tired", "seconds": 2, "still": 1.6},
+    {"id": "combine", "seconds": 4, "still": 3.5},
+    {"id": "feed", "seconds": 4, "still": 3.6},
+    {"id": "voice", "seconds": 10, "still": 8.2},
+    {"id": "resume", "seconds": 6, "still": 5.4},
+    {"id": "coldstart", "seconds": 6, "still": 5.2},
+    {"id": "system", "seconds": 4, "still": 3.6},
+    {"id": "numbers", "seconds": 4, "still": 0.6},
+    {"id": "never", "seconds": 3, "still": 2.4},
+    {"id": "endcard", "seconds": 3.5, "still": 2.5}
+  ]
+}
