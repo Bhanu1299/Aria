@@ -139,7 +139,9 @@ def scene_of(t):
 
 
 never_t = START["never"]
-ido = START["never"] + 38 / 30  # "I do." lands at frame 38 of the scene
+# The closing line ("That's mine.") is the last voiceover line in the never scene.
+_vo = [l for l in json.loads((root / "voiceover.json").read_text())["lines"] if l["scene"] == "never"]
+ido = START["never"] + max(l["at"] for l in _vo) / 30
 lift0, lift1 = START["cost"], END["cost"]
 beat_scenes = set(ORDER[ORDER.index("coldstart") : ORDER.index("never")])
 

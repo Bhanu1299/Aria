@@ -290,8 +290,10 @@ export const TEXT = {
     {value: '14×', label: 'cheaper on an 87-task stress test'},
   ],
   never: {
-    line1: 'It never submits.',
-    line2: 'I do.',
+    line1: 'Aria does everything\nbut the last click.',
+    line2: 'That\u2019s mine.',
+    /** Frame inside the scene where line 2 appears (keep in step with voiceover.json). */
+    line2At: 72,
   },
   endcard: {
     name: 'Bhanu Teja',

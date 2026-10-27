@@ -1,6 +1,6 @@
 # "I stopped applying to jobs by hand": the video
 
-A 42.5-second motion-graphics video, built entirely in code with [Remotion](https://www.remotion.dev)
+A 43.5-second motion-graphics video, built entirely in code with [Remotion](https://www.remotion.dev)
 (React + TypeScript → MP4), with a score synthesized in code and an offline-TTS voiceover.
 No screen recording, no footage: every frame, including the macOS bar,
 Chrome window, job form, resume, Coldstart card and email draft, is drawn with React, CSS and SVG.
@@ -20,7 +20,7 @@ Chrome window, job form, resume, Coldstart card and email draft, is drawn with R
 | 4 | coldstart | Coldstart finds who to email, verifies the address, and drafts the email. Never sent. |
 | 5 | gateway | Every AI call goes through GateLLM, routed to the cheapest model that can handle it: one call lands on the small model; one fails its check and escalates to frontier. |
 | 6 | cost | Same 87-task stress test: Claude agent $3.01 (78/87) vs DeepSeek via GateLLM $0.21 (80/87). 14× cheaper, similar quality. |
-| 7 | never | "It never submits." … "I do." |
+| 7 | never | "Aria does everything but the last click." … "That’s mine." |
 | 8 | endcard | Name, GitHub link, open to roles |
 
 `tired`, `feed`, `resume`, `system`, `numbers` and `ready` scenes still exist; add their ids to `timeline.json` to bring them back.

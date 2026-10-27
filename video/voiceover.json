@@ -59,13 +59,13 @@
       "id": "09-never",
       "scene": "never",
       "at": 2,
-      "text": "It never submits."
+      "text": "Aria does everything but the last click."
     },
     {
       "id": "09-ido",
       "scene": "never",
-      "at": 38,
-      "text": "I do."
+      "at": 72,
+      "text": "That's mine."
     }
   ]
 }

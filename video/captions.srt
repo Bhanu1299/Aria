@@ -31,9 +31,9 @@ Every AI call goes through GateLLM. It routes each call to the cheapest model th
 Same 87 tasks. A frontier agent: $3.01. Routed through GateLLM: $0.21. Similar quality.
 
 9
-00:00:36,067 --> 00:00:37,167
-It never submits.
+00:00:36,067 --> 00:00:38,167
+Aria does everything but the last click.
 
 10
-00:00:37,267 --> 00:00:37,927
-I do.
+00:00:38,400 --> 00:00:39,210
+That's mine.

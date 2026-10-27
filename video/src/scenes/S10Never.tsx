@@ -19,11 +19,12 @@ export const S10Never: React.FC = () => {
         textAlign: 'center',
       }}
     >
-      <div style={{...headline(L.vertical ? 160 : 150), color: COLORS.text}}>
-        <Reveal text={TEXT.never.line1} stagger={3} />
+      {/* 9:16 is too narrow for the two-line break: let the browser balance three lines instead. */}
+      <div style={{...headline(L.vertical ? 116 : 112), color: COLORS.text, textWrap: 'balance'}}>
+        <Reveal text={L.vertical ? TEXT.never.line1.replace('\n', ' ') : TEXT.never.line1} stagger={3} />
       </div>
-      <div style={{...headline(L.vertical ? 190 : 170), color: COLORS.accent, marginTop: L.vertical ? 40 : 24}}>
-        <Reveal text={TEXT.never.line2} delay={36} stagger={4} />
+      <div style={{...headline(L.vertical ? 148 : 150), color: COLORS.accent, whiteSpace: 'nowrap', marginTop: L.vertical ? 56 : 36}}>
+        <Reveal text={TEXT.never.line2} delay={TEXT.never.line2At} stagger={4} />
       </div>
     </AbsoluteFill>
   );
