@@ -177,7 +177,7 @@ Restart, and the agent can control your lights. Plugins that need the agent itse
 
 ### 6 · Reach the LLM: one gateway for every call
 
-Aria has no provider SDKs. Every LLM call goes over HTTP to **GateLLM**, an OpenAI-compatible gateway I built as a separate project: provider adapters, per-model circuit breakers, retries with backoff, a total deadline per request, and cost accounting, covered by 96 tests. That covers agent turns, screen and page vision, the media and Mac-control classifiers, session notes, browser automation, and the browser agent's Claude escalation ([client code](aria/llm/providers/gateway.py)).
+Aria has no provider SDKs. Every LLM call goes over HTTP to **GateLLM**, an OpenAI-compatible gateway I built as a separate project (not public yet; any compatible gateway works, see [Setup](#-setup)): provider adapters, per-model circuit breakers, retries with backoff, a total deadline per request, and cost accounting, covered by 96 tests. That covers agent turns, screen and page vision, the media and Mac-control classifiers, session notes, browser automation, and the browser agent's Claude escalation ([client code](aria/llm/providers/gateway.py)).
 
 Each call site names a **task** (`form_short_answer`, `screen_qa`, `agent`, …), and one table, `TASK_TIERS` in [`aria/llm/tasks.py`](aria/llm/tasks.py), maps it to a tier. That table is the only place tiers are chosen, and a test fails if a call site hard-codes one. The gateway then picks the model, falls back across providers when one fails, and returns the cost in a response header:
 
@@ -410,15 +410,11 @@ venv/bin/python -m aria.setup google --account jobs   # jobs
 venv/bin/python -m aria.setup google --status         # which account each tool uses
 ```
 
-**LLM gateway.** Aria sends every LLM call to an OpenAI-compatible gateway at `ARIA_GATEWAY_URL`. I run GateLLM, where provider keys (Groq, Anthropic, …) live in the gateway's own `.env`:
+**LLM gateway (required for anything beyond direct commands).** Aria sends every LLM call to an OpenAI-compatible gateway at `ARIA_GATEWAY_URL`. I run my own gateway, GateLLM, which isn't public yet. Any gateway that serves `/v1/chat/completions` and maps the model names `small`, `strong`, `agent`, `frontier`, `vision` and `claude-sonnet-5-5` to real models works, for example a [LiteLLM proxy](https://docs.litellm.ai/docs/proxy/quick_start) with those names as model aliases. Provider keys live in the gateway, never in Aria.
 
-```bash
-cd ~/GateLLM && .venv/bin/uvicorn llm_gateway.api.app:app --port 8000
-```
+Without a gateway, the direct commands (timers, reminders, volume, apps, math) still work.
 
-Aria starts the gateway itself on the first LLM call if it isn't running (`ARIA_GATEWAY_DIR`, default `~/GateLLM`) and stops it after 10 idle minutes (`ARIA_GATEWAY_IDLE_SECONDS`); `ARIA_GATEWAY_AUTOSTART=0` turns that off.
-
-Any gateway that serves `/v1/chat/completions` with the model names `small`, `frontier` and `vision` works. Without one, the direct commands (timers, reminders, volume, apps, math) still work.
+If you do run GateLLM locally, Aria starts it on the first LLM call (`ARIA_GATEWAY_DIR`, default `~/GateLLM`) and stops it after 10 idle minutes (`ARIA_GATEWAY_IDLE_SECONDS`); `ARIA_GATEWAY_AUTOSTART=0` turns that off.
 
 **Permissions** (System Settings → Privacy & Security): **Microphone**, **Accessibility** (hotkey and app control), and optionally **Screen Recording** (screen questions) and **Full Disk Access** (iMessage and the context layer).
 

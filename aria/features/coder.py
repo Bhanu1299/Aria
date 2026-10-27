@@ -385,12 +385,11 @@ def _build_system_prompt() -> str:
         identity_path = str(_aria_paths.IDENTITY_JSON)
         with open(identity_path) as f:
             identity = _json.load(f)
-        name = identity.get("name", "Bhanu Teja")
-        bio = identity.get("bio", "MS CS graduate, Python and GenAI specialist, active job seeker")
-        skills = identity.get("skills", "Python, GenAI, Full Stack, Machine Learning")
-        ctx = f"\nUser context: Name={name}, Background={bio}, Skills={skills}"
+        parts = [f"{label}={identity[key]}" for key, label in
+                 (("name", "Name"), ("bio", "Background"), ("skills", "Skills")) if identity.get(key)]
+        ctx = f"\nUser context: {', '.join(parts)}" if parts else ""
     except Exception:
-        ctx = "\nUser context: Name=Bhanu Teja, Background=MS CS graduate, Python and GenAI specialist, Skills=Python, GenAI, Full Stack, Machine Learning"
+        ctx = ""
     return _SYSTEM_PROMPT + ctx
 
 

@@ -29,3 +29,20 @@ training/models/checkpoints/
 
 # Your own application printouts (address, phone, email): never tracked
 training/ATS/
+
+# Voice-trained wake word models: built locally from your own recordings
+*.onnx
+*.joblib
+
+# Secrets, local data, logs: never tracked
+.env.*
+!.env.example
+credentials/
+*.db
+*.sqlite
+*.sqlite3
+logs/
+*.jsonl
+reviews/
+*.pdf
+!docs/**/*.pdf

@@ -1,6 +1,5 @@
 """
 menubar.py — Aria menu bar icon controller
-Full path: /Users/bhanuteja/Documents/trae_projects/Aria/menubar.py
 
 Shows a single icon in the macOS menu bar.
 Cycles through: IDLE → LISTENING → THINKING → DONE → IDLE

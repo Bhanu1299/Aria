@@ -67,7 +67,7 @@ _CHUNK_SIZE = 512          # 32ms @ 16kHz — works for both backends
 _COOLDOWN_SECS = 5.0
 
 # openwakeword fallback
-_OWW_MODEL = "/Users/bhanuteja/.aria/aria.onnx"
+_OWW_MODEL = os.path.expanduser("~/.aria/aria.onnx")
 _OWW_THRESHOLD = 0.7  # tune after real-world testing (range 0.6–0.8)
 
 # VAD
