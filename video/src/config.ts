@@ -254,7 +254,7 @@ export const TEXT = {
   },
   gateway: {
     headline: 'Every AI call goes\nthrough GateLLM.',
-    subtitle: 'Cheapest model first. Fallback, retries and cost on every call.',
+    subtitle: 'Cheapest model first. Escalates when the task is harder.',
     sources: ['Aria', 'Coldstart'],
     tiers: ['small', 'strong', 'frontier'],
     requests: [

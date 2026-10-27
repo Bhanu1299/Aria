@@ -60,3 +60,27 @@ for line in cfg["lines"]:
     print(f"{line['id']:<12} {durations[line['id']]:>5}s  {line['text']}")
 
 (out / "durations.json").write_text(json.dumps(durations, indent=2) + "\n")
+
+# captions.srt for upload, timed from the clips; numbers written as digits for reading.
+starts, t = {}, 0.0
+for s in json.loads((root / "timeline.json").read_text())["scenes"]:
+    starts[s["id"]], t = t, t + s["seconds"]
+READ = {"twenty-four": "24", "eighty-seven": "87", "three dollars": "$3.01", "twenty-one cents": "$0.21"}
+
+
+def stamp(x):
+    ms = int(round(x * 1000))
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
+cues = []
+for line in cfg["lines"]:
+    if line["scene"] not in starts:
+        continue
+    a = starts[line["scene"]] + line["at"] / 30
+    text = line["text"]
+    for k, val in READ.items():
+        text = text.replace(k, val)
+    cues.append((a, a + durations[line["id"]], text))
+srt = "\n".join(f"{i}\n{stamp(a)} --> {stamp(b)}\n{text}\n" for i, (a, b, text) in enumerate(sorted(cues), 1))
+(root / "captions.srt").write_text(srt)

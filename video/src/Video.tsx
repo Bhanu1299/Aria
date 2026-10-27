@@ -6,9 +6,10 @@ import {SCENES} from './scenes';
 const hasFile = (name: string) => getStaticFiles().some((f) => f.name === name);
 const clamp = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;
 const sceneStart = (id: string) => TIMELINE.find((s) => s.id === id)!.from;
+const inTimeline = (id: string) => TIMELINE.some((s) => s.id === id);
 
 const voLines = VOICEOVER.lines
-  .filter((l) => hasFile(l.file))
+  .filter((l) => hasFile(l.file) && inTimeline(l.scene))
   .map((l) => ({...l, from: sceneStart(l.scene) + l.at, frames: Math.ceil(l.seconds * FPS)}));
 
 /** Music level at frame f: ducked under the voice, faded out at the end. */
@@ -43,7 +44,7 @@ export const Video: React.FC = () => {
         </Sequence>
       ))}
 
-      {SFX.filter((c) => hasFile(c.file)).map((c, i) => (
+      {SFX.filter((c) => hasFile(c.file) && inTimeline(c.scene)).map((c, i) => (
         <Sequence key={i} from={sceneStart(c.scene) + c.at} durationInFrames={45} layout="none">
           <Html5Audio src={staticFile(c.file)} volume={AUDIO.sfxVolume} />
         </Sequence>

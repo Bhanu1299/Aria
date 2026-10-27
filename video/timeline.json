@@ -1,15 +1,10 @@
 {
-  "_comment": "Scene order and lengths (seconds). `still` = second inside the scene that `npm run stills` captures. Shared by src/config.ts and scripts/make-music.py. Unused scenes (feed, resume, system, numbers) can be added back by id.",
+  "_comment": "Scene order and lengths (seconds). `still` = second inside the scene that `npm run stills` captures. Shared by src/config.ts and scripts/make-music.py. Unused scenes (tired, feed, resume, system, numbers, ready) can be added back by id.",
   "scenes": [
     {
       "id": "hook",
-      "seconds": 3.5,
-      "still": 3.3
-    },
-    {
-      "id": "tired",
-      "seconds": 2,
-      "still": 1.6
+      "seconds": 3,
+      "still": 2.3
     },
     {
       "id": "combine",
@@ -28,18 +23,13 @@
     },
     {
       "id": "gateway",
-      "seconds": 5,
-      "still": 4.4
-    },
-    {
-      "id": "ready",
-      "seconds": 5,
-      "still": 4.4
+      "seconds": 6,
+      "still": 5.2
     },
     {
       "id": "cost",
-      "seconds": 5,
-      "still": 4.4
+      "seconds": 8,
+      "still": 7.2
     },
     {
       "id": "never",

@@ -4,8 +4,8 @@
   "lines": [
     {
       "id": "02-tired",
-      "scene": "tired",
-      "at": 10,
+      "scene": "hook",
+      "at": 30,
       "text": "I got tired of this."
     },
     {
@@ -45,22 +45,15 @@
       "id": "06-gateway",
       "scene": "gateway",
       "at": 4,
-      "text": "And every AI call goes through GateLLM. Cheapest model first.",
-      "speed": 1.1
-    },
-    {
-      "id": "07-ready",
-      "scene": "ready",
-      "at": 4,
-      "text": "Everything waits for me. Drafts in my inbox. Filled tabs in my browser.",
+      "text": "Every AI call goes through GateLLM. It routes each call to the cheapest model that can handle it.",
       "speed": 1.15
     },
     {
       "id": "08-cost",
       "scene": "cost",
       "at": 4,
-      "text": "Same eighty-seven tasks. Claude: three dollars. GateLLM: twenty-one cents.",
-      "speed": 1.2
+      "text": "Same eighty-seven tasks. A frontier agent: three dollars. Routed through GateLLM: twenty-one cents. Similar quality.",
+      "speed": 1.15
     },
     {
       "id": "09-never",
