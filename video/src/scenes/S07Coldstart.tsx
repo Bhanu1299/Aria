@@ -6,7 +6,7 @@ import {FONT, headline, MONO} from '../theme';
 import {EmailCard} from '../ui/EmailCard';
 import {CameraPush, Check, clamp, ease, enterAt, Reveal} from '../ui/motion';
 
-const T = {card: 12, flick: 26, perPattern: 5, lock: 54, email: 78, chip: 92, chipLand: 108, body: 110, caption: 128};
+const T = {card: 12, flick: 26, perPattern: 5, lock: 54, email: 78, chip: 92, chipLand: 108, body: 110, caption: 110};
 
 export const S07Coldstart: React.FC = () => {
   const frame = useCurrentFrame();
@@ -170,7 +170,7 @@ export const S07Coldstart: React.FC = () => {
           width: v ? L.box.w : 640,
           top: box.caption,
           textAlign: v ? 'center' : 'left',
-          ...headline(v ? 58 : 56),
+          ...headline(v ? 50 : 52),
           fontWeight: 600,
           color: COLORS.secondary,
         }}

@@ -1,6 +1,6 @@
 # "I stopped applying to jobs by hand": the video
 
-A 50-second motion-graphics video, built entirely in code with [Remotion](https://www.remotion.dev)
+A 46-second motion-graphics video, built entirely in code with [Remotion](https://www.remotion.dev)
 (React + TypeScript → MP4), with a score synthesized in code and an offline-TTS voiceover.
 No screen recording, no footage: every frame, including the macOS bar,
 Chrome window, job form, resume, Coldstart card and email draft, is drawn with React, CSS and SVG.
@@ -17,14 +17,15 @@ Chrome window, job form, resume, Coldstart card and email draft, is drawn with R
 | 1 | hook | Me at the desk, seen from behind, typing the same form again and again. Hand goes to head. |
 | 2 | tired | The monitor clicks off. "I got tired of this." |
 | 3 | combine | "So I combined three of my projects": Aria, Coldstart, GateLLM, to automate my job search. |
-| 4 | feed | "Every 24 hours: new postings." They land, then re-sort best fit first. |
-| 5 | voice | "Aria, run the job pipeline." Fill applications / find contact emails / draft emails run side by side; tabs open best fit first and fill in the background. |
-| 6 | resume | Every job gets its own resume, ATS 98. |
-| 7 | coldstart | The right person to email, verified, into a Draft. |
-| 8 | system | Three projects. One system. |
-| 9 | numbers | 2,035 tests · < 2 ms · 5 / 5 sites · 14× cheaper |
-| 10 | never | "It never submits." … "I do." |
-| 11 | endcard | Name, GitHub link, open to roles |
+| 4 | voice | "Aria, run the job pipeline." Every 24 hours Aria fills the new postings, best fit first, in background tabs, while contact emails and drafts run alongside. |
+| 5 | coldstart | Coldstart finds who to email, verifies the address, and drafts the email. Never sent. |
+| 6 | gateway | Every AI call goes through GateLLM: one call lands on the small model; one fails its check and escalates to frontier. |
+| 7 | ready | Everything waits for me: drafts in my inbox, filled tabs in my browser. |
+| 8 | cost | Same 87-task stress test: Claude agent $3.01 (78/87) vs DeepSeek via GateLLM $0.21 (80/87). 14× cheaper. |
+| 9 | never | "It never submits." … "I do." |
+| 10 | endcard | Name, GitHub link, open to roles |
+
+`feed`, `resume`, `system` and `numbers` scenes still exist; add their ids to `timeline.json` to bring them back.
 
 ## Quick start
 
@@ -60,11 +61,11 @@ a final cut unnoticed.
 
 Both ship with the project and play automatically.
 
-- **Music**: `public/music.mp3` is synthesized by `scripts/make-music.py` (numpy, no samples), so it's
-  royalty-free and "made entirely in code" too. It follows the scene map: ticking hook, a boom on
-  "I got tired of this.", a chord build with kick and arpeggio, one hit per number, then silence
-  for "It never submits." and a single warm chord on "I do." Want a different track? Drop any mp3 at
-  `public/music.mp3`.
+- **Music**: `public/music.mp3` is synthesized by `scripts/make-music.py` (numpy/scipy, no samples), so it's
+  royalty-free and "made entirely in code" too. It's a driving 120 BPM track: the beat starts on frame one,
+  hits hard silence on "I got tired of this.", drops on "So I combined…", pumps under the voice, builds into
+  "It never submits.", cuts to dead silence, and slams back in on "I do." Want a different track? Drop any
+  mp3 at `public/music.mp3`.
 - **Voiceover**: the on-screen words, read aloud. Lines and timing live in `voiceover.json` (`at` is
   the frame inside the scene). The clips in `public/vo/` come from `scripts/make-voice.py`, which runs
   [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), an open-weights TTS model, **offline**
@@ -73,14 +74,14 @@ Both ship with the project and play automatically.
   (`VOICEOVER.duckTo` in config).
 
 ```bash
-pip install numpy soundfile kokoro-onnx
+pip install numpy scipy soundfile kokoro-onnx
 python scripts/make-music.py
 python scripts/make-voice.py --models /path/to/kokoro-models   # kokoro-v1.0.onnx + voices-v1.0.bin
 python scripts/make-voice.py --models ... --voice am_michael     # try another Kokoro voice
 ```
 
 The voice script trims silence, levels each clip to -14 LUFS, and writes `public/vo/durations.json`,
-which the video reads to time the ducking. The final mix comes out around -16 LUFS.
+which the video reads to time the ducking. The final mix comes out around -14 LUFS.
 
 Optional UI sounds go in `public/sfx/` (`type.mp3`, `tick.mp3`, `whoosh.mp3`). Cues are listed in `SFX`.
 Missing files are skipped.

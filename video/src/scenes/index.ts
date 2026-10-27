@@ -11,7 +11,11 @@ import {S08System} from './S08System';
 import {S09Numbers} from './S09Numbers';
 import {S10Never} from './S10Never';
 import {S11EndCard} from './S11EndCard';
+import {S12Gateway} from './S12Gateway';
+import {S13Ready} from './S13Ready';
+import {S14Cost} from './S14Cost';
 
+/** Every scene that exists. timeline.json decides which play, and in what order. */
 export const SCENES: Record<SceneId, React.FC> = {
   hook: S01Hook,
   tired: S02Tired,
@@ -23,5 +27,8 @@ export const SCENES: Record<SceneId, React.FC> = {
   system: S08System,
   numbers: S09Numbers,
   never: S10Never,
+  gateway: S12Gateway,
+  ready: S13Ready,
+  cost: S14Cost,
   endcard: S11EndCard,
 };

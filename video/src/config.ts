@@ -69,10 +69,16 @@ export type SceneId =
   | 'coldstart'
   | 'system'
   | 'numbers'
+  | 'gateway'
+  | 'ready'
+  | 'cost'
   | 'never'
   | 'endcard';
 
-/** Scene order and lengths live in timeline.json (the music script reads it too). */
+/**
+ * Scene order and lengths live in timeline.json (the music script reads it too).
+ * Every scene in SceneId is available; timeline.json picks which ones play.
+ */
 export const SCENE_SECONDS = timeline.scenes.map((s) => ({...s, id: s.id as SceneId}));
 
 const nearestBeat = (f: number) =>
@@ -180,7 +186,7 @@ export const TEXT = {
   voice: {
     spoken: 'Aria, run the job pipeline.',
     sttNote: 'on-device speech-to-text',
-    caption: ['It fills every application in the background.', 'My screen never moves.'],
+    caption: ['Every 24 hours, Aria fills the new postings.', 'Best fit first. In the background.'],
     steps: ['Fill applications', 'Find contact emails', 'Draft emails'],
     backgroundChip: 'background',
     role: 'Software Engineer',
@@ -215,7 +221,7 @@ export const TEXT = {
     atsNote: 'median score',
   },
   coldstart: {
-    headline: 'And the right\nperson to email.',
+    headline: 'Coldstart finds\nwho to email.',
     appName: 'Coldstart',
     personName: 'Jane Doe',
     personRole: 'Engineering Manager · Northwind',
@@ -231,7 +237,7 @@ export const TEXT = {
     draftPill: 'Draft',
     to: 'jane.doe@northwind.example',
     subject: 'Software Engineer, AI Tools at Northwind',
-    caption: 'Drafts. Never sent without me.',
+    caption: 'And drafts it. Never sent without me.',
   },
   system: {
     headline: 'Three projects. One system.',
@@ -242,6 +248,36 @@ export const TEXT = {
     },
     tiers: ['small', 'strong', 'frontier'],
     cost: '$0.0004',
+  },
+  gateway: {
+    headline: 'Every AI call goes\nthrough GateLLM.',
+    subtitle: 'Cheapest model first. Fallback, retries and cost on every call.',
+    sources: ['Aria', 'Coldstart'],
+    tiers: ['small', 'strong', 'frontier'],
+    requests: [
+      {label: 'form field', lands: 0, cost: '$0.0004'},
+      {label: 'why us?', lands: 2, cost: ''},
+    ],
+    escalated: 'checked, escalated',
+  },
+  ready: {
+    headline: 'Everything\nwaits for me.',
+    inbox: 'Drafts',
+    drafts: [
+      {to: 'Engineering Manager', company: 1, subject: 'Software Engineer, AI Tools at Northwind'},
+      {to: 'Hiring Manager', company: 0, subject: 'Software Engineer at Acme Robotics'},
+      {to: 'Tech Lead', company: 2, subject: 'Backend Engineer at Globex'},
+    ],
+    tabsLabel: 'Ready for review',
+    caption: ['Drafts in my inbox.', 'Filled tabs in my browser.'],
+  },
+  cost: {
+    headline: ['Same work.', '14\u00d7 cheaper.'],
+    test: 'Same 87-task stress test',
+    rows: [
+      {name: 'Claude agent', passed: '78 / 87 passed', cost: 3.01},
+      {name: 'DeepSeek via GateLLM', passed: '80 / 87 passed', cost: 0.21},
+    ],
   },
   numbers: [
     {value: '2,035', label: 'automated tests passing'},
@@ -267,7 +303,7 @@ export const TEXT = {
 
 export const AUDIO = {
   music: 'music.mp3',
-  musicVolume: 0.8,
+  musicVolume: 0.5,
   /** Fade the music out over this many frames at the end. */
   musicFadeOut: 45,
   sfxVolume: 0.35,
@@ -301,7 +337,7 @@ export const SFX: {scene: SceneId; at: number; file: string}[] = [
 export const VOICEOVER = {
   volume: 1,
   /** Music level while a line plays (fraction of musicVolume). */
-  duckTo: 0.3,
+  duckTo: 0.4,
   duckFrames: 6,
   lines: voiceover.lines.map((l) => ({
     ...l,

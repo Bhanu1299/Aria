@@ -17,13 +17,13 @@ const T = {
   window: 104,
   tabs: [114, 128, 140, 150, 158],
   fill: 132,
-  perField: 13,
-  why: 200,
-  whyLen: 36,
-  done: 246,
-  caption1: 188,
-  caption2: 218,
-  toast: 252,
+  perField: 12,
+  why: 192,
+  whyLen: 30,
+  done: 226,
+  caption1: 150,
+  caption2: 178,
+  toast: 232,
 };
 
 export const S05Voice: React.FC = () => {
@@ -60,7 +60,7 @@ export const S05Voice: React.FC = () => {
   });
   const front = COMPANIES[POSTINGS_BY_FIT[0].company];
   // The pipeline's three parts run side by side; each ticks when it's done.
-  const stepsDone = [T.done, 214, 236];
+  const stepsDone = [T.done, 204, 218];
 
   const fields = t.fields;
   const progress = fields.map((_, i) =>
@@ -222,7 +222,7 @@ export const S05Voice: React.FC = () => {
         style={{
           position: 'absolute',
           top: bar.top + bar.height + 14,
-          left: Math.min(gc.x - 40, L.W - L.safe.right - (v ? 470 : 420)),
+          right: L.safe.right,
           opacity: toast,
           transform: `translateY(${(1 - toast) * -16}px)`,
           background: 'rgba(44,44,46,0.92)',
