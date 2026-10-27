@@ -35,7 +35,7 @@ export const Video: React.FC = () => {
         );
       })}
 
-      {hasFile(AUDIO.music) ? <Html5Audio src={staticFile(AUDIO.music)} volume={musicVolume} /> : null}
+      {AUDIO.musicEnabled && hasFile(AUDIO.music) ? <Html5Audio src={staticFile(AUDIO.music)} volume={musicVolume} /> : null}
 
       {voLines.map((l) => (
         <Sequence key={l.id} name={`vo ${l.id}`} from={l.from} durationInFrames={l.frames + 10} layout="none">

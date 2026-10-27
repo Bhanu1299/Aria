@@ -5,7 +5,7 @@ import {useLayout} from '../layout';
 import {FONT} from '../theme';
 import {DeskScene, deskGeom} from '../ui/DeskScene';
 import {JobForm} from '../ui/JobForm';
-import {clamp, isPlaceholder, Placeholder} from '../ui/motion';
+import {clamp} from '../ui/motion';
 
 /** Each pass through the form is shorter than the last. */
 export const CYCLES = [40, 28, 20, 17];
@@ -98,8 +98,7 @@ export const S01Hook: React.FC = () => {
 
   const target = PLACEHOLDERS.JOBS_TRACKED;
   const bump = cycle > 0 ? interpolate(local, [0, 3, 8], [1, 1.18, 1], clamp) : 1;
-  const count =
-    typeof target === 'number' ? Math.round(interpolate(frame, [0, fps * 3], [0, target], clamp)) : null;
+  const count = target !== null ? Math.round(interpolate(frame, [0, fps * 3], [0, target], clamp)) : null;
 
   return (
     <AbsoluteFill style={{background: COLORS.bg, fontFamily: FONT}}>
@@ -113,32 +112,29 @@ export const S01Hook: React.FC = () => {
         screen={<Screen w={g.screen.w} h={g.screen.h} cycle={cycle} local={local} duration={duration} />}
       />
 
-      <div
-        style={{
-          position: 'absolute',
-          top: L.safe.top + 8,
-          right: L.safe.right,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 14,
-          color: COLORS.secondary,
-          fontSize: L.vertical ? 28 : 24,
-          fontWeight: 600,
-          transform: `scale(${bump})`,
-          transformOrigin: '100% 50%',
-        }}
-      >
-        <span>{TEXT.hook.counterLabel}</span>
-        {count !== null ? (
+      {/* Counter, top-right inside the safe area. Hidden until JOBS_TRACKED is set. */}
+      {count !== null ? (
+        <div
+          style={{
+            position: 'absolute',
+            top: L.safe.top + 8,
+            right: L.safe.right,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            color: COLORS.secondary,
+            fontSize: L.vertical ? 28 : 24,
+            fontWeight: 600,
+            transform: `scale(${bump})`,
+            transformOrigin: '100% 50%',
+          }}
+        >
+          <span>{TEXT.hook.counterLabel}</span>
           <span style={{color: COLORS.text, fontVariantNumeric: 'tabular-nums', fontWeight: 700, fontSize: L.vertical ? 40 : 34}}>
             {count}
           </span>
-        ) : isPlaceholder(target) ? (
-          <Placeholder text={target} size={L.vertical ? 28 : 24} />
-        ) : (
-          <span style={{color: COLORS.text}}>{target}</span>
-        )}
-      </div>
+        </div>
+      ) : null}
     </AbsoluteFill>
   );
 };

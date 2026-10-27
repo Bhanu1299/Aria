@@ -27,6 +27,18 @@ export const S14Cost: React.FC = () => {
         <div style={{...headline(v ? 140 : 104), color: COLORS.green}}>
           <Reveal text={t.headline[1]} delay={58} stagger={4} />
         </div>
+        <div
+          style={{
+            marginTop: v ? 20 : 16,
+            fontSize: v ? 40 : 34,
+            fontWeight: 600,
+            color: COLORS.secondary,
+            letterSpacing: '-0.01em',
+            opacity: enterAt(frame, fps, 66, 12),
+          }}
+        >
+          {t.vs}
+        </div>
       </div>
 
       <div style={{position: 'absolute', left: panel.x, top: panel.y, width: panel.w}}>

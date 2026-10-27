@@ -107,8 +107,11 @@ export const TOTAL_FRAMES = TIMELINE[TIMELINE.length - 1].from + TIMELINE[TIMELI
 // ---------------------------------------------------------------------------
 
 export const PLACEHOLDERS = {
-  /** Jobs in the author's tracker (about 180). Set to a number, e.g. 180, to count up to it. */
-  JOBS_TRACKED: '{{JOBS_TRACKED}}' as string | number,
+  /**
+   * Jobs in the author's tracker (about 180). The hook's "jobs tracked" counter is hidden
+   * until this is a number; set it (e.g. 180) and the counter counts up to it.
+   */
+  JOBS_TRACKED: null as number | null,
   /** Only shown on the end card once the repo is public. Keep null to hide. */
   GATELLM_LINK: null as string | null,
   COLDSTART_LINK: null as string | null,
@@ -274,6 +277,7 @@ export const TEXT = {
   cost: {
     headline: ['Same work.', '14\u00d7 cheaper.'],
     test: 'Same 87-task stress test',
+    vs: 'vs a frontier agent, same 87 tasks',
     rows: [
       {name: 'Claude agent', passed: '78 / 87 passed', cost: 3.01},
       {name: 'DeepSeek via GateLLM', passed: '80 / 87 passed', cost: 0.21},
@@ -302,8 +306,10 @@ export const TEXT = {
 // ---------------------------------------------------------------------------
 
 export const AUDIO = {
+  /** false mutes the music (voiceover still plays). */
+  musicEnabled: true,
   music: 'music.mp3',
-  musicVolume: 0.5,
+  musicVolume: 0.9,
   /** Fade the music out over this many frames at the end. */
   musicFadeOut: 45,
   sfxVolume: 0.35,
@@ -337,7 +343,7 @@ export const SFX: {scene: SceneId; at: number; file: string}[] = [
 export const VOICEOVER = {
   volume: 1,
   /** Music level while a line plays (fraction of musicVolume). */
-  duckTo: 0.4,
+  duckTo: 0.55,
   duckFrames: 6,
   lines: voiceover.lines.map((l) => ({
     ...l,

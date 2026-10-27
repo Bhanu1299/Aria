@@ -47,8 +47,8 @@ Everything on screen lives in **`src/config.ts`**:
 - `POSTINGS`: the fictional postings in scene 4 (company, role, posted, fit). Tabs in scene 5 open in the same best-fit order.
 - `TEXT.numbers`: the four stats of scene 8. The first number in each value counts up from 0.
 - `PLACEHOLDERS`:
-  - `JOBS_TRACKED` is a visible amber `{{JOBS_TRACKED}}` chip in the hook. Set it to a number
-    (for example `180`) and the counter counts up to it instead.
+  - `JOBS_TRACKED` is `null`, so the hook's "jobs tracked" counter is hidden. Set it to a number
+    (for example `180`) and the counter appears and counts up to it.
   - `GATELLM_LINK` / `COLDSTART_LINK` are `null` (hidden). Set them to a URL once those repos are
     public and they show up on the end card.
 - `PERSON`, `COMPANIES`: the fictional data inside the recreated UIs.
@@ -62,10 +62,10 @@ a final cut unnoticed.
 Both ship with the project and play automatically.
 
 - **Music**: `public/music.mp3` is synthesized by `scripts/make-music.py` (numpy/scipy, no samples), so it's
-  royalty-free and "made entirely in code" too. It's a driving 120 BPM track: the beat starts on frame one,
-  hits hard silence on "I got tired of this.", drops on "So I combined…", pumps under the voice, builds into
-  "It never submits.", cuts to dead silence, and slams back in on "I do." Want a different track? Drop any
-  mp3 at `public/music.mp3`.
+  royalty-free and "made entirely in code" too. It's a minimal, low-key bed meant to sit under the text: a
+  steady low pulse and soft pads through the opening, a light beat from the Coldstart scene, one small lift
+  on "14× cheaper", then a fade to silence on "I do." No vocals, no lead melody, no drop.
+  `AUDIO.musicEnabled = false` in config mutes it; any mp3 at `public/music.mp3` replaces it.
 - **Voiceover**: the on-screen words, read aloud. Lines and timing live in `voiceover.json` (`at` is
   the frame inside the scene). The clips in `public/vo/` come from `scripts/make-voice.py`, which runs
   [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), an open-weights TTS model, **offline**
