@@ -1,3 +1,5 @@
 node_modules/
 out/*.mp4
 .remotion/
+# Generated audio is part of the project (the root .gitignore ignores *.mp3).
+!public/**/*.mp3

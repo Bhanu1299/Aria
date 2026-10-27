@@ -1,7 +1,8 @@
 # "I stopped applying to jobs by hand": the video
 
 A 47.5-second motion-graphics video, built entirely in code with [Remotion](https://www.remotion.dev)
-(React + TypeScript → MP4). No screen recording, no footage: every frame, including the macOS bar,
+(React + TypeScript → MP4), with a score synthesized in code and an offline-TTS voiceover.
+No screen recording, no footage: every frame, including the macOS bar,
 Chrome window, job form, resume, Coldstart card and email draft, is drawn with React, CSS and SVG.
 
 | Composition | Size | Use |
@@ -38,28 +39,51 @@ Everything on screen lives in **`src/config.ts`**:
 Any string written as `{{SOMETHING}}` renders as an amber dashed placeholder, so it can't slip into
 a final cut unnoticed.
 
-## Retime to the music
+## Music and voiceover
 
-1. Drop your royalty-free track at `public/music.mp3`. It's picked up automatically and fades
-   out over the last 1.5 s (`AUDIO` in config). Optional UI sounds go in `public/sfx/`
-   (`type.mp3`, `tick.mp3`, `whoosh.mp3`). Cues are listed in `SFX`. Missing files are skipped.
-2. Scene lengths are in `SCENE_SECONDS`.
-3. `BEATS` is a list of beat frames (default: a 120 BPM grid, one beat every 15 frames). With
-   `SNAP_CUTS_TO_BEATS = true`, every scene cut moves to the nearest beat. To sync:
-   - change `BPM` / `FIRST_BEAT` if the track has a steady tempo, or
-   - scrub the track in Studio, write down the frames where you want cuts, and paste them into
-     `BEATS`.
+Both ship with the project and play automatically.
 
-Scene 8's four numbers split their scene evenly, so with a 4-second scene at 120 BPM each number
-lands on every second beat.
+- **Music**: `public/music.mp3` is synthesized by `scripts/make-music.py` (numpy, no samples), so it's
+  royalty-free and "made entirely in code" too. It follows the scene map: ticking hook, a boom on
+  "I got tired of this.", a chord build with kick and arpeggio, one hit per number, then silence
+  for "It never submits." and a single warm chord on "I do." Want a different track? Drop any mp3 at
+  `public/music.mp3`.
+- **Voiceover**: the on-screen words, read aloud. Lines and timing live in `voiceover.json` (`at` is
+  the frame inside the scene). The clips in `public/vo/` come from `scripts/make-voice.py`, which runs
+  [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), an open-weights TTS model, **offline**
+  (no API calls). It's still an AI voice. To use your own, record each line as
+  `public/vo/<id>.mp3` with the same names. The music ducks under the voice automatically
+  (`VOICEOVER.duckTo` in config).
 
-> Note: the repo's root `.gitignore` ignores `*.mp3`, so your music stays local.
+```bash
+pip install numpy soundfile kokoro-onnx
+python scripts/make-music.py
+python scripts/make-voice.py --models /path/to/kokoro-models   # kokoro-v1.0.onnx + voices-v1.0.bin
+python scripts/make-voice.py --models ... --voice am_michael     # try another Kokoro voice
+```
+
+The voice script trims silence, levels each clip to -14 LUFS, and writes `public/vo/durations.json`,
+which the video reads to time the ducking. The final mix comes out around -16 LUFS.
+
+Optional UI sounds go in `public/sfx/` (`type.mp3`, `tick.mp3`, `whoosh.mp3`). Cues are listed in `SFX`.
+Missing files are skipped.
+
+## Retime to the beat
+
+1. Scene lengths are in `SCENE_SECONDS`.
+2. `BEATS` is a list of beat frames (default: a 120 BPM grid, one beat every 15 frames, matching the
+   generated music). With `SNAP_CUTS_TO_BEATS = true`, every scene cut moves to the nearest beat.
+   For another track, change `BPM` / `FIRST_BEAT`, or paste the exact cut frames into `BEATS`.
+3. If you change scene lengths, update the section times in `scripts/make-music.py` and the `at`
+   frames in `voiceover.json`, then re-run both scripts.
+
+Scene 8's four numbers split their scene evenly, so each lands on every second beat.
 
 ## Structure
 
 ```
 src/
-  config.ts        all text, numbers, placeholders, timing, beats, colors
+  config.ts        all text, numbers, placeholders, timing, beats, colors, audio levels
   layout.ts        9:16 vs 16:9 switch, safe area (120 top / 320 bottom / 80 sides on 9:16)
   theme.ts         fonts (Inter + JetBrains Mono, bundled in public/fonts)
   Video.tsx        hard cuts between scenes + optional music/SFX
@@ -67,6 +91,8 @@ src/
   scenes/          S01Hook … S10EndCard, one component per scene
   ui/              MacTopBar, ChromeWindow, JobForm, ResumePage, EmailCard, SystemDiagram, motion helpers
 scripts/stills.mjs one PNG per scene
+scripts/make-music.py / make-voice.py   generate public/music.mp3 and public/vo/*.mp3
+voiceover.json     voiceover lines, timing, TTS voice
 ```
 
 ## Rules the code keeps

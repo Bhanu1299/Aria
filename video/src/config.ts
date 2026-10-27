@@ -6,6 +6,9 @@
  * amber placeholder so it can't slip into a final render unnoticed.
  */
 
+import voiceover from '../voiceover.json';
+import voDurations from '../public/vo/durations.json';
+
 export const FPS = 30;
 
 export const VERTICAL = {width: 1080, height: 1920} as const;
@@ -252,7 +255,7 @@ export const TEXT = {
 
 export const AUDIO = {
   music: 'music.mp3',
-  musicVolume: 0.6,
+  musicVolume: 0.8,
   /** Fade the music out over this many frames at the end. */
   musicFadeOut: 45,
   sfxVolume: 0.35,
@@ -273,3 +276,25 @@ export const SFX: {scene: SceneId; at: number; file: string}[] = [
   {scene: 'numbers', at: 60, file: 'sfx/tick.mp3'},
   {scene: 'numbers', at: 90, file: 'sfx/tick.mp3'},
 ];
+
+// ---------------------------------------------------------------------------
+// Voiceover
+// ---------------------------------------------------------------------------
+
+/**
+ * Lines, timing and TTS voice live in voiceover.json (shared with scripts/make-voice.py).
+ * `at` is the frame inside the scene where the line starts. Clips are public/vo/<id>.mp3;
+ * replace any of them with your own recording and keep the name.
+ */
+export const VOICEOVER = {
+  volume: 1,
+  /** Music level while a line plays (fraction of musicVolume). */
+  duckTo: 0.3,
+  duckFrames: 6,
+  lines: voiceover.lines.map((l) => ({
+    ...l,
+    scene: l.scene as SceneId,
+    file: `vo/${l.id}.mp3`,
+    seconds: (voDurations as Record<string, number>)[l.id] ?? 2,
+  })),
+};
